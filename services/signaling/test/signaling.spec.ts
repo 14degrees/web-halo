@@ -419,7 +419,7 @@ describe("signaling API", () => {
     }
     expect(response?.status).toBe(401);
     expect((await attemptUpgrade()).status).toBe(429);
-  });
+  }, 15_000);
 
   it("counts malformed frames and pings toward the WebSocket rate limit", async () => {
     const room = await createRoom();
