@@ -37,20 +37,38 @@ export function actorIdIsValid(actorId: string): boolean {
   return ACTOR_ID_PATTERN.test(actorId);
 }
 
+function clientAddress(request: Request): string {
+  return request.headers.get("CF-Connecting-IP") ?? "local-development";
+}
+
+async function opaqueId(env: RuntimeEnv, value: string): Promise<string> {
+  const digest = await hmac(requireAbuseSecret(env), value);
+  return hex(digest.slice(0, 16));
+}
+
 /**
- * Stable enough for abuse attribution without persisting a raw IP address.
- * Including the game identifier avoids treating everyone behind one NAT as a
- * single player while the IP component prevents an identifier alone from
- * becoming a portable tracking value.
+ * Network-scoped abuse identity without persisting a raw IP address. The
+ * client-controlled game identifier is deliberately excluded so changing it
+ * cannot reset TURN accounting or bypass a ban.
  */
 export async function actorIdFor(
+  request: Request,
+  env: RuntimeEnv,
+): Promise<string> {
+  return opaqueId(env, `abuse\u0000${clientAddress(request)}`);
+}
+
+/**
+ * A narrower subject for the short automatic-reconnect grace window. It is
+ * deliberately separate from the non-forgeable network identity used for
+ * bandwidth accounting and bans.
+ */
+export async function verificationIdFor(
   request: Request,
   identifier: string,
   env: RuntimeEnv,
 ): Promise<string> {
-  const address = request.headers.get("CF-Connecting-IP") ?? "local-development";
-  const digest = await hmac(requireAbuseSecret(env), `${address}\u0000${identifier}`);
-  return hex(digest.slice(0, 16));
+  return opaqueId(env, `verify\u0000${clientAddress(request)}\u0000${identifier}`);
 }
 
 export async function requestIsAuthorizedAdmin(

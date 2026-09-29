@@ -6,7 +6,10 @@ time, browser/Wasm memory, viewport, browser family, platform, device class,
 country and Cloudflare colo. The index is a random per-page UUID; raw IP
 addresses and persistent browser identifiers are not stored.
 
-TURN credentials are tagged with an opaque HMAC actor ID. Cloudflare's TURN
+TURN credentials are tagged with an opaque, network-scoped HMAC actor ID.
+Cloudflare supplies the address at its edge, and the client-controlled game
+identifier is not part of this abuse identity, so changing a name or identifier
+cannot reset bandwidth accounting or evade a ban. Cloudflare's TURN
 GraphQL analytics can therefore rank bandwidth by actor without exposing an IP
 address. The signaling Worker stores short-lived credential usernames in KV so
 an actor ban both blocks future room/session creation and best-effort revokes
@@ -44,6 +47,9 @@ midnight; free STUN and direct peer-to-peer play remain available. Because
 Cloudflare TURN analytics is adaptively sampled and arrives after traffic has
 already flowed, these are circuit breakers rather than byte-exact prepaid
 limits; allow for a small amount of overshoot.
+
+Because this intentionally avoids accounts and persistent tracking, players
+behind the same public NAT share one bandwidth identity and cap.
 
 Room and initial session creation also require a server-validated Turnstile
 token with the expected action and approved hostname. Supplied tokens are

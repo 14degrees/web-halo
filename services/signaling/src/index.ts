@@ -7,6 +7,7 @@ import {
   rememberTurnUsernames,
   requestIsAuthorizedAdmin,
   saveBan,
+  verificationIdFor,
 } from "./abuse";
 import { roomIdSignatureMatches, signedRoomId } from "./crypto";
 import type { RuntimeEnv } from "./env";
@@ -130,9 +131,8 @@ function requestActor(request: Request): string {
 async function requireAllowedActor(
   request: Request,
   env: RuntimeEnv,
-  identifier: string,
 ): Promise<string> {
-  const actorId = await actorIdFor(request, identifier, env);
+  const actorId = await actorIdFor(request, env);
   if (await activeBan(env, actorId)) {
     recordTurnEvent(env, "blocked", actorId);
     throw new HttpError(403, "PLAYER_BANNED", "This player is not allowed to create or join rooms.");
@@ -408,9 +408,10 @@ async function createRoom(
   if (!parsed.ok) {
     throw new HttpError(400, "VALIDATION_FAILED", parsed.message);
   }
-  const actorId = await requireAllowedActor(request, env, parsed.value.identifier);
+  const actorId = await requireAllowedActor(request, env);
+  const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
   try {
-    await requireHumanVerification(request, env, actorId, parsed.value.turnstileToken, "create_room");
+    await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "create_room");
   } catch {
     throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
   }
@@ -553,9 +554,10 @@ async function createSession(
   if (!parsed.ok) {
     throw new HttpError(400, "VALIDATION_FAILED", parsed.message);
   }
-  const actorId = await requireAllowedActor(request, env, parsed.value.identifier);
+  const actorId = await requireAllowedActor(request, env);
+  const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
   try {
-    await requireHumanVerification(request, env, actorId, parsed.value.turnstileToken, "join_room");
+    await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "join_room");
   } catch {
     throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
   }

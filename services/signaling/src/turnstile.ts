@@ -19,7 +19,7 @@ function expectedHostnames(env: RuntimeEnv): Set<string> {
 export async function requireHumanVerification(
   request: Request,
   env: RuntimeEnv,
-  actorId: string,
+  verificationId: string,
   token: string | undefined,
   expectedAction: "create_room" | "join_room",
 ): Promise<void> {
@@ -30,7 +30,7 @@ export async function requireHumanVerification(
      When the client does send a token, always submit it to Siteverify. This
      preserves Turnstile's single-use guarantee instead of allowing a replay
      to hide behind the reconnect proof. */
-  const verificationKey = `verified:${actorId}:${expectedAction}`;
+  const verificationKey = `verified:${verificationId}:${expectedAction}`;
   if (
     expectedAction === "join_room" &&
     (!token || token.length === 0) &&
