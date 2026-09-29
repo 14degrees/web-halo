@@ -69,6 +69,28 @@ describe("Turnstile verification", () => {
     )).rejects.toThrow("TURNSTILE_REJECTED");
   });
 
+  it("requires a fresh token for every new room", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      action: "create_room",
+      hostname: "game.example",
+      success: true,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const env = verificationEnv();
+    const request = new Request("https://api.example/v1/rooms");
+
+    await requireHumanVerification(request, env, "actor", "single-use-token", "create_room");
+    await expect(requireHumanVerification(
+      request,
+      env,
+      "actor",
+      undefined,
+      "create_room",
+    )).rejects.toThrow("TURNSTILE_REJECTED");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("allows a tokenless reconnect only after a recent server-side proof", async () => {
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);

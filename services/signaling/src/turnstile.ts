@@ -31,7 +31,11 @@ export async function requireHumanVerification(
      preserves Turnstile's single-use guarantee instead of allowing a replay
      to hide behind the reconnect proof. */
   const verificationKey = `verified:${actorId}:${expectedAction}`;
-  if ((!token || token.length === 0) && await env.HALO_ABUSE.get(verificationKey)) {
+  if (
+    expectedAction === "join_room" &&
+    (!token || token.length === 0) &&
+    await env.HALO_ABUSE.get(verificationKey)
+  ) {
     return;
   }
   const hostnames = expectedHostnames(env);
@@ -71,7 +75,9 @@ export async function requireHumanVerification(
   ) {
     throw new Error("TURNSTILE_REJECTED");
   }
-  await env.HALO_ABUSE.put(verificationKey, "verified", {
-    expirationTtl: VERIFICATION_TTL_SECONDS,
-  });
+  if (expectedAction === "join_room") {
+    await env.HALO_ABUSE.put(verificationKey, "verified", {
+      expirationTtl: VERIFICATION_TTL_SECONDS,
+    });
+  }
 }
