@@ -6,7 +6,7 @@ selects the existing ILP32/OpenGL ES code paths while ``HALO_WEB`` lets the
 small browser-specific parts of the platform layer distinguish themselves
 from Android.
 
-The link uses Emscripten's SDL3 port, WebGL 2 and pthreads.  It deliberately
+The link uses a pinned SDL3 port, WebGL 2 and pthreads.  It deliberately
 starts with a memory larger than 2 GiB: the Xbox-compatible allocator owns the
 fixed 0x80000000..0x88000000 address range.  FetchFS and OPFS are linked for
 the browser platform layer to expose streamed game data and persistent saves.
@@ -35,6 +35,8 @@ LINUX_DIR = Path("port/linux")
 ANDROID_DIR = Path("port/android")
 WEB_DIR = Path("port/web")
 PORT_CONFIG = LINUX_DIR / "port.json"
+WEB_SDL_PORT = WEB_DIR / "halo_sdl3.py"
+WEB_SDL_FLAG = f"--use-port={WEB_SDL_PORT}"
 
 # Emscripten's wasm32 ABI already has the pointer and long sizes the original
 # Xbox code expects.  The remaining flags reproduce the source-level MSVC ABI
@@ -52,7 +54,7 @@ WEB_ABI_FLAGS = [
     "-ffp-contract=off",
     "-O2",
     "-pthread",
-    "-sUSE_SDL=3",
+    WEB_SDL_FLAG,
 ]
 
 GAME_FLAGS = [
@@ -109,6 +111,7 @@ def web_configure_inputs() -> List[Path]:
         Path(__file__),
         PORT_CONFIG,
         WEB_DIR / "shell.html",
+        WEB_SDL_PORT,
         WEB_DIR / "assets",
         WEB_DIR / "src",
         LINUX_DIR / "src",
@@ -307,7 +310,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         "-O2",
         *debug_flags,
         "-pthread",
-        "-sUSE_SDL=3",
+        WEB_SDL_FLAG,
         "-sPROXY_TO_PTHREAD=1",
         "-sPTHREAD_POOL_SIZE=16",
         "-sOFFSCREENCANVAS_SUPPORT=1",
@@ -337,6 +340,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         inputs=objects,
         implicit=[
             WEB_DIR / "shell.html",
+            WEB_SDL_PORT,
             WEB_DIR / "online_client.js",
             WEB_DIR / "library_web_transport.js",
         ],
