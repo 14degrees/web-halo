@@ -2078,21 +2078,41 @@
         message.includes("If you see this error we have a bug. Please report this bug to chromium.");
     }
 
+    function isBrowserExtensionFailure(message, source) {
+      const detail = `${message || ""}\n${source || ""}`;
+      return /\b(?:chrome|moz|safari|safari-web|ms-browser)-extension:\/\//i.test(detail) ||
+        /webkit-masked-url:\/\//i.test(detail) ||
+        /metamask/i.test(detail);
+    }
+
     window.addEventListener("error", event => {
-      if (isPointerLockFailure(event.message || "")) {
-        event.preventDefault();
-        return;
-      }
-      diagnostic(event.error && event.error.stack ? event.error.stack : event.message);
-      setStatus(`Could not start: ${event.message || "see the browser console"}`);
-    });
-    window.addEventListener("unhandledrejection", event => {
-      const message = event.reason && event.reason.message ? event.reason.message : String(event.reason);
+      const message = event.message || "see the browser console";
+      const source = event.error && event.error.stack ? event.error.stack : event.filename;
       if (isPointerLockFailure(message)) {
         event.preventDefault();
         return;
       }
-      diagnostic(event.reason && event.reason.stack ? event.reason.stack : message);
+      if (isBrowserExtensionFailure(message, source)) {
+        diagnostic(`ignored browser extension error: ${source || message}`);
+        event.preventDefault();
+        return;
+      }
+      diagnostic(source || message);
+      setStatus(`Could not start: ${message}`);
+    });
+    window.addEventListener("unhandledrejection", event => {
+      const message = event.reason && event.reason.message ? event.reason.message : String(event.reason);
+      const source = event.reason && event.reason.stack ? event.reason.stack : "";
+      if (isPointerLockFailure(message)) {
+        event.preventDefault();
+        return;
+      }
+      if (isBrowserExtensionFailure(message, source)) {
+        diagnostic(`ignored browser extension rejection: ${source || message}`);
+        event.preventDefault();
+        return;
+      }
+      diagnostic(source || message);
       setStatus(`Could not start: ${message}`);
     });
   </script>

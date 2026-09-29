@@ -99,4 +99,27 @@ assert.match(shell,
   /controllerSummary[\s\S]*?mouse capture optional/,
   'a controller must remain usable without mouse capture');
 
+const extensionGuard = shell.match(
+  /function isBrowserExtensionFailure\(message, source\) \{[\s\S]*?\n    \}/);
+assert(extensionGuard, 'missing browser-extension error guard');
+const isBrowserExtensionFailure = Function(
+  `return (${extensionGuard[0]});`)();
+assert.equal(isBrowserExtensionFailure('Failed to connect to MetaMask', ''), true,
+  'MetaMask injection failures must not replace the Halo loading screen');
+assert.equal(isBrowserExtensionFailure(
+  'Uncaught Error', 'chrome-extension://wallet/inpage.js:1:1'), true,
+  'Chrome extension stacks must remain non-fatal');
+assert.equal(isBrowserExtensionFailure(
+  'Uncaught Error', 'moz-extension://wallet/inpage.js:1:1'), true,
+  'Firefox extension stacks must remain non-fatal');
+assert.equal(isBrowserExtensionFailure(
+  'RuntimeError: unreachable', 'https://halo.example/halo.js:1:1'), false,
+  'genuine Halo runtime failures must still reach the fatal error panel');
+assert.match(shell,
+  /addEventListener\("error"[\s\S]*?isBrowserExtensionFailure\(message, source\)[\s\S]*?ignored browser extension error[\s\S]*?return;[\s\S]*?setStatus\(`Could not start:/,
+  'extension script errors must be ignored before setting fatal status');
+assert.match(shell,
+  /addEventListener\("unhandledrejection"[\s\S]*?isBrowserExtensionFailure\(message, source\)[\s\S]*?ignored browser extension rejection[\s\S]*?return;[\s\S]*?setStatus\(`Could not start:/,
+  'extension promise rejections must be ignored before setting fatal status');
+
 console.log('shell loading, focus, Tab, and controller routing tests passed');
