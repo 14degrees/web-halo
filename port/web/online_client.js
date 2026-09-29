@@ -14,6 +14,7 @@
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
   var GAME_POLL_MILLISECONDS = 200;
+  var TURNSTILE_RENDER_ATTEMPTS = 80;
   var HOST_SETTINGS_STORAGE_KEY = "halo.web.host-settings.v1";
   var PLAYER_PROFILE_STORAGE_KEY = "halo.web.player-profile.v1";
   var PLAYER_NAME_MAXIMUM_LENGTH = 11;
@@ -72,7 +73,11 @@
   var elements = {};
   var humanVerification = {
     action: null,
+    busy: false,
+    generation: 0,
+    renderAttempts: 0,
     renderTimer: 0,
+    state: "idle",
     token: null,
     widgetId: null,
   };
@@ -162,6 +167,9 @@
     elements.joinProfile = byId("online-join-profile");
     elements.joinSummary = byId("online-join-summary");
     elements.joinStatus = byId("online-join-status");
+    elements.verification = byId("online-human-verification");
+    elements.verificationStatus = byId("online-verification-status");
+    elements.verificationRetry = byId("online-verification-retry");
     elements.turnstile = byId("online-turnstile");
     elements.playerSidebar = byId("player-sidebar");
     elements.playerList = byId("player-list");
@@ -222,21 +230,73 @@
     humanVerification.renderTimer = 0;
   }
 
+  function turnstileReady(action) {
+    return !turnstileSiteKey() ||
+      (humanVerification.action === action && !!humanVerification.token);
+  }
+
+  function syncVerificationButtons() {
+    if (elements.host) {
+      elements.host.disabled = humanVerification.busy || !session.runtimeReady ||
+        !turnstileReady("create_room");
+    }
+    if (elements.joinProfile) {
+      elements.joinProfile.disabled = humanVerification.busy || !session.runtimeReady ||
+        !turnstileReady("join_room");
+    }
+  }
+
+  function setVerificationState(state, message) {
+    humanVerification.state = state;
+    if (elements.verification) {
+      elements.verification.hidden = !turnstileSiteKey();
+      elements.verification.dataset.state = state;
+    }
+    if (elements.verificationStatus) {
+      elements.verificationStatus.textContent = message || "";
+      elements.verificationStatus.hidden = !message;
+    }
+    if (elements.verificationRetry) {
+      elements.verificationRetry.hidden = state !== "error";
+    }
+    syncVerificationButtons();
+  }
+
   function resetTurnstile() {
     humanVerification.token = null;
+    if (turnstileSiteKey()) {
+      setVerificationState("loading", "Checking that you're human…");
+    }
     if (global.turnstile && humanVerification.widgetId !== null) {
       try { global.turnstile.reset(humanVerification.widgetId); } catch (error) { /* not rendered */ }
     }
   }
 
-  function renderTurnstile(action) {
+  function renderTurnstile(action, force) {
     var sitekey = turnstileSiteKey();
-    if (!sitekey || !elements.turnstile) return;
-    if (humanVerification.action === action && humanVerification.widgetId !== null) return;
+    if (!sitekey || !elements.turnstile) {
+      setVerificationState("ready", "");
+      return;
+    }
+    if (!force && humanVerification.action === action &&
+        humanVerification.widgetId !== null) return;
     clearTurnstileTimer();
+    var changedAction = humanVerification.action !== action;
     humanVerification.action = action;
     humanVerification.token = null;
+    if (changedAction || force) {
+      humanVerification.generation++;
+      humanVerification.renderAttempts = 0;
+      setVerificationState("loading", "Checking that you're human…");
+    }
     if (!global.turnstile || typeof global.turnstile.render !== "function") {
+      humanVerification.renderAttempts++;
+      if (humanVerification.renderAttempts >= TURNSTILE_RENDER_ATTEMPTS) {
+        setVerificationState(
+          "error",
+          "Human verification is taking longer than expected. Try it again.");
+        return;
+      }
       humanVerification.renderTimer = global.setTimeout(function() {
         renderTurnstile(action);
       }, 150);
@@ -247,31 +307,58 @@
       humanVerification.widgetId = null;
     }
     elements.turnstile.replaceChildren();
-    humanVerification.widgetId = global.turnstile.render(elements.turnstile, {
-      action: action,
-      appearance: "interaction-only",
-      callback: function(token) {
-        humanVerification.token = token;
-        setStatus("");
-      },
-      "error-callback": function() {
-        humanVerification.token = null;
-        setStatus("Human verification could not load. Check your connection and try again.", "error");
-      },
-      "expired-callback": function() {
-        humanVerification.token = null;
-      },
-      sitekey: sitekey,
-      size: "flexible",
-      theme: "dark",
-    });
+    var generation = humanVerification.generation;
+    try {
+      humanVerification.widgetId = global.turnstile.render(elements.turnstile, {
+        action: action,
+        appearance: "interaction-only",
+        callback: function(token) {
+          if (generation !== humanVerification.generation || humanVerification.action !== action) return;
+          humanVerification.token = token;
+          setVerificationState(
+            "ready",
+            action === "join_room" ? "Verified — ready to join." : "Verified — ready to create your link.");
+          setStatus("");
+        },
+        "error-callback": function() {
+          if (generation !== humanVerification.generation) return;
+          humanVerification.token = null;
+          setVerificationState(
+            "error",
+            "We couldn't verify you this time. Check your connection and try again.");
+        },
+        "expired-callback": function() {
+          if (generation !== humanVerification.generation) return;
+          humanVerification.token = null;
+          setVerificationState("loading", "Verification expired — checking again…");
+          try {
+            global.turnstile.reset(humanVerification.widgetId);
+          } catch (error) {
+            setVerificationState("error", "Verification expired. Try it again.");
+          }
+        },
+        "timeout-callback": function() {
+          if (generation !== humanVerification.generation) return;
+          humanVerification.token = null;
+          setVerificationState("error", "Human verification timed out. Try it again.");
+        },
+        sitekey: sitekey,
+        size: "flexible",
+        theme: "dark",
+      });
+    } catch (error) {
+      humanVerification.widgetId = null;
+      setVerificationState("error", "Human verification could not start. Try it again.");
+    }
   }
 
   function consumeTurnstile(action) {
     if (!turnstileSiteKey()) return null;
     if (humanVerification.action !== action || !humanVerification.token) {
       renderTurnstile(action);
-      throw new Error("Complete the quick human verification first.");
+      throw new Error(humanVerification.state === "error" ?
+        "Use Try again to restart human verification." :
+        "One moment — human verification is still finishing.");
     }
     var token = humanVerification.token;
     humanVerification.token = null;
@@ -312,7 +399,7 @@
   }
 
   function setBusy(busy) {
-    elements.host.disabled = !!busy || !session.runtimeReady;
+    humanVerification.busy = !!busy;
     elements.map.disabled = !!busy;
     elements.mode.disabled = !!busy;
     setPickerLocked(elements.mapOptions, "halo-map-choice", !!busy);
@@ -321,7 +408,7 @@
     elements.code.disabled = !!busy;
     if (elements.mapNext) elements.mapNext.disabled = !!busy;
     if (elements.modeBack) elements.modeBack.disabled = !!busy;
-    if (elements.joinProfile) elements.joinProfile.disabled = !!busy || !session.runtimeReady;
+    syncVerificationButtons();
     setProfileLocked(!!busy || session.active);
   }
 
@@ -806,7 +893,10 @@
         (result.error.message || (typeof result.error === "string" && result.error));
       if (response.status === 404) message = "That invite expired or is not valid.";
       if (response.status === 409 && !message) message = "That room is full or no longer available.";
-      throw new Error(message || "The private-room service rejected the request.");
+      var requestError = new Error(message || "The private-room service rejected the request.");
+      requestError.haloCode = result && result.error && result.error.code;
+      requestError.haloStatus = response.status;
+      throw requestError;
     }
     return result;
   }
@@ -1338,6 +1428,22 @@
     }
   }
 
+  function isTurnstileRejection(error) {
+    return error && error.haloStatus === 403 && error.haloCode === "TURNSTILE_REJECTED";
+  }
+
+  async function recoverTurnstile(action, invite) {
+    resetTurnstile();
+    await leave(false);
+    showDialog();
+    if (action === "join_room") showJoinConfirmation(invite);
+    else showSetup();
+    setVerificationState(
+      "error",
+      "We couldn't verify you this time. Try again — you won't need to refresh.");
+    setBusy(false);
+  }
+
   async function host(value, turnstileToken) {
     if (!session.runtimeReady) throw new Error("Halo is still starting.");
     var settings = normalizeHostSettings(value);
@@ -1356,6 +1462,7 @@
     setBusy(true);
     setHeader("Opening room…", "waiting");
     setStatus("Preparing " + hostSettingsLabel() + "…");
+    var recoveredVerification = false;
     try {
       var roomRequest = {
         protocolVersion: PROTOCOL_VERSION,
@@ -1396,10 +1503,15 @@
       setStatus("Opening Halo's lobby with " + hostSettingsLabel() + "…");
     } catch (error) {
       if (operation === session.operationGeneration && (!error || !error.haloCanceled)) {
-        fail(error);
+        if (isTurnstileRejection(error)) {
+          recoveredVerification = true;
+          await recoverTurnstile("create_room");
+        } else {
+          fail(error);
+        }
       }
     } finally {
-      resetTurnstile();
+      if (!recoveredVerification) resetTurnstile();
       if (operation === session.operationGeneration) setBusy(false);
     }
   }
@@ -1415,6 +1527,7 @@
     await leave(false);
     var operation = ++session.operationGeneration;
     var invite;
+    var recoveredVerification = false;
     try {
       invite = parseInvite(value);
     } catch (error) {
@@ -1448,10 +1561,15 @@
       setStatus("Room found. Connecting directly to your friend…");
     } catch (error) {
       if (operation === session.operationGeneration && (!error || !error.haloCanceled)) {
-        fail(error);
+        if (isTurnstileRejection(error)) {
+          recoveredVerification = true;
+          await recoverTurnstile("join_room", value);
+        } else {
+          fail(error);
+        }
       }
     } finally {
-      resetTurnstile();
+      if (!recoveredVerification) resetTurnstile();
       if (operation === session.operationGeneration) setBusy(false);
     }
   }
@@ -1731,6 +1849,14 @@
         } catch (error) {
           setStatus(error.message, "error");
         }
+      });
+    }
+    if (elements.verificationRetry) {
+      elements.verificationRetry.addEventListener("click", function() {
+        var action = elements.dialog && elements.dialog.dataset.view === "join" ?
+          "join_room" : "create_room";
+        setStatus("");
+        renderTurnstile(action, true);
       });
     }
     var updateProfilePreview = function() {

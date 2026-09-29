@@ -498,18 +498,87 @@
       text-align: center;
     }
     .profile-join-action button { width: 100%; min-height: 2.7rem; }
-    .turnstile-slot {
+    .human-verification {
       width: 100%;
-      min-height: 65px;
       display: grid;
-      place-items: center;
+      gap: .42rem;
       margin-top: auto;
     }
-    .turnstile-slot:empty::before {
-      content: "Checking connection…";
-      color: rgba(181, 212, 233, .62);
+    .turnstile-slot {
+      width: 100%;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+    }
+    .verification-feedback {
+      min-height: 1.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: .55rem;
+      padding: .34rem .55rem;
+      border: 1px solid rgba(76, 171, 226, .2);
+      border-radius: .35rem;
+      background: rgba(4, 28, 48, .54);
+    }
+    .verification-status {
+      display: inline-flex;
+      align-items: center;
+      gap: .38rem;
+      color: rgba(188, 218, 237, .84);
       font-size: .72rem;
       letter-spacing: .04em;
+    }
+    .verification-status::before {
+      content: "";
+      width: .55rem;
+      height: .55rem;
+      flex: 0 0 auto;
+      border: 1px solid rgba(91, 190, 248, .32);
+      border-top-color: #67c9ff;
+      border-radius: 50%;
+      animation: verification-spin .8s linear infinite;
+    }
+    .human-verification[data-state="ready"] .verification-feedback {
+      border-color: rgba(104, 213, 154, .28);
+      background: rgba(7, 54, 38, .42);
+    }
+    .human-verification[data-state="ready"] .verification-status { color: #a7e6c1; }
+    .human-verification[data-state="ready"] .verification-status::before {
+      content: "✓";
+      width: auto;
+      height: auto;
+      border: 0;
+      color: #70d99d;
+      font-size: .82rem;
+      line-height: 1;
+      animation: none;
+    }
+    .human-verification[data-state="error"] .verification-feedback {
+      border-color: rgba(255, 177, 94, .34);
+      background: rgba(66, 35, 8, .45);
+    }
+    .human-verification[data-state="error"] .verification-status { color: #ffd4a4; }
+    .human-verification[data-state="error"] .verification-status::before {
+      content: "!";
+      width: auto;
+      height: auto;
+      border: 0;
+      color: #ffbd73;
+      font-weight: 800;
+      animation: none;
+    }
+    .verification-retry {
+      min-height: 1.7rem;
+      padding: .24rem .58rem;
+      border-color: rgba(255, 195, 127, .4);
+      color: #ffe1bf;
+      font-size: .68rem;
+      white-space: nowrap;
+    }
+    @keyframes verification-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .verification-status::before { animation: none; }
     }
     #online-join-summary { margin: 0; color: #adbec6; font-size: .82rem; line-height: 1.45; }
     #online-dialog[data-view="join"] {
@@ -1372,7 +1441,13 @@
             <label class="style-choice" data-style="rose" title="Rose"><input type="radio" name="player-style" value="rose"><span class="style-swatch"></span><span class="sr-only">Rose</span></label>
           </div>
         </fieldset>
-        <div id="online-turnstile" class="turnstile-slot" aria-label="Human verification"></div>
+        <div id="online-human-verification" class="human-verification" data-state="loading">
+          <div id="online-turnstile" class="turnstile-slot" aria-label="Human verification"></div>
+          <div class="verification-feedback">
+            <span id="online-verification-status" class="verification-status" role="status">Checking that you're human…</span>
+            <button id="online-verification-retry" class="verification-retry" type="button" hidden>Try again</button>
+          </div>
+        </div>
         <div id="online-join-confirm" class="profile-join-action" hidden>
           <div id="online-join-status" class="online-status" role="status" hidden></div>
           <p id="online-join-summary">Choose your name and armor, then join your friend.</p>
