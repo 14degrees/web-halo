@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Stage the browser build and multiplayer maps for Cloudflare Assets.
+
+Campaign maps exceed the Static Assets per-file limit. The hosting Worker
+streams those maps from the R2 bucket configured in services/web/wrangler.jsonc.
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+from pathlib import Path
+
+
+MAX_ASSET_BYTES = 25 * 1024 * 1024
+MULTIPLAYER_MAPS = (
+    "beavercreek.map",
+    "bloodgulch.map",
+    "boardingaction.map",
+    "carousel.map",
+    "chillout.map",
+    "damnation.map",
+    "hangemhigh.map",
+    "longest.map",
+    "prisoner.map",
+    "putput.map",
+    "ratrace.map",
+    "sidewinder.map",
+    "wizard.map",
+)
+
+HEADERS = """/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  Cache-Control: public, max-age=0, must-revalidate
+
+/assets/maps/*
+  Content-Type: application/octet-stream
+"""
+
+
+def checked_copy(source: Path, destination: Path) -> int:
+    if not source.is_file():
+        raise FileNotFoundError(f"required web asset is missing: {source}")
+    size = source.stat().st_size
+    if size > MAX_ASSET_BYTES:
+        raise ValueError(
+            f"{source.name} is {size:,} bytes; Cloudflare Assets allows "
+            f"at most {MAX_ASSET_BYTES:,} bytes per file"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return size
+
+
+def main() -> int:
+    repository = Path(__file__).resolve().parents[1]
+    web_build = repository / "build" / "web"
+    maps = repository / "assets" / "maps"
+    output = repository / "build" / "cloudflare-web"
+
+    if output.exists():
+        shutil.rmtree(output)
+    output.mkdir(parents=True)
+
+    total = 0
+    for name in (
+        "halo.html",
+        "halo.js",
+        "halo.wasm",
+    ):
+        total += checked_copy(web_build / name, output / name)
+
+    # Cloudflare serves index.html for the root URL. Keep halo.html too so old
+    # invite links and the local development URL continue to work.
+    total += checked_copy(web_build / "halo.html", output / "index.html")
+
+    for name in ("ui.map", *MULTIPLAYER_MAPS):
+        total += checked_copy(maps / name, output / "assets" / "maps" / name)
+
+    ui_assets = repository / "port" / "web" / "assets" / "ui"
+    if not ui_assets.is_dir():
+        raise FileNotFoundError(f"required web asset directory is missing: {ui_assets}")
+    for source in sorted(path for path in ui_assets.rglob("*") if path.is_file()):
+        total += checked_copy(
+            source,
+            output / "assets" / "ui" / source.relative_to(ui_assets),
+        )
+
+    (output / "_headers").write_text(HEADERS, encoding="utf-8")
+    print(
+        f"Staged {total / (1024 * 1024):.1f} MiB of browser assets in {output}",
+        flush=True,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (FileNotFoundError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(1)
