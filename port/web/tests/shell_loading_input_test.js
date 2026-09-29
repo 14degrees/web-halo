@@ -65,6 +65,8 @@ assert.match(shell, /#game-frame footer \{[\s\S]*?background: transparent;/,
   'the controls must not render inside a full-width bottom bar');
 assert.match(shell, /#game-area:fullscreen #game-frame footer \{\s*display: none;/,
   'fullscreen must hide the under-screen control row');
+assert.match(shell, /#game-area:fullscreen #game-frame::before \{\s*display: none;/,
+  'fullscreen must hide the decorative website HUD overlay');
 assert.match(shell,
   /#game-area:fullscreen #player-sidebar,\s*#game-area:fullscreen #duke-legend \{ display: none; \}/,
   'fullscreen must hide the online sidebar and Duke legend');

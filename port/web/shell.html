@@ -939,6 +939,9 @@
       max-height: 100%;
       transform: none;
     }
+    #game-area:fullscreen #game-frame::before {
+      display: none;
+    }
     #game-area:fullscreen canvas.emscripten.ready {
       position: absolute;
       inset: 0;
