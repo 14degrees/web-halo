@@ -13,6 +13,11 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Keep the browser platform unit on host libc headers. These two game-side
+ * exports use the Xbox ABI's byte boolean and float real types. */
+extern unsigned char game_map_loading_in_progress(float *progress);
+extern const char *game_map_loading_name(void);
+
 static const char *const map_files[] =
 {
 	"a10.map", "a30.map", "a50.map", "b30.map", "b40.map", "c10.map",
@@ -30,6 +35,54 @@ EMSCRIPTEN_KEEPALIVE void platform_web_set_muted(int muted)
 EMSCRIPTEN_KEEPALIVE double platform_web_profile_memory_bytes(void)
 {
 	return (double)emscripten_get_heap_size();
+}
+
+EMSCRIPTEN_KEEPALIVE double platform_web_campaign_load_progress(void)
+{
+	float progress = 0.0f;
+
+	if (!game_map_loading_in_progress(&progress))
+		return -1.0;
+	if (progress < 0.0f)
+		return 0.0;
+	if (progress > 1.0f)
+		return 1.0;
+	return progress;
+}
+
+EMSCRIPTEN_KEEPALIVE double platform_web_map_load_progress(void)
+{
+	return platform_web_campaign_load_progress();
+}
+
+EMSCRIPTEN_KEEPALIVE long platform_web_campaign_load_index(void)
+{
+	const char *name = game_map_loading_name();
+	char file_name[40];
+	unsigned long index;
+
+	snprintf(file_name, sizeof(file_name), "%s.map", name);
+	for (index = 0; index < 10; index++)
+	{
+		if (!strcmp(file_name, map_files[index]))
+			return (long)index;
+	}
+	return -1;
+}
+
+EMSCRIPTEN_KEEPALIVE long platform_web_map_load_index(void)
+{
+	const char *name = game_map_loading_name();
+	char file_name[40];
+	unsigned long index;
+
+	snprintf(file_name, sizeof(file_name), "%s.map", name);
+	for (index = 0; index < sizeof(map_files) / sizeof(map_files[0]); index++)
+	{
+		if (!strcmp(file_name, map_files[index]))
+			return (long)index;
+	}
+	return -1;
 }
 
 void platform_web_initialize(void)

@@ -257,7 +257,9 @@ void terminal_draw(
 			rasterizer_draw_string(&terminal_gets_bounds, NULL, NULL, 0, buffer);
 		}
 
-		if (terminal_render_enable)
+		/* Web builds hide routine terminal chatter during normal play, but the
+		 * backquote console is unusable if its command output stays hidden too. */
+		if (terminal_render_enable || terminal_globals.input_state)
 		{
 			struct output_line_datum *line;
 			long line_index;

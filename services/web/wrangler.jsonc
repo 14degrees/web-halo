@@ -20,6 +20,14 @@
     {
       "binding": "PERFORMANCE_TELEMETRY",
       "dataset": "halo_web_performance"
+    },
+    {
+      "binding": "CAMPAIGN_TELEMETRY",
+      "dataset": "halo_web_campaign_loads"
+    },
+    {
+      "binding": "RUNTIME_TELEMETRY",
+      "dataset": "halo_web_runtime"
     }
   ],
   "observability": {

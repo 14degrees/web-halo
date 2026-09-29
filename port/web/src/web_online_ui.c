@@ -248,6 +248,13 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_get_transport_state(void)
 	return atomic_load_explicit(&web_online_transport_state, memory_order_acquire);
 }
 
+EMSCRIPTEN_KEEPALIVE int platform_web_online_get_client_state(void)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	return client ? network_game_client_get_state(client, NULL) : WEB_NONE;
+}
+
 static void apply_requested_player_customization(void)
 {
 	int i;

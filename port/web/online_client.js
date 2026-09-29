@@ -123,6 +123,20 @@
     return document.getElementById(id);
   }
 
+  function syncTelemetryContext() {
+    if (!global.HaloTelemetry || typeof global.HaloTelemetry.setContext !== "function") return;
+    global.HaloTelemetry.setContext({
+      role: session.role === "host" ? "host" : (session.role === "guest" ? "guest" : "offline"),
+      connection: session.connectionPath || "unknown",
+    });
+  }
+
+  function telemetry(event, stage) {
+    if (global.HaloTelemetry && typeof global.HaloTelemetry.event === "function") {
+      global.HaloTelemetry.event(event, stage);
+    }
+  }
+
   function collectElements() {
     elements.button = byId("online");
     elements.dialog = byId("online-dialog");
@@ -1144,6 +1158,8 @@
       session.connectionPath =
         (local && local.candidateType === "relay") ||
         (remote && remote.candidateType === "relay") ? "relay" : "direct";
+      syncTelemetryContext();
+      telemetry("transport_connected", session.connectionPath);
       elements.detail.textContent = session.connectionPath === "relay" ?
         "Connected through a privacy-compatible relay" :
         "Connected directly peer-to-peer";
@@ -1160,6 +1176,7 @@
     if (message.type === "welcome") {
       session.selfPeerId = message.self && message.self.peerId;
       session.role = message.self && message.self.role;
+      syncTelemetryContext();
       updateLocalRoster();
       var peers = Array.isArray(message.peers) ? message.peers : [];
       await Promise.all(peers.map(function(peer) {
@@ -1454,6 +1471,7 @@
     var operation = ++session.operationGeneration;
     session.active = true;
     session.role = "host";
+    syncTelemetryContext();
     session.hostSettings = settings;
     session.closing = false;
     renderRoster();
@@ -1536,6 +1554,7 @@
     }
     session.active = true;
     session.role = "guest";
+    syncTelemetryContext();
     session.closing = false;
     session.room = { id: invite.roomId };
     session.roomTicket = invite.ticket;
@@ -1664,6 +1683,7 @@
     session.guestWasJoined = false;
     session.pendingInvite = null;
     session.wizardStep = "map";
+    syncTelemetryContext();
     renderRoster();
   }
 
@@ -1716,6 +1736,7 @@
 
   function fail(error) {
     var message = error && error.message ? error.message : "Online play failed.";
+    telemetry("online_error", "online");
     var wasActive = session.active;
     leave(false).then(function() {
       showDialog();

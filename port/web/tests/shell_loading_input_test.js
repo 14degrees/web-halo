@@ -8,6 +8,17 @@ const webDirectory = path.join(__dirname, '..');
 const shell = fs.readFileSync(path.join(webDirectory, 'shell.html'), 'utf8');
 const xinput = fs.readFileSync(
   path.join(webDirectory, '..', 'linux', 'src', 'xinput_sdl.c'), 'utf8');
+const repository = path.join(webDirectory, '..', '..');
+const terminal = fs.readFileSync(
+  path.join(repository, 'source', 'interface', 'terminal.c'), 'utf8');
+const webPlatform = fs.readFileSync(
+  path.join(webDirectory, 'src', 'web_platform.c'), 'utf8');
+const webOnlineUi = fs.readFileSync(
+  path.join(webDirectory, 'src', 'web_online_ui.c'), 'utf8');
+const worker = fs.readFileSync(
+  path.join(repository, 'services', 'web', 'src', 'index.js'), 'utf8');
+const wrangler = fs.readFileSync(
+  path.join(repository, 'services', 'web', 'wrangler.jsonc'), 'utf8');
 
 const loading = shell.match(/<section id="loading"[\s\S]*?<\/section>/);
 assert(loading, 'missing loading overlay');
@@ -90,14 +101,35 @@ assert.match(xinput,
   /if \(count > 0\)\s+sdl_gamepad_state\(gamepads\[0\], &state->Gamepad\);/,
   'the first physical controller must merge into Halo player one');
 assert.match(shell,
-  /function refreshControllerStatus\(\)[\s\S]*?navigator\.getGamepads[\s\S]*?Player 1[\s\S]*?controllers detected/,
-  'the shell must continuously report connected browser controllers');
+  /function connectedGamepads\(\)[\s\S]*?try[\s\S]*?navigator\.getGamepads\(\) \|\| \[\][\s\S]*?catch[\s\S]*?function refreshControllerStatus\(\)[\s\S]*?Player 1[\s\S]*?controllers detected/,
+  'controller discovery must be guarded and continuously report connected controllers');
 assert.match(shell,
   /gamepadconnected", refreshControllerStatus[\s\S]*?gamepaddisconnected", refreshControllerStatus/,
   'controller status must update for hot-plug and disconnect events');
 assert.match(shell,
   /controllerSummary[\s\S]*?mouse capture optional/,
   'a controller must remain usable without mouse capture');
+assert.match(terminal, /terminal_render_enable \|\| terminal_globals\.input_state/,
+  'backquote console output must be visible while its input is active');
+assert.match(webPlatform, /platform_web_map_load_progress/);
+assert.match(webPlatform, /platform_web_map_load_index/);
+assert.match(webOnlineUi, /platform_web_online_get_client_state/);
+assert.match(shell,
+  /function sendRuntimeTelemetry\([\s\S]*?\/v1\/telemetry\/runtime[\s\S]*?function updateRuntimeTelemetry\([\s\S]*?map_load_stalled/,
+  'startup, online and map-load milestones must reach runtime telemetry');
+assert.match(worker, /RUNTIME_ROUTE = "\/v1\/telemetry\/runtime"[\s\S]*?RUNTIME_TELEMETRY/,
+  'the Worker must accept runtime telemetry');
+assert.match(wrangler, /"binding": "RUNTIME_TELEMETRY"[\s\S]*?"dataset": "halo_web_runtime"/,
+  'runtime telemetry needs an Analytics Engine binding');
+
+const rendererClassifier = shell.match(
+  /function classifyRenderer\(value\) \{[\s\S]*?\n    \}/);
+assert(rendererClassifier, 'missing normalized renderer classification');
+const classifyRenderer = Function(`return (${rendererClassifier[0]});`)();
+assert.equal(classifyRenderer('ANGLE (Google, Vulkan SwiftShader)'), 'software');
+assert.equal(classifyRenderer('ANGLE Metal Renderer: Apple M3'), 'apple');
+assert.match(shell, /Graphics acceleration appears to be off/,
+  'software rendering needs an actionable loading hint');
 
 const extensionGuard = shell.match(
   /function isBrowserExtensionFailure\(message, source\) \{[\s\S]*?\n    \}/);

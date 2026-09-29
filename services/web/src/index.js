@@ -19,7 +19,22 @@ const SECURITY_HEADERS = Object.freeze({
   "X-Content-Type-Options": "nosniff",
 });
 const PERFORMANCE_ROUTE = "/v1/telemetry/performance";
+const CAMPAIGN_ROUTE = "/v1/telemetry/campaign";
+const RUNTIME_ROUTE = "/v1/telemetry/runtime";
 const MAX_TELEMETRY_BODY_BYTES = 8_192;
+const CAMPAIGN_OUTCOMES = new Set(["completed", "abandoned", "superseded"]);
+const RUNTIME_EVENTS = new Set([
+  "page_loaded", "renderer_ready", "runtime_initialized", "game_presented",
+  "startup_slow", "startup_stalled", "controller_connected", "controller_unavailable",
+  "webgl_context_lost", "runtime_abort", "runtime_error", "map_load_started",
+  "map_load_slow", "map_load_stalled", "map_load_completed", "online_state",
+  "transport_connected", "online_error",
+]);
+const RUNTIME_GPU_CLASSES = new Set([
+  "unknown", "other", "software", "nvidia", "amd", "intel", "apple", "qualcomm", "arm",
+]);
+const RUNTIME_ROLES = new Set(["offline", "host", "guest", "unknown"]);
+const RUNTIME_CONNECTIONS = new Set(["direct", "relay", "unknown"]);
 
 function secureHeaders(initial) {
   const headers = new Headers(initial);
@@ -112,6 +127,120 @@ async function recordPerformance(request, env) {
     doubles: [
       body.avgFps, body.minFps, body.p95Fps, body.avgCpuMs, body.p95CpuMs,
       body.memoryBytes, body.sampleCount, body.durationMs, body.dpr,
+    ],
+    indexes: [body.sessionId],
+  });
+  return new Response(null, { status: 204, headers: secureHeaders({ "Cache-Control": "no-store" }) });
+}
+
+async function recordRuntime(request, env) {
+  if (request.method !== "POST") {
+    return new Response("Method not allowed.\n", { status: 405, headers: secureHeaders({ Allow: "POST" }) });
+  }
+  let body;
+  try {
+    body = await boundedJson(request, MAX_TELEMETRY_BODY_BYTES);
+  } catch {
+    return new Response("Invalid telemetry.\n", { status: 400, headers: secureHeaders() });
+  }
+  if (
+    !body || typeof body !== "object" || Array.isArray(body) ||
+    !shortString(body.sessionId, 64) || !shortString(body.buildId, 96) ||
+    !RUNTIME_EVENTS.has(body.event) || !shortString(body.stage, 32) ||
+    !RUNTIME_GPU_CLASSES.has(body.gpuClass) || !RUNTIME_ROLES.has(body.role) ||
+    !RUNTIME_CONNECTIONS.has(body.connection) ||
+    !finiteNumber(body.elapsedMs, 0, 604_800_000) ||
+    !finiteNumber(body.loops, 0, 1e12) || !finiteNumber(body.swaps, 0, 1e12) ||
+    !finiteNumber(body.memoryBytes, 0, 8 * 1024 ** 3) ||
+    !finiteNumber(body.controllerCount, 0, 16) ||
+    !finiteNumber(body.mapIndex, -1, 127) || !finiteNumber(body.clientState, -1, 16) ||
+    !finiteNumber(body.onlineState, -1, 16) ||
+    !finiteNumber(body.viewportWidth, 1, 32_768) || !finiteNumber(body.viewportHeight, 1, 32_768) ||
+    !finiteNumber(body.dpr, 0.25, 16)
+  ) {
+    return new Response("Invalid telemetry.\n", { status: 400, headers: secureHeaders() });
+  }
+  const cf = request.cf || {};
+  const platform = shortString(body.platform, 48) ? body.platform : "unknown";
+  env.RUNTIME_TELEMETRY.writeDataPoint({
+    blobs: [
+      body.buildId,
+      body.event,
+      body.stage,
+      browserFamily(request.headers.get("User-Agent") || ""),
+      platform,
+      body.mobile ? "mobile" : "desktop",
+      body.gpuClass,
+      body.role,
+      body.connection,
+      typeof cf.country === "string" ? cf.country : "unknown",
+      typeof cf.colo === "string" ? cf.colo : "unknown",
+      `${Math.round(body.viewportWidth)}x${Math.round(body.viewportHeight)}`,
+    ],
+    doubles: [
+      body.elapsedMs, body.loops, body.swaps, body.memoryBytes, body.controllerCount,
+      body.mapIndex, body.clientState, body.onlineState, body.dpr, 1,
+    ],
+    indexes: [body.sessionId],
+  });
+  return new Response(null, { status: 204, headers: secureHeaders({ "Cache-Control": "no-store" }) });
+}
+
+async function recordCampaignLoad(request, env) {
+  if (request.method !== "POST") {
+    return new Response("Method not allowed.\n", { status: 405, headers: secureHeaders({ Allow: "POST" }) });
+  }
+  let body;
+  try {
+    body = await boundedJson(request, MAX_TELEMETRY_BODY_BYTES);
+  } catch {
+    return new Response("Invalid telemetry.\n", { status: 400, headers: secureHeaders() });
+  }
+  if (
+    !body || typeof body !== "object" || Array.isArray(body) ||
+    !shortString(body.sessionId, 64) || !shortString(body.loadId, 64) ||
+    !shortString(body.buildId, 96) ||
+    !shortString(body.map, 3) || !CAMPAIGN_MAP_NAMES.includes(`${body.map}.map`) ||
+    !CAMPAIGN_OUTCOMES.has(body.outcome) ||
+    !finiteNumber(body.durationMs, 0, 3_600_000) ||
+    !finiteNumber(body.downloadMs, 0, 3_600_000) ||
+    !finiteNumber(body.prepareMs, 0, 3_600_000) ||
+    !finiteNumber(body.maxProgress, 0, 1) ||
+    !finiteNumber(body.sampleCount, 1, 100_000) ||
+    !finiteNumber(body.longestStallMs, 0, 3_600_000) ||
+    !finiteNumber(body.memoryBytes, 0, 8 * 1024 ** 3) ||
+    !finiteNumber(body.viewportWidth, 1, 32_768) ||
+    !finiteNumber(body.viewportHeight, 1, 32_768) ||
+    !finiteNumber(body.dpr, 0.25, 16)
+  ) {
+    return new Response("Invalid telemetry.\n", { status: 400, headers: secureHeaders() });
+  }
+  const cf = request.cf || {};
+  const platform = shortString(body.platform, 48) ? body.platform : "unknown";
+  const connection = shortString(body.connection, 16) ? body.connection : "unknown";
+  env.CAMPAIGN_TELEMETRY.writeDataPoint({
+    blobs: [
+      body.buildId,
+      body.map,
+      body.outcome,
+      browserFamily(request.headers.get("User-Agent") || ""),
+      platform,
+      body.mobile ? "mobile" : "desktop",
+      connection,
+      typeof cf.country === "string" ? cf.country : "unknown",
+      typeof cf.colo === "string" ? cf.colo : "unknown",
+      `${Math.round(body.viewportWidth)}x${Math.round(body.viewportHeight)}`,
+      body.loadId,
+    ],
+    doubles: [
+      body.durationMs,
+      body.downloadMs,
+      body.prepareMs,
+      body.maxProgress,
+      body.sampleCount,
+      body.longestStallMs,
+      body.memoryBytes,
+      body.dpr,
     ],
     indexes: [body.sessionId],
   });
@@ -256,6 +385,12 @@ export default {
     const pathname = new URL(request.url).pathname;
     if (pathname === PERFORMANCE_ROUTE) {
       return recordPerformance(request, env);
+    }
+    if (pathname === CAMPAIGN_ROUTE) {
+      return recordCampaignLoad(request, env);
+    }
+    if (pathname === RUNTIME_ROUTE) {
+      return recordRuntime(request, env);
     }
     const name = campaignMapName(pathname);
     if (!name) {

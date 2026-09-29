@@ -505,10 +505,17 @@
       margin-top: auto;
     }
     .turnstile-slot {
+      position: relative;
+      z-index: 0;
       width: 100%;
       min-height: 0;
       display: grid;
+      overflow: hidden;
       place-items: center;
+    }
+    .human-verification[data-state="ready"] .turnstile-slot {
+      height: 0;
+      pointer-events: none;
     }
     .verification-feedback {
       min-height: 1.8rem;
@@ -593,6 +600,13 @@
       overflow: hidden auto;
       border-right: 0;
       border-bottom: 0;
+    }
+    #online-dialog[data-view="join"] .profile-join-action {
+      position: sticky;
+      bottom: -.1rem;
+      z-index: 2;
+      padding-bottom: .15rem;
+      background: linear-gradient(180deg, rgba(2, 13, 31, 0), rgba(2, 13, 31, .98) 28%);
     }
     #online-dialog[data-view="join"] .spartan-preview { height: 20rem; }
     #player-sidebar {
@@ -822,6 +836,48 @@
       clip-path: polygon(1.1rem 0, calc(100% - 1.1rem) 0, 100% 1.1rem, 100% calc(100% - 1.1rem), calc(100% - 1.1rem) 100%, 1.1rem 100%, 0 calc(100% - 1.1rem), 0 1.1rem);
       transform: scaleY(-1);
     }
+    #campaign-loading {
+      position: absolute;
+      left: 50%;
+      bottom: 3.4rem;
+      z-index: 4;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: .35rem .8rem;
+      width: min(24rem, calc(100% - 2rem));
+      padding: .62rem .75rem;
+      border: 1px solid rgba(255, 255, 255, .2);
+      color: #fff;
+      background: rgba(0, 0, 0, .9);
+      box-shadow: 0 .6rem 2rem rgba(0, 0, 0, .45);
+      font-size: .72rem;
+      line-height: 1.25;
+      pointer-events: none;
+      translate: -50% 0;
+    }
+    #campaign-loading[hidden] { display: none; }
+    #campaign-loading-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #campaign-loading-percent {
+      color: rgba(255, 255, 255, .72);
+      font-variant-numeric: tabular-nums;
+    }
+    #campaign-loading progress {
+      grid-column: 1 / -1;
+      width: 100%;
+      height: 2px;
+      margin: 0;
+      border: 0;
+      accent-color: #fff;
+      background: rgba(255, 255, 255, .18);
+    }
+    #campaign-loading progress::-webkit-progress-bar { background: rgba(255, 255, 255, .18); }
+    #campaign-loading progress::-webkit-progress-value { background: #fff; box-shadow: none; }
+    #campaign-loading progress::-moz-progress-bar { background: #fff; }
     #game-frame footer {
       position: relative;
       z-index: 2;
@@ -895,6 +951,7 @@
     #game-area:fullscreen #game-frame footer {
       display: none;
     }
+    #game-area:fullscreen #campaign-loading { bottom: 1.25rem; }
     #game-area:fullscreen #player-sidebar,
     #game-area:fullscreen #duke-legend { display: none; }
 
@@ -1282,6 +1339,11 @@
       <canvas class="emscripten" id="canvas" width="1280" height="720"
               tabindex="-1" aria-label="Halo game display"
               oncontextmenu="event.preventDefault()"></canvas>
+      <div id="campaign-loading" role="status" aria-live="polite" hidden>
+        <span id="campaign-loading-label">Loading campaign…</span>
+        <span id="campaign-loading-percent">0%</span>
+        <progress id="campaign-loading-progress" value="0" max="100"></progress>
+      </div>
       <footer>
         <div class="game-controls" aria-label="Game controls">
           <button id="mute" class="control-button is-muted" type="button" aria-pressed="true" aria-label="Unmute game">
@@ -1555,6 +1617,10 @@
     const loadingElement = document.getElementById("loading");
     const loadingLabel = document.getElementById("loading-label");
     const progressElement = document.getElementById("progress");
+    const campaignLoadingElement = document.getElementById("campaign-loading");
+    const campaignLoadingLabel = document.getElementById("campaign-loading-label");
+    const campaignLoadingPercent = document.getElementById("campaign-loading-percent");
+    const campaignLoadingProgress = document.getElementById("campaign-loading-progress");
     const isolationWarning = document.getElementById("isolation-warning");
     const diagnosticsElement = document.getElementById("diagnostics");
     const diagnosticsOverlay = document.getElementById("diagnostics-overlay");
@@ -1584,6 +1650,33 @@
     const telemetrySamples = [];
     const telemetryStartedAt = performance.now();
     let telemetryLastFlush = telemetryStartedAt;
+    let runtimeStage = "page";
+    let runtimeGpuClass = "unknown";
+    let runtimeRole = "offline";
+    let runtimeConnection = "unknown";
+    let runtimeMapLoad = null;
+    let runtimeOnlineState = null;
+    let runtimeClientState = null;
+    let connectedControllerCount = 0;
+    let gamepadDiscoveryFailed = false;
+    const runtimeMapNames = [
+      "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",
+      "beavercreek", "bloodgulch", "boardingaction", "carousel", "chillout", "damnation",
+      "hangemhigh", "longest", "prisoner", "putput", "ratrace", "sidewinder", "ui", "wizard",
+    ];
+    const campaignMissions = [
+      ["a10", "The Pillar of Autumn"],
+      ["a30", "Halo"],
+      ["a50", "The Truth and Reconciliation"],
+      ["b30", "The Silent Cartographer"],
+      ["b40", "Assault on the Control Room"],
+      ["c10", "343 Guilty Spark"],
+      ["c20", "The Library"],
+      ["c40", "Two Betrayals"],
+      ["d20", "Keyes"],
+      ["d40", "The Maw"],
+    ];
+    let campaignLoad = null;
     const performanceMinimumWindow = 750;
     const performanceMaximumWindow = 2500;
 
@@ -1602,6 +1695,135 @@
           ? Module.HEAPU8.buffer.byteLength : 0);
       return Math.max(0, js) + Math.max(0, wasm);
     }
+
+    function telemetryBuildId() {
+      const meta = document.querySelector('meta[name="halo-build-id"]');
+      return meta && meta.content ? meta.content : "unknown";
+    }
+
+    function moduleMetric(name, fallback = -1) {
+      const fn = typeof Module !== "undefined" && Module[name];
+      if (typeof fn !== "function") return fallback;
+      try {
+        const value = Number(fn());
+        return Number.isFinite(value) ? value : fallback;
+      } catch (_error) {
+        return fallback;
+      }
+    }
+
+    function classifyRenderer(value) {
+      const renderer = String(value || "").toLowerCase();
+      if (/swiftshader|llvmpipe|software raster|software renderer/u.test(renderer)) return "software";
+      if (/nvidia|geforce/u.test(renderer)) return "nvidia";
+      if (/\bamd\b|radeon/u.test(renderer)) return "amd";
+      if (/\bintel\b/u.test(renderer)) return "intel";
+      if (/apple|metal/u.test(renderer)) return "apple";
+      if (/qualcomm|adreno/u.test(renderer)) return "qualcomm";
+      if (/\barm\b|mali/u.test(renderer)) return "arm";
+      return renderer ? "other" : "unknown";
+    }
+
+    function sendRuntimeTelemetry(event, stage = runtimeStage, details = {}) {
+      if (/^(localhost|127\.0\.0\.1)$/u.test(location.hostname)) return;
+      const payload = JSON.stringify({
+        sessionId: telemetrySessionId,
+        buildId: telemetryBuildId(),
+        event,
+        stage: String(stage || "unknown").slice(0, 32),
+        gpuClass: runtimeGpuClass,
+        role: runtimeRole,
+        connection: runtimeConnection,
+        elapsedMs: performance.now() - telemetryStartedAt,
+        loops: moduleMetric("_platform_web_profile_loops", 0),
+        swaps: moduleMetric("_platform_web_profile_swaps", 0),
+        memoryBytes: memoryBytes(),
+        controllerCount: connectedControllerCount,
+        mapIndex: Number.isFinite(details.mapIndex) ? details.mapIndex : moduleMetric("_platform_web_map_load_index"),
+        clientState: Number.isFinite(details.clientState) ? details.clientState : moduleMetric("_platform_web_online_get_client_state"),
+        onlineState: Number.isFinite(details.onlineState) ? details.onlineState : moduleMetric("_platform_web_online_get_state"),
+        viewportWidth: innerWidth,
+        viewportHeight: innerHeight,
+        dpr: devicePixelRatio || 1,
+        platform: navigator.userAgentData && navigator.userAgentData.platform
+          ? navigator.userAgentData.platform : (navigator.platform || "unknown"),
+        mobile: Boolean(navigator.userAgentData && navigator.userAgentData.mobile),
+      });
+      try {
+        if (typeof navigator.sendBeacon === "function" &&
+            navigator.sendBeacon("/v1/telemetry/runtime", new Blob([payload], { type: "application/json" }))) {
+          return;
+        }
+      } catch (_error) {
+        // A blocked beacon should never interfere with the game.
+      }
+      fetch("/v1/telemetry/runtime", {
+        method: "POST", body: payload, headers: { "Content-Type": "application/json" }, keepalive: true,
+      }).catch(() => {});
+    }
+
+    window.HaloTelemetry = Object.freeze({
+      event(event, stage, details) {
+        sendRuntimeTelemetry(event, stage, details || {});
+      },
+      setContext(context) {
+        if (context && ["offline", "host", "guest", "unknown"].includes(context.role)) {
+          runtimeRole = context.role;
+        }
+        if (context && ["direct", "relay", "unknown"].includes(context.connection)) {
+          runtimeConnection = context.connection;
+        }
+      },
+    });
+
+    function updateRuntimeTelemetry() {
+      const now = performance.now();
+      const onlineState = moduleMetric("_platform_web_online_get_state");
+      const clientState = moduleMetric("_platform_web_online_get_client_state");
+      if (onlineState !== runtimeOnlineState || clientState !== runtimeClientState) {
+        runtimeOnlineState = onlineState;
+        runtimeClientState = clientState;
+        if (onlineState >= 0 || clientState >= 0) {
+          sendRuntimeTelemetry("online_state", `online-${onlineState}`, { onlineState, clientState });
+        }
+      }
+
+      const progress = moduleMetric("_platform_web_map_load_progress");
+      const mapIndex = moduleMetric("_platform_web_map_load_index");
+      if (progress >= 0 && mapIndex >= 0 && mapIndex < runtimeMapNames.length) {
+        if (!runtimeMapLoad || runtimeMapLoad.index !== mapIndex) {
+          runtimeMapLoad = { index: mapIndex, startedAt: now, slow: false, stalled: false };
+          sendRuntimeTelemetry("map_load_started", runtimeMapNames[mapIndex], { mapIndex, clientState });
+        }
+        const elapsed = now - runtimeMapLoad.startedAt;
+        if (!runtimeMapLoad.slow && elapsed >= 10_000) {
+          runtimeMapLoad.slow = true;
+          sendRuntimeTelemetry("map_load_slow", runtimeMapNames[mapIndex], { mapIndex, clientState });
+        }
+        if (!runtimeMapLoad.stalled && elapsed >= 30_000) {
+          runtimeMapLoad.stalled = true;
+          sendRuntimeTelemetry("map_load_stalled", runtimeMapNames[mapIndex], { mapIndex, clientState });
+        }
+      } else if (runtimeMapLoad) {
+        sendRuntimeTelemetry("map_load_completed", runtimeMapNames[runtimeMapLoad.index], {
+          mapIndex: runtimeMapLoad.index,
+          clientState,
+        });
+        runtimeMapLoad = null;
+      }
+    }
+
+    sendRuntimeTelemetry("page_loaded", "page");
+    window.setTimeout(() => {
+      if (!gamePresented) sendRuntimeTelemetry("startup_slow", runtimeStage);
+    }, 15_000);
+    window.setTimeout(() => {
+      if (gamePresented) return;
+      sendRuntimeTelemetry("startup_stalled", runtimeStage);
+      if (runtimeGpuClass !== "software") {
+        loadingLabel.textContent = "Still starting… reload the page if this does not finish.";
+      }
+    }, 45_000);
 
     function flushPerformanceTelemetry() {
       if (!telemetrySamples.length || /^(localhost|127\.0\.0\.1)$/u.test(location.hostname)) return;
@@ -1633,6 +1855,117 @@
         fetch("/v1/telemetry/performance", {
           method: "POST", body: payload, headers: { "Content-Type": "application/json" }, keepalive: true,
         }).catch(() => {});
+      }
+    }
+
+    function sendCampaignTelemetry(load, outcome) {
+      if (!load || /^(localhost|127\.0\.0\.1)$/u.test(location.hostname)) return;
+      const now = performance.now();
+      const meta = document.querySelector('meta[name="halo-build-id"]');
+      const payload = JSON.stringify({
+        sessionId: telemetrySessionId,
+        loadId: load.id,
+        buildId: meta && meta.content ? meta.content : "unknown",
+        map: load.map,
+        outcome,
+        durationMs: now - load.startedAt,
+        downloadMs: (load.prepareStartedAt || now) - load.startedAt,
+        prepareMs: load.prepareStartedAt ? now - load.prepareStartedAt : 0,
+        maxProgress: load.maxProgress,
+        sampleCount: load.sampleCount,
+        longestStallMs: load.longestStallMs,
+        memoryBytes: memoryBytes(),
+        viewportWidth: innerWidth,
+        viewportHeight: innerHeight,
+        dpr: devicePixelRatio || 1,
+        platform: navigator.userAgentData && navigator.userAgentData.platform
+          ? navigator.userAgentData.platform : (navigator.platform || "unknown"),
+        mobile: Boolean(navigator.userAgentData && navigator.userAgentData.mobile),
+        connection: navigator.connection && navigator.connection.effectiveType
+          ? navigator.connection.effectiveType : "unknown",
+      });
+      if (!navigator.sendBeacon("/v1/telemetry/campaign", new Blob([payload], { type: "application/json" }))) {
+        fetch("/v1/telemetry/campaign", {
+          method: "POST", body: payload, headers: { "Content-Type": "application/json" }, keepalive: true,
+        }).catch(() => {});
+      }
+    }
+
+    function finishCampaignLoad(outcome) {
+      if (!campaignLoad) return;
+      const finished = campaignLoad;
+      campaignLoad = null;
+      campaignLoadingElement.hidden = true;
+      sendCampaignTelemetry(finished, outcome);
+    }
+
+    function updateCampaignLoading() {
+      const progressFunction = typeof Module !== "undefined" &&
+        Module._platform_web_campaign_load_progress;
+      const indexFunction = typeof Module !== "undefined" &&
+        Module._platform_web_campaign_load_index;
+      if (typeof progressFunction !== "function" || typeof indexFunction !== "function") return;
+
+      const now = performance.now();
+      const progress = progressFunction();
+      if (Number.isFinite(progress) && progress >= 0) {
+        const index = indexFunction();
+        if (index < 0 || index >= campaignMissions.length) return;
+        const mission = campaignMissions[index];
+        if (!campaignLoad || campaignLoad.map !== mission[0]) {
+          if (campaignLoad) finishCampaignLoad("superseded");
+          campaignLoad = {
+            id: crypto.randomUUID(),
+            map: mission[0],
+            title: mission[1],
+            startedAt: now,
+            prepareStartedAt: 0,
+            lastProgressAt: now,
+            lastProgress: 0,
+            longestStallMs: 0,
+            maxProgress: 0,
+            sampleCount: 0,
+            swapBaseline: 0,
+          };
+        }
+        const bounded = Math.max(0, Math.min(1, progress));
+        campaignLoad.sampleCount++;
+        campaignLoad.maxProgress = Math.max(campaignLoad.maxProgress, bounded);
+        if (bounded > campaignLoad.lastProgress + .001) {
+          campaignLoad.lastProgress = bounded;
+          campaignLoad.lastProgressAt = now;
+        }
+        campaignLoad.longestStallMs = Math.max(
+          campaignLoad.longestStallMs, now - campaignLoad.lastProgressAt);
+        campaignLoad.prepareStartedAt = 0;
+        const percent = Math.round(bounded * 100);
+        const slow = now - campaignLoad.lastProgressAt >= 10_000;
+        campaignLoadingLabel.textContent = slow
+          ? `Still downloading ${campaignLoad.title}…`
+          : `Downloading ${campaignLoad.title}…`;
+        campaignLoadingPercent.textContent = `${percent}%`;
+        campaignLoadingProgress.value = percent;
+        campaignLoadingProgress.hidden = false;
+        campaignLoadingElement.hidden = false;
+        return;
+      }
+
+      if (!campaignLoad) return;
+      const swaps = typeof Module._platform_web_profile_swaps === "function"
+        ? Module._platform_web_profile_swaps() : 0;
+      if (!campaignLoad.prepareStartedAt) {
+        campaignLoad.prepareStartedAt = now;
+        campaignLoad.swapBaseline = swaps;
+        campaignLoadingLabel.textContent = `Preparing ${campaignLoad.title}…`;
+        campaignLoadingPercent.textContent = "";
+        campaignLoadingProgress.hidden = true;
+        campaignLoadingElement.hidden = false;
+        return;
+      }
+      if (swaps - campaignLoad.swapBaseline >= 2 && now - campaignLoad.prepareStartedAt >= 140) {
+        finishCampaignLoad("completed");
+      } else if (now - campaignLoad.prepareStartedAt >= 10_000) {
+        campaignLoadingLabel.textContent = `Still preparing ${campaignLoad.title}…`;
       }
     }
 
@@ -1740,6 +2073,7 @@
       if (!document.hidden) updatePerformance();
     });
     window.addEventListener("pagehide", flushPerformanceTelemetry);
+    window.addEventListener("pagehide", () => finishCampaignLoad("abandoned"));
 
     function diagnostic(text) {
       if (!text) return;
@@ -1772,10 +2106,27 @@
           : "Click the game or Focus game to capture the mouse"));
     }
 
+    function connectedGamepads() {
+      try {
+        if (typeof navigator.getGamepads !== "function") return [];
+        return Array.from(navigator.getGamepads() || [])
+          .filter(gamepad => gamepad && gamepad.connected);
+      } catch (error) {
+        if (!gamepadDiscoveryFailed) {
+          gamepadDiscoveryFailed = true;
+          diagnostic(`Controller discovery unavailable: ${error && error.message ? error.message : error}`);
+          sendRuntimeTelemetry("controller_unavailable", "gamepad-api");
+        }
+        return [];
+      }
+    }
+
     function refreshControllerStatus() {
-      const pads = typeof navigator.getGamepads === "function"
-        ? Array.from(navigator.getGamepads()).filter(gamepad => gamepad && gamepad.connected)
-        : [];
+      const pads = connectedGamepads();
+      if (pads.length !== connectedControllerCount) {
+        connectedControllerCount = pads.length;
+        if (pads.length) sendRuntimeTelemetry("controller_connected", "gamepad-api");
+      }
       if (!pads.length) {
         controllerSummary = "";
       } else if (pads.length === 1) {
@@ -1841,6 +2192,7 @@
 
     canvas.addEventListener("webglcontextlost", event => {
       event.preventDefault();
+      sendRuntimeTelemetry("webgl_context_lost", "renderer");
       presentationWaitToken++;
       gamePresented = false;
       gameArea.dataset.presented = "false";
@@ -1942,6 +2294,8 @@
     function revealPresentedGame(token) {
       if (gamePresented || token !== presentationWaitToken) return;
       gamePresented = true;
+      runtimeStage = "presented";
+      sendRuntimeTelemetry("game_presented", runtimeStage);
       gameArea.dataset.presented = "true";
       canvas.classList.add("ready");
       statusElement.textContent = "Running";
@@ -2000,6 +2354,7 @@
           statusElement.textContent = "Running";
           return;
         }
+        runtimeStage = "calibrating";
         statusElement.textContent = "Starting display…";
         loadingLabel.textContent = "Calibrating ring interface…";
         progressElement.hidden = true;
@@ -2007,9 +2362,15 @@
         return;
       }
 
+      if (/^Preparing files/u.test(text)) runtimeStage = "dependencies";
+      else if (/^Starting Halo/u.test(text)) runtimeStage = "runtime";
+      else if (/^(Could not start:|Aborted:)/iu.test(text)) runtimeStage = "failed";
+      else runtimeStage = "loading";
       statusElement.textContent = text;
       if (gamePresented && !/^Could not start:/i.test(text)) return;
-      loadingLabel.textContent = text;
+      loadingLabel.textContent = runtimeGpuClass === "software" && runtimeStage !== "failed"
+        ? "Graphics acceleration appears to be off — enable it in your browser settings."
+        : text;
       loadingElement.hidden = false;
       loadingElement.setAttribute("aria-busy", "true");
       if (/^(Could not start:|Aborted:)/i.test(text)) {
@@ -2042,8 +2403,13 @@
         const line = args.join(" ");
         diagnostic(line);
         if (line.startsWith("halo-linux: OpenGL ")) {
+          runtimeGpuClass = classifyRenderer(line);
+          runtimeStage = "renderer";
+          sendRuntimeTelemetry("renderer_ready", runtimeStage);
           canvas.classList.add("ready");
-          loadingLabel.textContent = "Starting renderer…";
+          loadingLabel.textContent = runtimeGpuClass === "software"
+            ? "Graphics acceleration appears to be off — enable it in your browser settings."
+            : "Starting renderer…";
           waitForPresentedGame();
         }
       },
@@ -2056,17 +2422,24 @@
           : "Starting Halo…");
       },
       onRuntimeInitialized() {
+        runtimeStage = "runtime-initialized";
+        sendRuntimeTelemetry("runtime_initialized", runtimeStage);
         applyMute();
         if (window.HaloOnline) {
           window.HaloOnline.runtimeReady();
         }
         updatePerformance();
         window.setInterval(updatePerformance, 1000);
+        updateCampaignLoading();
+        window.setInterval(updateCampaignLoading, 200);
+        updateRuntimeTelemetry();
+        window.setInterval(updateRuntimeTelemetry, 250);
         setStatus("Starting Halo…");
         waitForPresentedGame();
       },
       onAbort(reason) {
         diagnostic(`abort: ${reason}`);
+        sendRuntimeTelemetry("runtime_abort", runtimeStage);
         setStatus(`Aborted: ${reason || "the runtime stopped"}`);
       },
     };
@@ -2098,6 +2471,7 @@
         return;
       }
       diagnostic(source || message);
+      sendRuntimeTelemetry("runtime_error", runtimeStage);
       setStatus(`Could not start: ${message}`);
     });
     window.addEventListener("unhandledrejection", event => {
@@ -2113,6 +2487,7 @@
         return;
       }
       diagnostic(source || message);
+      sendRuntimeTelemetry("runtime_error", runtimeStage);
       setStatus(`Could not start: ${message}`);
     });
   </script>

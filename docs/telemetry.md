@@ -22,6 +22,8 @@ Use an API token with Account Analytics Read permission:
 ```sh
 export CLOUDFLARE_API_TOKEN=...
 node tools/halo_telemetry.mjs fps 24
+node tools/halo_telemetry.mjs campaign 24
+node tools/halo_telemetry.mjs runtime 24
 node tools/halo_telemetry.mjs turn 7
 ```
 
@@ -63,6 +65,29 @@ The browser summary schema is:
 - doubles: average FPS, minimum FPS, p95 FPS, average CPU milliseconds, p95 CPU
   milliseconds, memory bytes, sample count, duration milliseconds, DPR
 - index: random page-session UUID
+
+The `halo_web_runtime` dataset records coarse lifecycle milestones rather than
+raw logs. It shows whether a session reached the renderer, initialized the
+runtime, presented frames, connected a controller, entered an online state or
+started/completed a map load. Slow and stalled startup/map events include the
+normalized GPU class, role, direct/relay class, Halo client state and elapsed
+time. It deliberately excludes player names, room codes, raw error text, full
+GPU strings and network addresses. Query it with
+`node tools/halo_telemetry.mjs runtime 24`.
+
+The `halo_web_campaign_loads` dataset receives one summary when a streamed
+campaign load finishes or the page exits. It does not contain player names or
+network addresses:
+
+- blobs: build, map, outcome, browser, platform, device class, connection
+  class, country, colo, viewport, random load UUID
+- doubles: total, download/cache-copy and preparation milliseconds, maximum
+  progress, sample count, longest observed stall, memory bytes and DPR
+- index: the same random page-session UUID used by FPS telemetry
+
+`node tools/halo_telemetry.mjs campaign 24` groups those summaries by map,
+outcome, browser, device and connection class so slow campaign starts can be
+separated from abandoned pages.
 
 TURN usage itself is authoritative in Cloudflare's
 `callsTurnUsageAdaptiveGroups`; `halo_turn_events` records issuance, fallback,

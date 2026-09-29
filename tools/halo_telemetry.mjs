@@ -50,6 +50,67 @@ async function performanceSummary(hours = 24) {
   console.table(value.data || value);
 }
 
+async function campaignSummary(hours = 24) {
+  const sql = `
+    SELECT blob2 AS map, blob3 AS outcome, blob4 AS browser, blob6 AS device,
+      blob7 AS connection,
+      COUNT() AS loads,
+      ROUND(AVG(double1) / 1000, 1) AS avg_total_s,
+      ROUND(AVG(double2) / 1000, 1) AS avg_download_s,
+      ROUND(AVG(double3) / 1000, 1) AS avg_prepare_s,
+      ROUND(MAX(double1) / 1000, 1) AS slowest_s,
+      ROUND(AVG(double6) / 1000, 1) AS avg_longest_stall_s
+    FROM halo_web_campaign_loads
+    WHERE timestamp > NOW() - INTERVAL '${Math.max(1, Math.min(720, hours))}' HOUR
+    GROUP BY map, outcome, browser, device, connection
+    ORDER BY loads DESC, avg_total_s DESC`;
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/analytics_engine/sql`,
+    {
+      body: sql,
+      headers: {
+        Authorization: `Bearer ${required(API_TOKEN, "CLOUDFLARE_API_TOKEN")}`,
+        "Content-Type": "text/plain",
+      },
+      method: "POST",
+    },
+  );
+  const value = await response.json();
+  if (!response.ok) throw new Error(JSON.stringify(value));
+  console.table(value.data || value);
+}
+
+async function runtimeSummary(hours = 24) {
+  const sql = `
+    SELECT blob2 AS event, blob3 AS stage, blob4 AS browser, blob6 AS device,
+      blob7 AS gpu, blob8 AS role, blob9 AS connection,
+      COUNT() AS events,
+      ROUND(AVG(double1) / 1000, 1) AS avg_elapsed_s,
+      ROUND(MAX(double1) / 1000, 1) AS max_elapsed_s,
+      ROUND(AVG(double4) / 1048576, 1) AS avg_memory_mb,
+      ROUND(AVG(double5), 1) AS avg_controllers,
+      ROUND(AVG(double7), 1) AS avg_client_state,
+      ROUND(AVG(double8), 1) AS avg_online_state
+    FROM halo_web_runtime
+    WHERE timestamp > NOW() - INTERVAL '${Math.max(1, Math.min(720, hours))}' HOUR
+    GROUP BY event, stage, browser, device, gpu, role, connection
+    ORDER BY events DESC, max_elapsed_s DESC`;
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/analytics_engine/sql`,
+    {
+      body: sql,
+      headers: {
+        Authorization: `Bearer ${required(API_TOKEN, "CLOUDFLARE_API_TOKEN")}`,
+        "Content-Type": "text/plain",
+      },
+      method: "POST",
+    },
+  );
+  const value = await response.json();
+  if (!response.ok) throw new Error(JSON.stringify(value));
+  console.table(value.data || value);
+}
+
 async function turnSummary(days = 7) {
   const to = new Date();
   const from = new Date(to.getTime() - Math.max(1, Math.min(90, days)) * 86_400_000);
@@ -105,6 +166,8 @@ async function signaling(path, init = {}) {
 const [command = "help", first, second] = process.argv.slice(2);
 try {
   if (command === "fps") await performanceSummary(Number(first) || 24);
+  else if (command === "campaign") await campaignSummary(Number(first) || 24);
+  else if (command === "runtime") await runtimeSummary(Number(first) || 24);
   else if (command === "turn") await turnSummary(Number(first) || 7);
   else if (command === "turn-live") console.dir(
     await signaling(`/v1/admin/turn?hours=${Math.max(1, Math.min(168, Number(first) || 24))}`),
@@ -133,7 +196,7 @@ try {
     await signaling(`/v1/admin/bans/${encodeURIComponent(first)}`, { method: "DELETE" });
     console.log(`Unbanned ${first}.`);
   } else {
-    console.log("Usage: halo_telemetry.mjs fps [hours] | turn [days] | turn-live [hours] | turn-check | turn-disable | turn-enable | bans | ban ACTOR_ID [reason] | unban ACTOR_ID");
+    console.log("Usage: halo_telemetry.mjs fps [hours] | campaign [hours] | runtime [hours] | turn [days] | turn-live [hours] | turn-check | turn-disable | turn-enable | bans | ban ACTOR_ID [reason] | unban ACTOR_ID");
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
