@@ -862,6 +862,14 @@ void platform_pump_events(void)
 		case SDL_EVENT_GAMEPAD_ADDED:
 			SDL_OpenGamepad(event.gdevice.which);
 			break;
+		case SDL_EVENT_GAMEPAD_REMOVED:
+		{
+			SDL_Gamepad *gamepad = SDL_GetGamepadFromID(event.gdevice.which);
+
+			if (gamepad)
+				SDL_CloseGamepad(gamepad);
+			break;
+		}
 		default:
 			break;
 		}

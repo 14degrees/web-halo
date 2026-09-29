@@ -3,10 +3,8 @@ XINPUT_SDL.C
 
 Xbox controllers and the debug keyboard for the Linux build.
 
-Port 0 is always connected: it is the keyboard and mouse. On native builds it
-is merged with the first SDL gamepad when one is present, and further SDL
-gamepads take ports 1-3. In the browser, SDL gamepads instead take ports 1-3,
-leaving keyboard and mouse as a separate player on port 0.
+Port 0 is always connected: it is the keyboard and mouse, merged with the
+first SDL gamepad when one is present. Further SDL gamepads take ports 1-3.
 
 Keyboard and mouse (port 0):
 	W A S D          left stick          arrows           D-pad

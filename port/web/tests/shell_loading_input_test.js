@@ -89,5 +89,14 @@ assert.doesNotMatch(connectedGamepads[0], /HALO_WEB/,
 assert.match(xinput,
   /if \(count > 0\)\s+sdl_gamepad_state\(gamepads\[0\], &state->Gamepad\);/,
   'the first physical controller must merge into Halo player one');
+assert.match(shell,
+  /function refreshControllerStatus\(\)[\s\S]*?navigator\.getGamepads[\s\S]*?Player 1[\s\S]*?controllers detected/,
+  'the shell must continuously report connected browser controllers');
+assert.match(shell,
+  /gamepadconnected", refreshControllerStatus[\s\S]*?gamepaddisconnected", refreshControllerStatus/,
+  'controller status must update for hot-plug and disconnect events');
+assert.match(shell,
+  /controllerSummary[\s\S]*?mouse capture optional/,
+  'a controller must remain usable without mouse capture');
 
 console.log('shell loading, focus, Tab, and controller routing tests passed');

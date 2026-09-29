@@ -1579,6 +1579,7 @@
     let presentationFrameRequest = 0;
     let pointerLockPending = false;
     let pointerLockTimer = 0;
+    let controllerSummary = "";
     const telemetrySessionId = crypto.randomUUID();
     const telemetrySamples = [];
     const telemetryStartedAt = performance.now();
@@ -1762,9 +1763,28 @@
       focusButton.setAttribute("aria-busy", String(pointerLockPending));
       focusButton.disabled = pointerLockPending;
       focusLabel.textContent = locked ? "Mouse captured" : (pointerLockPending ? "Capturing…" : "Focus game");
-      footerHint.textContent = message || (locked
-        ? "Mouse captured · press Esc to release"
-        : "Click the game or Focus game to capture the mouse");
+      footerHint.textContent = message || (controllerSummary
+        ? (locked
+          ? `${controllerSummary} · mouse captured`
+          : `${controllerSummary} · mouse capture optional`)
+        : (locked
+          ? "Mouse captured · press Esc to release"
+          : "Click the game or Focus game to capture the mouse"));
+    }
+
+    function refreshControllerStatus() {
+      const pads = typeof navigator.getGamepads === "function"
+        ? Array.from(navigator.getGamepads()).filter(gamepad => gamepad && gamepad.connected)
+        : [];
+      if (!pads.length) {
+        controllerSummary = "";
+      } else if (pads.length === 1) {
+        const name = pads[0].id ? pads[0].id.split("(")[0].trim() : "Controller";
+        controllerSummary = `${name || "Controller"} ready · Player 1`;
+      } else {
+        controllerSummary = `${Math.min(pads.length, 4)} controllers detected`;
+      }
+      updatePointerLockUi();
     }
 
     function reportPointerLockFailure(error) {
@@ -1905,11 +1925,10 @@
       fullscreenButton.setAttribute("aria-label", expanded ? "Exit fullscreen" : "Enter fullscreen");
       fullscreenButton.title = expanded ? "Exit fullscreen" : "Fullscreen";
     });
-    window.addEventListener("gamepadconnected", event => {
-      const name = event.gamepad && event.gamepad.id ? event.gamepad.id.split("(")[0].trim() : "Controller";
-      footerHint.textContent = `${name} connected · controls Player 1`;
-    });
-    window.addEventListener("gamepaddisconnected", () => updatePointerLockUi());
+    window.addEventListener("gamepadconnected", refreshControllerStatus);
+    window.addEventListener("gamepaddisconnected", refreshControllerStatus);
+    window.addEventListener("focus", refreshControllerStatus);
+    window.setInterval(refreshControllerStatus, 1000);
     document.getElementById("player-sidebar-toggle").addEventListener("click", event => {
       const sidebar = document.getElementById("player-sidebar");
       const collapsed = sidebar.dataset.collapsed !== "true";
@@ -1918,7 +1937,7 @@
       event.currentTarget.setAttribute("aria-label", collapsed ? "Expand player list" : "Collapse player list");
       event.currentTarget.textContent = collapsed ? "⌄" : "⌃";
     });
-    updatePointerLockUi();
+    refreshControllerStatus();
 
     function revealPresentedGame(token) {
       if (gamePresented || token !== presentationWaitToken) return;
