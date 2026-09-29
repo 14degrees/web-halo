@@ -28,7 +28,8 @@ const RUNTIME_EVENTS = new Set([
   "startup_slow", "startup_stalled", "controller_connected", "controller_unavailable",
   "webgl_context_lost", "runtime_abort", "runtime_error", "map_load_started",
   "map_load_slow", "map_load_stalled", "map_load_completed", "online_state",
-  "transport_connected", "online_error",
+  "transport_connected", "online_error", "audio_running", "audio_suspended",
+  "audio_blocked",
 ]);
 const RUNTIME_GPU_CLASSES = new Set([
   "unknown", "other", "software", "nvidia", "amd", "intel", "apple", "qualcomm", "arm",
@@ -114,6 +115,12 @@ async function recordPerformance(request, env) {
   }
   const cf = request.cf || {};
   const platform = shortString(body.platform, 48) ? body.platform : "unknown";
+  const audioState = shortString(body.audioState, 24) ? body.audioState : "unknown";
+  const audioCallbacks = finiteNumber(body.audioCallbacks, 0, 1e12) ? body.audioCallbacks : 0;
+  const audioLateCallbacks = finiteNumber(body.audioLateCallbacks, 0, 1e12)
+    ? body.audioLateCallbacks : 0;
+  const audioMaximumGapMs = finiteNumber(body.audioMaximumGapMs, 0, 3_600_000)
+    ? body.audioMaximumGapMs : 0;
   env.PERFORMANCE_TELEMETRY.writeDataPoint({
     blobs: [
       body.buildId,
@@ -123,10 +130,12 @@ async function recordPerformance(request, env) {
       typeof cf.country === "string" ? cf.country : "unknown",
       typeof cf.colo === "string" ? cf.colo : "unknown",
       `${Math.round(body.viewportWidth)}x${Math.round(body.viewportHeight)}`,
+      audioState,
     ],
     doubles: [
       body.avgFps, body.minFps, body.p95Fps, body.avgCpuMs, body.p95CpuMs,
       body.memoryBytes, body.sampleCount, body.durationMs, body.dpr,
+      audioCallbacks, audioLateCallbacks, audioMaximumGapMs,
     ],
     indexes: [body.sessionId],
   });

@@ -29,7 +29,10 @@ async function performanceSummary(hours = 24) {
       ROUND(AVG(double3), 1) AS avg_p95_fps,
       ROUND(AVG(double4), 2) AS avg_cpu_ms,
       ROUND(AVG(double5), 2) AS avg_p95_cpu_ms,
-      ROUND(AVG(double6) / 1048576, 1) AS avg_memory_mb
+      ROUND(AVG(double6) / 1048576, 1) AS avg_memory_mb,
+      SUM(double10) AS audio_callbacks,
+      SUM(double11) AS late_audio_callbacks,
+      ROUND(MAX(double12), 1) AS maximum_audio_gap_ms
     FROM halo_web_performance
     WHERE timestamp > NOW() - INTERVAL '${Math.max(1, Math.min(720, hours))}' HOUR
     GROUP BY browser, platform, device

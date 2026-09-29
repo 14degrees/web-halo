@@ -1657,6 +1657,10 @@
     let runtimeMapLoad = null;
     let runtimeOnlineState = null;
     let runtimeClientState = null;
+    let audioResumeAttempt = 0;
+    let audioTelemetryState = "";
+    let audioTelemetryPreviousCallbacks = 0;
+    let audioTelemetryPreviousLateCallbacks = 0;
     let connectedControllerCount = 0;
     let gamepadDiscoveryFailed = false;
     const runtimeMapNames = [
@@ -1832,6 +1836,9 @@
       const cpu = samples.map(sample => sample.cpu);
       const now = performance.now();
       const meta = document.querySelector('meta[name="halo-build-id"]');
+      const audioCallbacks = moduleMetric("_platform_web_audio_callback_count", 0);
+      const audioLateCallbacks = moduleMetric("_platform_web_audio_late_callback_count", 0);
+      const audioContext = browserAudioContext();
       const payload = JSON.stringify({
         sessionId: telemetrySessionId,
         buildId: meta && meta.content ? meta.content : "unknown",
@@ -1846,11 +1853,17 @@
         viewportWidth: innerWidth,
         viewportHeight: innerHeight,
         dpr: devicePixelRatio || 1,
+        audioState: audioContext ? audioContext.state : "unavailable",
+        audioCallbacks: Math.max(0, audioCallbacks - audioTelemetryPreviousCallbacks),
+        audioLateCallbacks: Math.max(0, audioLateCallbacks - audioTelemetryPreviousLateCallbacks),
+        audioMaximumGapMs: moduleMetric("_platform_web_audio_maximum_callback_gap_ms", 0),
         platform: navigator.userAgentData && navigator.userAgentData.platform
           ? navigator.userAgentData.platform : (navigator.platform || "unknown"),
         mobile: Boolean(navigator.userAgentData && navigator.userAgentData.mobile),
       });
       telemetryLastFlush = now;
+      audioTelemetryPreviousCallbacks = audioCallbacks;
+      audioTelemetryPreviousLateCallbacks = audioLateCallbacks;
       if (!navigator.sendBeacon("/v1/telemetry/performance", new Blob([payload], { type: "application/json" }))) {
         fetch("/v1/telemetry/performance", {
           method: "POST", body: payload, headers: { "Content-Type": "application/json" }, keepalive: true,
@@ -1969,7 +1982,81 @@
       }
     }
 
+    function browserAudioContext() {
+      const sdl = typeof Module !== "undefined" && Module.SDL3;
+      const context = sdl && sdl.audioContext;
+      return context && typeof context.resume === "function" ? context : null;
+    }
+
+    function reportAudioState(state) {
+      if (!state || state === audioTelemetryState) return;
+      audioTelemetryState = state;
+      if (state === "running") sendRuntimeTelemetry("audio_running", "audio-running");
+      else if (state === "suspended") sendRuntimeTelemetry("audio_suspended", "audio-suspended");
+      else if (state === "blocked") sendRuntimeTelemetry("audio_blocked", "audio-blocked");
+    }
+
+    function refreshAudioState() {
+      if (audioMuted) return;
+      const context = browserAudioContext();
+      if (!context) return;
+      if (context.state === "running") {
+        muteLabel.textContent = "Sound on";
+        muteButton.setAttribute("aria-label", "Mute game");
+        reportAudioState("running");
+      } else if (context.state === "closed") {
+        muteLabel.textContent = "Audio unavailable";
+        muteButton.setAttribute("aria-label", "Retry game audio");
+        reportAudioState("blocked");
+      } else {
+        muteLabel.textContent = "Resume sound";
+        muteButton.setAttribute("aria-label", "Resume game audio");
+        reportAudioState("suspended");
+      }
+    }
+
+    function resumeBrowserAudio() {
+      if (audioMuted) return;
+      const context = browserAudioContext();
+      if (!context) return;
+      if (context.state === "running") {
+        refreshAudioState();
+        return;
+      }
+
+      const attempt = ++audioResumeAttempt;
+      muteLabel.textContent = "Starting audio…";
+      muteButton.setAttribute("aria-label", "Starting game audio");
+      let request;
+      try {
+        request = context.resume();
+      } catch (error) {
+        diagnostic(`Audio resume failed: ${error && error.message ? error.message : error}`);
+        muteLabel.textContent = "Retry sound";
+        muteButton.setAttribute("aria-label", "Retry game audio");
+        reportAudioState("blocked");
+        return;
+      }
+      Promise.resolve(request).then(() => {
+        if (attempt !== audioResumeAttempt || audioMuted) return;
+        if (context.state === "running") {
+          refreshAudioState();
+        } else {
+          muteLabel.textContent = "Retry sound";
+          muteButton.setAttribute("aria-label", "Retry game audio");
+          reportAudioState("blocked");
+        }
+      }).catch(error => {
+        if (attempt !== audioResumeAttempt || audioMuted) return;
+        diagnostic(`Audio resume failed: ${error && error.message ? error.message : error}`);
+        muteLabel.textContent = "Retry sound";
+        muteButton.setAttribute("aria-label", "Retry game audio");
+        reportAudioState("blocked");
+      });
+    }
+
     function applyMute() {
+      if (audioMuted) audioResumeAttempt++;
       muteLabel.textContent = audioMuted ? "Muted" : "Sound on";
       muteButton.setAttribute("aria-pressed", String(audioMuted));
       muteButton.setAttribute("aria-label", audioMuted ? "Unmute game" : "Mute game");
@@ -1977,6 +2064,7 @@
       if (typeof Module !== "undefined" && typeof Module._platform_web_set_muted === "function") {
         Module._platform_web_set_muted(audioMuted ? 1 : 0);
       }
+      if (!audioMuted) refreshAudioState();
     }
 
     function formatBytes(value) {
@@ -2059,6 +2147,7 @@
       }
       performanceElement.textContent =
         `${framesPerSecond.toFixed(1)} FPS · ${average.toFixed(1)} ms CPU${stopped}`;
+      refreshAudioState();
       telemetrySamples.push({ cpu: average, fps: framesPerSecond });
       if (telemetrySamples.length >= 60 || performance.now() - telemetryLastFlush >= 60_000) {
         flushPerformanceTelemetry();
@@ -2232,7 +2321,10 @@
       }
       secretClickTimer = window.setTimeout(() => { secretClickCount = 0; }, 700);
     });
-    canvas.addEventListener("pointerdown", focusCanvas);
+    canvas.addEventListener("pointerdown", () => {
+      focusCanvas();
+      if (!audioMuted) resumeBrowserAudio();
+    });
 
     function webUiOwnsKeyboardFocus() {
       const active = document.activeElement;
@@ -2256,8 +2348,14 @@
       }
     });
     muteButton.addEventListener("click", () => {
+      const context = browserAudioContext();
+      if (!audioMuted && context && context.state !== "running") {
+        resumeBrowserAudio();
+        return;
+      }
       audioMuted = !audioMuted;
       applyMute();
+      if (!audioMuted) resumeBrowserAudio();
     });
     fullscreenButton.addEventListener("click", () => {
       focusCanvas();

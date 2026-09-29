@@ -8,6 +8,8 @@ const webDirectory = path.join(__dirname, '..');
 const shell = fs.readFileSync(path.join(webDirectory, 'shell.html'), 'utf8');
 const xinput = fs.readFileSync(
   path.join(webDirectory, '..', 'linux', 'src', 'xinput_sdl.c'), 'utf8');
+const dsound = fs.readFileSync(
+  path.join(webDirectory, '..', 'linux', 'src', 'dsound_sdl.c'), 'utf8');
 const repository = path.join(webDirectory, '..', '..');
 const terminal = fs.readFileSync(
   path.join(repository, 'source', 'interface', 'terminal.c'), 'utf8');
@@ -109,6 +111,24 @@ assert.match(shell,
 assert.match(shell,
   /controllerSummary[\s\S]*?mouse capture optional/,
   'a controller must remain usable without mouse capture');
+assert.match(dsound,
+  /#ifndef HALO_WEB\s*SDL_SetHint\(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "512"\);\s*#endif/,
+  'web audio must keep SDL Emscripten\'s larger browser-safe default buffer');
+assert.match(dsound,
+  /web_audio_record_callback[\s\S]*?platform_web_audio_callback_count[\s\S]*?platform_web_audio_late_callback_count[\s\S]*?platform_web_audio_maximum_callback_gap_ms/,
+  'web audio must expose callback-gap telemetry for diagnosing underruns');
+assert.match(shell,
+  /function browserAudioContext\(\)[\s\S]*?Module\.SDL3[\s\S]*?function resumeBrowserAudio\(\)[\s\S]*?context\.resume\(\)/,
+  'the mute control must resume SDL WebAudio from a trusted user gesture');
+assert.match(shell,
+  /muteButton\.addEventListener\("click"[\s\S]*?resumeBrowserAudio\(\)/,
+  'unmuting must explicitly wake the browser audio context');
+assert.match(shell,
+  /audioCallbacks:[\s\S]*?audioLateCallbacks:[\s\S]*?audioMaximumGapMs:/,
+  'performance summaries must include audio underrun counters');
+assert.match(worker,
+  /audio_running[\s\S]*?audio_suspended[\s\S]*?audio_blocked[\s\S]*?audioMaximumGapMs/,
+  'the Worker must accept audio state and underrun telemetry');
 assert.match(terminal, /terminal_render_enable \|\| terminal_globals\.input_state/,
   'backquote console output must be visible while its input is active');
 assert.match(webPlatform, /platform_web_map_load_progress/);
