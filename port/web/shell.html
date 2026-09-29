@@ -1386,7 +1386,7 @@
         <div class="duke-binding" aria-label="Right trigger - left mouse button"><dt>RT</dt><dd>- LMB</dd></div>
         <div class="duke-binding" aria-label="Move - W A S D"><dt>Move</dt><dd>- WASD</dd></div>
         <div class="duke-binding" aria-label="Aim - mouse"><dt>Aim</dt><dd>- Mouse</dd></div>
-        <div class="duke-binding" aria-label="Left stick click - left control or C"><dt>L3</dt><dd>- Ctrl / C</dd></div>
+        <div class="duke-binding" aria-label="Left stick click - C"><dt>L3</dt><dd>- C</dd></div>
         <div class="duke-binding" aria-label="Right stick click - Z or middle mouse button"><dt>R3</dt><dd>- Z / MMB</dd></div>
         <div class="duke-binding" aria-label="Directional pad - arrow keys"><dt>D-pad</dt><dd>- Arrows</dd></div>
         <div class="duke-binding" aria-label="Start - Escape"><dt>Start</dt><dd>- Esc</dd></div>
@@ -2357,6 +2357,28 @@
       applyMute();
       if (!audioMuted) resumeBrowserAudio();
     });
+
+    async function lockFullscreenMovementKeys() {
+      if (!navigator.keyboard || typeof navigator.keyboard.lock !== "function") return;
+      try {
+        // Locking the physical movement keys also captures Ctrl+W/S/D/A,
+        // preventing browser shortcuts while JavaScript fullscreen is active.
+        await navigator.keyboard.lock(["KeyW", "KeyA", "KeyS", "KeyD"]);
+        diagnostic("Fullscreen keyboard lock enabled for movement keys.");
+      } catch (error) {
+        diagnostic(`Fullscreen keyboard lock unavailable: ${error && error.message ? error.message : error}`);
+      }
+    }
+
+    function unlockFullscreenKeyboard() {
+      if (!navigator.keyboard || typeof navigator.keyboard.unlock !== "function") return;
+      try {
+        navigator.keyboard.unlock();
+      } catch (error) {
+        diagnostic(`Fullscreen keyboard unlock failed: ${error && error.message ? error.message : error}`);
+      }
+    }
+
     fullscreenButton.addEventListener("click", () => {
       focusCanvas();
       try {
@@ -2372,6 +2394,8 @@
     });
     document.addEventListener("fullscreenchange", () => {
       const expanded = document.fullscreenElement === document.getElementById("game-area");
+      if (expanded) lockFullscreenMovementKeys();
+      else unlockFullscreenKeyboard();
       fullscreenButton.setAttribute("aria-label", expanded ? "Exit fullscreen" : "Enter fullscreen");
       fullscreenButton.title = expanded ? "Exit fullscreen" : "Fullscreen";
     });

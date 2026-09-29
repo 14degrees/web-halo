@@ -70,7 +70,7 @@ assert.match(shell,
   'fullscreen must hide the online sidebar and Duke legend');
 assert.match(shell, /id="duke-legend"[\s\S]*xbox-duke-controller\.png/,
   'the legend must use the high-resolution Duke image');
-assert.match(shell, /<dt>A<\/dt>[\s\S]*?<dd>- Space<\/dd>[\s\S]*?<dt>B<\/dt>[\s\S]*?<dd>- F<\/dd>[\s\S]*?<dt>X<\/dt><dd>- E \/ R<\/dd>[\s\S]*?<dt>Y<\/dt><dd>- Tab \/ Wheel<\/dd>[\s\S]*?<dt>White<\/dt><dd>- Q<\/dd>[\s\S]*?<dt>Black<\/dt><dd>- X<\/dd>[\s\S]*?<dt>LT<\/dt><dd>- G \/ RMB<\/dd>[\s\S]*?<dt>RT<\/dt><dd>- LMB<\/dd>[\s\S]*?<dt>Move<\/dt><dd>- WASD<\/dd>[\s\S]*?<dt>Aim<\/dt><dd>- Mouse<\/dd>[\s\S]*?<dt>L3<\/dt><dd>- Ctrl \/ C<\/dd>[\s\S]*?<dt>R3<\/dt><dd>- Z \/ MMB<\/dd>[\s\S]*?<dt>D-pad<\/dt><dd>- Arrows<\/dd>[\s\S]*?<dt>Start<\/dt><dd>- Esc<\/dd>[\s\S]*?<dt>Back<\/dt><dd>- F1<\/dd>/,
+assert.match(shell, /<dt>A<\/dt>[\s\S]*?<dd>- Space<\/dd>[\s\S]*?<dt>B<\/dt>[\s\S]*?<dd>- F<\/dd>[\s\S]*?<dt>X<\/dt><dd>- E \/ R<\/dd>[\s\S]*?<dt>Y<\/dt><dd>- Tab \/ Wheel<\/dd>[\s\S]*?<dt>White<\/dt><dd>- Q<\/dd>[\s\S]*?<dt>Black<\/dt><dd>- X<\/dd>[\s\S]*?<dt>LT<\/dt><dd>- G \/ RMB<\/dd>[\s\S]*?<dt>RT<\/dt><dd>- LMB<\/dd>[\s\S]*?<dt>Move<\/dt><dd>- WASD<\/dd>[\s\S]*?<dt>Aim<\/dt><dd>- Mouse<\/dd>[\s\S]*?<dt>L3<\/dt><dd>- C<\/dd>[\s\S]*?<dt>R3<\/dt><dd>- Z \/ MMB<\/dd>[\s\S]*?<dt>D-pad<\/dt><dd>- Arrows<\/dd>[\s\S]*?<dt>Start<\/dt><dd>- Esc<\/dd>[\s\S]*?<dt>Back<\/dt><dd>- F1<\/dd>/,
   'the high-resolution Duke legend must document the complete keyboard mapping');
 assert.doesNotMatch(shell, /<figcaption>Duke<\/figcaption>/,
   'the controller image must not carry a redundant Duke caption');
@@ -102,6 +102,12 @@ assert.doesNotMatch(connectedGamepads[0], /HALO_WEB/,
 assert.match(xinput,
   /if \(count > 0\)\s+sdl_gamepad_state\(gamepads\[0\], &state->Gamepad\);/,
   'the first physical controller must merge into Halo player one');
+assert.match(xinput,
+  /#ifdef HALO_WEB[\s\S]*?if \(k\[SDL_SCANCODE_C\]\) pad->wButtons \|= XINPUT_GAMEPAD_LEFT_THUMB;[\s\S]*?#else[\s\S]*?SDL_SCANCODE_LCTRL/,
+  'web crouch must use C without exposing Ctrl movement shortcuts');
+assert.match(shell,
+  /function lockFullscreenMovementKeys\(\)[\s\S]*?navigator\.keyboard\.lock\(\["KeyW", "KeyA", "KeyS", "KeyD"\]\)[\s\S]*?fullscreenchange[\s\S]*?lockFullscreenMovementKeys\(\)/,
+  'fullscreen should progressively lock movement keys against browser shortcuts');
 assert.match(shell,
   /function connectedGamepads\(\)[\s\S]*?try[\s\S]*?navigator\.getGamepads\(\) \|\| \[\][\s\S]*?catch[\s\S]*?function refreshControllerStatus\(\)[\s\S]*?Player 1[\s\S]*?controllers detected/,
   'controller discovery must be guarded and continuously report connected controllers');
