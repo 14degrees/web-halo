@@ -44,7 +44,7 @@ HEADERS = """/*
 """
 
 BUILD_META_PATTERN = re.compile(
-    rb'<meta name="halo-build-id" content="[A-Za-z0-9._-]+">'
+    rb'<meta\b(?=[^>]*\bname=(?:["\']halo-build-id["\']|halo-build-id)(?=[\s>]))[^>]*>'
 )
 
 
