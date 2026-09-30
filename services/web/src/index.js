@@ -36,6 +36,14 @@ const RUNTIME_GPU_CLASSES = new Set([
 ]);
 const RUNTIME_ROLES = new Set(["offline", "host", "guest", "unknown"]);
 const RUNTIME_CONNECTIONS = new Set(["direct", "relay", "unknown"]);
+const RUNTIME_ERROR_CATEGORIES = new Set([
+  "none", "unknown", "wasm-memory", "threading", "gamepad", "graphics", "audio",
+  "network", "permission", "wasm-runtime", "javascript-type",
+]);
+const RUNTIME_VISIBILITY = new Set(["visible", "hidden", "prerender", "unknown"]);
+const RUNTIME_ISOLATION = new Set(["isolated", "not-isolated", "unknown"]);
+const RUNTIME_AVAILABILITY = new Set(["available", "unavailable", "unknown"]);
+const RUNTIME_WEBGL = new Set(["webgl2", "webgl", "unavailable", "unknown"]);
 
 function secureHeaders(initial) {
   const headers = new Headers(initial);
@@ -81,6 +89,10 @@ function finiteNumber(value, minimum, maximum) {
 
 function shortString(value, maximumLength) {
   return typeof value === "string" && value.length > 0 && value.length <= maximumLength;
+}
+
+function safeToken(value, maximumLength) {
+  return shortString(value, maximumLength) && /^[A-Za-z0-9_$.:~-]+$/u.test(value);
 }
 
 function browserFamily(userAgent) {
@@ -152,6 +164,23 @@ async function recordRuntime(request, env) {
   } catch {
     return new Response("Invalid telemetry.\n", { status: 400, headers: secureHeaders() });
   }
+  const errorCategory = body && RUNTIME_ERROR_CATEGORIES.has(body.errorCategory)
+    ? body.errorCategory : "none";
+  const errorFingerprint = body && body.errorFingerprint === "none"
+    ? "none" : (body && typeof body.errorFingerprint === "string" &&
+      /^[0-9a-f]{16}$/u.test(body.errorFingerprint) ? body.errorFingerprint : "none");
+  const errorTopFrame = body && safeToken(body.errorTopFrame, 64) ? body.errorTopFrame : "none";
+  const visibility = body && RUNTIME_VISIBILITY.has(body.visibility) ? body.visibility : "unknown";
+  const isolation = body && RUNTIME_ISOLATION.has(body.isolation) ? body.isolation : "unknown";
+  const sharedMemory = body && RUNTIME_AVAILABILITY.has(body.sharedMemory)
+    ? body.sharedMemory : "unknown";
+  const webgl = body && RUNTIME_WEBGL.has(body.webgl) ? body.webgl : "unknown";
+  const gamepadApi = body && RUNTIME_AVAILABILITY.has(body.gamepadApi)
+    ? body.gamepadApi : "unknown";
+  const hardwareConcurrency = body && finiteNumber(body.hardwareConcurrency, 0, 1024)
+    ? body.hardwareConcurrency : 0;
+  const deviceMemoryGb = body && finiteNumber(body.deviceMemoryGb, 0, 1024)
+    ? body.deviceMemoryGb : 0;
   if (
     !body || typeof body !== "object" || Array.isArray(body) ||
     !shortString(body.sessionId, 64) || !shortString(body.buildId, 96) ||
@@ -165,7 +194,18 @@ async function recordRuntime(request, env) {
     !finiteNumber(body.mapIndex, -1, 127) || !finiteNumber(body.clientState, -1, 16) ||
     !finiteNumber(body.onlineState, -1, 16) ||
     !finiteNumber(body.viewportWidth, 1, 32_768) || !finiteNumber(body.viewportHeight, 1, 32_768) ||
-    !finiteNumber(body.dpr, 0.25, 16)
+    !finiteNumber(body.dpr, 0.25, 16) ||
+    (body.errorCategory !== undefined && !RUNTIME_ERROR_CATEGORIES.has(body.errorCategory)) ||
+    (body.errorFingerprint !== undefined && body.errorFingerprint !== "none" &&
+      !/^[0-9a-f]{16}$/u.test(body.errorFingerprint)) ||
+    (body.errorTopFrame !== undefined && !safeToken(body.errorTopFrame, 64)) ||
+    (body.visibility !== undefined && !RUNTIME_VISIBILITY.has(body.visibility)) ||
+    (body.isolation !== undefined && !RUNTIME_ISOLATION.has(body.isolation)) ||
+    (body.sharedMemory !== undefined && !RUNTIME_AVAILABILITY.has(body.sharedMemory)) ||
+    (body.webgl !== undefined && !RUNTIME_WEBGL.has(body.webgl)) ||
+    (body.gamepadApi !== undefined && !RUNTIME_AVAILABILITY.has(body.gamepadApi)) ||
+    (body.hardwareConcurrency !== undefined && !finiteNumber(body.hardwareConcurrency, 0, 1024)) ||
+    (body.deviceMemoryGb !== undefined && !finiteNumber(body.deviceMemoryGb, 0, 1024))
   ) {
     return new Response("Invalid telemetry.\n", { status: 400, headers: secureHeaders() });
   }
@@ -185,10 +225,19 @@ async function recordRuntime(request, env) {
       typeof cf.country === "string" ? cf.country : "unknown",
       typeof cf.colo === "string" ? cf.colo : "unknown",
       `${Math.round(body.viewportWidth)}x${Math.round(body.viewportHeight)}`,
+      errorCategory,
+      errorFingerprint,
+      errorTopFrame,
+      visibility,
+      isolation,
+      sharedMemory,
+      webgl,
+      gamepadApi,
     ],
     doubles: [
       body.elapsedMs, body.loops, body.swaps, body.memoryBytes, body.controllerCount,
       body.mapIndex, body.clientState, body.onlineState, body.dpr, 1,
+      hardwareConcurrency, deviceMemoryGb,
     ],
     indexes: [body.sessionId],
   });

@@ -114,6 +114,40 @@ async function runtimeSummary(hours = 24) {
   console.table(value.data || value);
 }
 
+async function crashSummary(hours = 24) {
+  const sql = `
+    SELECT blob1 AS build, blob2 AS event, blob3 AS stage, blob4 AS browser,
+      blob6 AS device, blob7 AS gpu, blob13 AS category, blob14 AS fingerprint,
+      blob15 AS top_frame, blob16 AS visibility, blob17 AS isolation,
+      blob18 AS shared_memory, blob19 AS webgl, blob20 AS gamepad_api,
+      COUNT() AS events, COUNT(DISTINCT index1) AS sessions,
+      ROUND(AVG(double1) / 1000, 1) AS avg_elapsed_s,
+      ROUND(AVG(double4) / 1048576, 1) AS avg_memory_mb,
+      ROUND(AVG(double11), 1) AS avg_cpu_threads,
+      ROUND(AVG(double12), 1) AS avg_device_memory_gb
+    FROM halo_web_runtime
+    WHERE timestamp > NOW() - INTERVAL '${Math.max(1, Math.min(720, hours))}' HOUR
+      AND blob2 IN ('runtime_error', 'runtime_abort', 'webgl_context_lost')
+      AND blob13 NOT IN ('', 'none')
+    GROUP BY build, event, stage, browser, device, gpu, category, fingerprint,
+      top_frame, visibility, isolation, shared_memory, webgl, gamepad_api
+    ORDER BY sessions DESC, events DESC`;
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/analytics_engine/sql`,
+    {
+      body: sql,
+      headers: {
+        Authorization: `Bearer ${required(API_TOKEN, "CLOUDFLARE_API_TOKEN")}`,
+        "Content-Type": "text/plain",
+      },
+      method: "POST",
+    },
+  );
+  const value = await response.json();
+  if (!response.ok) throw new Error(JSON.stringify(value));
+  console.table(value.data || value);
+}
+
 async function turnSummary(days = 7) {
   const to = new Date();
   const from = new Date(to.getTime() - Math.max(1, Math.min(90, days)) * 86_400_000);
@@ -171,6 +205,7 @@ try {
   if (command === "fps") await performanceSummary(Number(first) || 24);
   else if (command === "campaign") await campaignSummary(Number(first) || 24);
   else if (command === "runtime") await runtimeSummary(Number(first) || 24);
+  else if (command === "crashes") await crashSummary(Number(first) || 24);
   else if (command === "turn") await turnSummary(Number(first) || 7);
   else if (command === "turn-live") console.dir(
     await signaling(`/v1/admin/turn?hours=${Math.max(1, Math.min(168, Number(first) || 24))}`),
@@ -199,7 +234,7 @@ try {
     await signaling(`/v1/admin/bans/${encodeURIComponent(first)}`, { method: "DELETE" });
     console.log(`Unbanned ${first}.`);
   } else {
-    console.log("Usage: halo_telemetry.mjs fps [hours] | campaign [hours] | runtime [hours] | turn [days] | turn-live [hours] | turn-check | turn-disable | turn-enable | bans | ban ACTOR_ID [reason] | unban ACTOR_ID");
+    console.log("Usage: halo_telemetry.mjs fps [hours] | campaign [hours] | runtime [hours] | crashes [hours] | turn [days] | turn-live [hours] | turn-check | turn-disable | turn-enable | bans | ban ACTOR_ID [reason] | unban ACTOR_ID");
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

@@ -7,6 +7,8 @@ streams those maps from the R2 bucket configured in services/web/wrangler.jsonc.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -41,6 +43,10 @@ HEADERS = """/*
   Content-Type: application/octet-stream
 """
 
+BUILD_META_PATTERN = re.compile(
+    rb'<meta name="halo-build-id" content="[A-Za-z0-9._-]+">'
+)
+
 
 def checked_copy(source: Path, destination: Path) -> int:
     if not source.is_file():
@@ -56,6 +62,28 @@ def checked_copy(source: Path, destination: Path) -> int:
     return size
 
 
+def asset_build_id(web_build: Path) -> str:
+    digest = hashlib.sha256()
+    for name in ("halo.html", "halo.js", "halo.wasm"):
+        source = web_build / name
+        if not source.is_file():
+            raise FileNotFoundError(f"required web asset is missing: {source}")
+        digest.update(name.encode("ascii"))
+        with source.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return f"web-{digest.hexdigest()[:24]}"
+
+
+def stamp_build_id(path: Path, build_id: str) -> None:
+    contents = path.read_bytes()
+    replacement = f'<meta name="halo-build-id" content="{build_id}">'.encode("ascii")
+    updated, count = BUILD_META_PATTERN.subn(replacement, contents, count=1)
+    if count != 1:
+        raise ValueError(f"halo build metadata is missing from {path}")
+    path.write_bytes(updated)
+
+
 def main() -> int:
     repository = Path(__file__).resolve().parents[1]
     web_build = repository / "build" / "web"
@@ -65,6 +93,7 @@ def main() -> int:
     if output.exists():
         shutil.rmtree(output)
     output.mkdir(parents=True)
+    build_id = asset_build_id(web_build)
 
     total = 0
     for name in (
@@ -77,6 +106,8 @@ def main() -> int:
     # Cloudflare serves index.html for the root URL. Keep halo.html too so old
     # invite links and the local development URL continue to work.
     total += checked_copy(web_build / "halo.html", output / "index.html")
+    stamp_build_id(output / "halo.html", build_id)
+    stamp_build_id(output / "index.html", build_id)
 
     for name in ("ui.map", *MULTIPLAYER_MAPS):
         total += checked_copy(maps / name, output / "assets" / "maps" / name)
@@ -92,7 +123,7 @@ def main() -> int:
 
     (output / "_headers").write_text(HEADERS, encoding="utf-8")
     print(
-        f"Staged {total / (1024 * 1024):.1f} MiB of browser assets in {output}",
+        f"Staged {total / (1024 * 1024):.1f} MiB of browser assets in {output} ({build_id})",
         flush=True,
     )
     return 0
