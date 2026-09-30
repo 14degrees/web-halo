@@ -406,6 +406,13 @@ export default {
       return env.ASSETS.fetch(request);
     }
 
+    if (!env.CAMPAIGN_MAPS) {
+      /* A multiplayer-only deployment has no campaign bucket bound. */
+      return new Response("Campaign maps are not available on this deployment.\n", {
+        status: 404,
+        headers: secureHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+      });
+    }
     try {
       return await serveCampaignMap(request, env.CAMPAIGN_MAPS, name);
     } catch (error) {

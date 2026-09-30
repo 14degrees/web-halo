@@ -92,6 +92,42 @@ browser executable and game data are deliberately excluded from Git history;
 they are built and deployed from an entitled local copy of the game. See
 [docs/telemetry.md](docs/telemetry.md) for performance and TURN operations.
 
+### Run your own copy of the browser version
+
+The checked-in configuration names the public deployment above. To host the
+game yourself, on your own Cloudflare account, with your own always-open
+lobby:
+
+1. Create a free Cloudflare account. Note the workers.dev subdomain shown
+   under Workers & Pages.
+2. From the repository root, log in and run the setup once. It rewrites the
+   two Worker configurations and the page for your account, creates the KV
+   namespace, generates the secrets, and deploys the signaling Worker:
+
+   ```sh
+   cd services/signaling && npm ci && npx wrangler login && cd ../..
+   python3 tools/web_setup_deployment.py --name halo \
+       --game-url https://halo.YOUR-SUBDOMAIN.workers.dev
+   ```
+
+   Add `--turnstile-sitekey` and `--turnstile-secret` to keep the
+   human-verification widget; without them the deployment relies on its rate
+   limits. Add `--campaign` to keep the streamed campaign maps, which need
+   the R2 bucket described in [services/web/README.md](services/web/README.md).
+3. On a Mac with your Halo disc image, build the game and publish the page:
+
+   ```sh
+   python3 tools/web_run.py --iso "$HOME/Downloads/Halo.iso"
+   cd services/web && npm ci && npm run deploy
+   ```
+
+4. Commit the rewritten configuration and page.
+5. For a lobby that is open whenever nobody is playing, run the dedicated
+   host with the `HOST_SERVICE_TOKEN` the setup printed. Refer to
+   [services/dedicated-host/README.md](services/dedicated-host/README.md).
+
+Only deploy game data that you are entitled to host and distribute.
+
 ### Build the browser version on macOS
 
 Install Ninja and an [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html).

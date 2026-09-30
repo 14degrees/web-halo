@@ -54,7 +54,9 @@ Because this intentionally avoids accounts and persistent tracking, players
 behind the same public NAT share one bandwidth identity and cap.
 
 Room and initial session creation also require a server-validated Turnstile
-token with the expected action and approved hostname. Supplied tokens are
+token with the expected action and approved hostname, when `TURNSTILE_HOSTNAMES`
+is set. A deployment without it (no widget on the page) skips Turnstile and
+relies on the rate limits and capability entropy alone. Supplied tokens are
 always sent to Siteverify, so forged, expired, cross-action and replayed tokens
 are rejected. A short actor- and action-bound proof permits only automatic
 session reconnection without interrupting a game with another challenge.

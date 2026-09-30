@@ -26,6 +26,12 @@ export async function requireHumanVerification(
   if (env.ENVIRONMENT !== "production" && env.TURNSTILE_TEST_BYPASS === "true") {
     return;
   }
+  /* Turnstile is optional: a deployment with no TURNSTILE_HOSTNAMES has no
+     widget on its page and relies on the rate limits and capability entropy
+     alone. Once hostnames are configured, verification is required. */
+  if (expectedHostnames(env).size === 0) {
+    return;
+  }
   /* A missing token is accepted only for short-lived automatic reconnects.
      When the client does send a token, always submit it to Siteverify. This
      preserves Turnstile's single-use guarantee instead of allowing a replay
