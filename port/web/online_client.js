@@ -61,6 +61,23 @@
     JOINED: 6,
     ERROR: 7,
   });
+  /* web_online_ui.h's enum web_online_match_state */
+  var MATCH_STATE = Object.freeze({
+    NONE: 0,
+    LOBBY: 1,
+    COUNTDOWN: 2,
+    INGAME: 3,
+    POSTGAME: 4,
+  });
+  var MATCH_STATE_NAMES = Object.freeze(["none", "lobby", "countdown", "ingame", "postgame"]);
+  /* A dedicated host's defaults (services/dedicated-host) */
+  var DEDICATED_DEFAULTS = Object.freeze({
+    name: "Server",
+    style: "white",
+    minimumPlayers: 1,
+    countdownSeconds: 20,
+    postgameSeconds: 15,
+  });
   var TRANSPORT_STATE = Object.freeze({
     DISCONNECTED: 0,
     CONNECTING: 1,
@@ -127,6 +144,9 @@
     guestWasJoined: false,
     leavePromise: null,
     wizardStep: "map",
+    /* A dedicated host: its credential, rotation and progress through it. */
+    dedicated: null,
+    matchState: MATCH_STATE.NONE,
   };
 
   function byId(id) {
@@ -961,6 +981,14 @@
     }
   }
 
+  function requestDedicatedHost(settings, dedicated) {
+    var fn = wasmFunction("platform_web_online_host_dedicated");
+    if (!fn(settings.mapIndex, settings.modeIndex, dedicated.minimumPlayers,
+        dedicated.countdownSeconds, dedicated.postgameSeconds)) {
+      throw new Error("Halo rejected the dedicated host settings.");
+    }
+  }
+
   function requestConfiguredHost(settings) {
     if (!wasmFunction("platform_web_online_host_configured")(
       settings.mapIndex, settings.modeIndex)) {
@@ -1571,7 +1599,8 @@
     await openSocket(result.host.session.websocketUrl, operation);
     requireCurrentOperation(operation);
     applyPlayerCustomization(profile);
-    requestConfiguredHost(settings);
+    if (session.dedicated) requestDedicatedHost(settings, session.dedicated);
+    else requestConfiguredHost(settings);
     session.gameCommandIssued = true;
     startGamePolling();
     startRoomRenewal();
@@ -1606,17 +1635,182 @@
           session.role !== "host" || !session.room || !session.roomTicket) {
         return;
       }
-      fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id) + "/renew", {
-        method: "POST",
-        body: JSON.stringify({ ticket: session.roomTicket }),
-      }).then(function(result) {
-        if (operation === session.operationGeneration && result && result.room) {
-          session.room = result.room;
-        }
-      }).catch(function() {
+      renewRoom(operation).catch(function() {
         /* The room keeps its current expiry; the next renewal retries. */
       });
     }, ROOM_RENEW_MILLISECONDS);
+  }
+
+  /* Pushes the room's expiry back and, for a dedicated host, publishes the
+     lobby it is on now. */
+  function renewRoom(operation, lobby) {
+    var body = { ticket: session.roomTicket };
+    if (lobby) body.lobby = { mapIndex: lobby.mapIndex, modeIndex: lobby.modeIndex };
+    return fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id) + "/renew", {
+      method: "POST",
+      headers: requestHeaders(),
+      body: JSON.stringify(body),
+    }).then(function(result) {
+      if (operation === session.operationGeneration && result && result.room) {
+        session.room = result.room;
+      }
+      return result;
+    });
+  }
+
+  /* JSON headers, with the dedicated host's credential when it has one. */
+  function requestHeaders() {
+    var headers = { "Content-Type": "application/json" };
+    if (session.dedicated && session.dedicated.serviceToken) {
+      headers.Authorization = "Bearer " + session.dedicated.serviceToken;
+    }
+    return headers;
+  }
+
+  function normalizeRotation(value) {
+    var entries = Array.isArray(value) && value.length ? value : [DEFAULT_PUBLIC_LOBBY];
+    return entries.map(function(entry) {
+      var settings = normalizeHostSettings(entry);
+      return { mapIndex: settings.mapIndex, modeIndex: settings.modeIndex };
+    });
+  }
+
+  function positiveInteger(value, fallback, maximum) {
+    var number = Number(value);
+    if (!Number.isInteger(number) || number < 0 || number > maximum) return fallback;
+    return number;
+  }
+
+  /* A dedicated host: the page runs on a server (services/dedicated-host)
+     with the service credential, keeps a public room open, and lets Halo's
+     driver (web_online_ui.c) start and restart games. The rotation advances
+     after each game. */
+  async function hostDedicated(config) {
+    config = config || {};
+    if (!session.runtimeReady) throw new Error("Halo is still starting.");
+    var serviceToken = String(config.serviceToken || "");
+    if (!serviceToken) throw new Error("A dedicated host needs the service credential.");
+    var rotation = normalizeRotation(config.rotation);
+    var profile = normalizePlayerProfile({
+      name: config.name || DEDICATED_DEFAULTS.name,
+      style: config.style || DEDICATED_DEFAULTS.style,
+    });
+    await leave(false);
+    var operation = ++session.operationGeneration;
+    session.active = true;
+    session.role = "host";
+    session.publicLobby = true;
+    session.dedicated = {
+      serviceToken: serviceToken,
+      rotation: rotation,
+      index: 0,
+      minimumPlayers: positiveInteger(config.minimumPlayers, DEDICATED_DEFAULTS.minimumPlayers, 127) || 1,
+      countdownSeconds: positiveInteger(config.countdownSeconds, DEDICATED_DEFAULTS.countdownSeconds, 255),
+      postgameSeconds: positiveInteger(config.postgameSeconds, DEDICATED_DEFAULTS.postgameSeconds, 255),
+      gamesPlayed: 0,
+      lastMatchState: MATCH_STATE.NONE,
+    };
+    syncTelemetryContext();
+    session.closing = false;
+    session.profile = profile;
+    writePlayerProfile(profile);
+    var settings = normalizeHostSettings(rotation[0]);
+    session.hostSettings = settings;
+    renderRoster();
+    showProgress();
+    setBusy(true);
+    setHeader("Opening public game…", "waiting");
+    setStatus("Preparing the dedicated lobby with " + hostSettingsLabel() + "…");
+    try {
+      var result = await fetchJson("/v1/rooms", {
+        method: "POST",
+        headers: requestHeaders(),
+        body: JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          buildId: buildId(),
+          capacity: ROOM_CAPACITY,
+          identifier: localIdentifier(),
+          visibility: "public",
+          dedicated: true,
+          lobby: { mapIndex: settings.mapIndex, modeIndex: settings.modeIndex },
+        }),
+      });
+      requireCurrentOperation(operation);
+      await completeHostSetup(result, settings, profile, operation);
+      setStatus("Dedicated lobby open on " + hostSettingsLabel() + ".");
+    } catch (error) {
+      if (operation === session.operationGeneration && (!error || !error.haloCanceled)) fail(error);
+      throw error;
+    } finally {
+      if (operation === session.operationGeneration) setBusy(false);
+    }
+  }
+
+  /* After each game, the next map and mode of the rotation, told to Halo for
+     the lobby that comes back and to the room service for the directory. */
+  function advanceRotation() {
+    var dedicated = session.dedicated;
+    if (!dedicated || !session.room) return;
+    dedicated.gamesPlayed++;
+    dedicated.index = (dedicated.index + 1) % dedicated.rotation.length;
+    var next = dedicated.rotation[dedicated.index];
+    try {
+      if (!wasmFunction("platform_web_online_set_next_game")(next.mapIndex, next.modeIndex)) return;
+    } catch (error) {
+      return;
+    }
+    try {
+      session.hostSettings = normalizeHostSettings(next);
+    } catch (error) {
+      /* The rotation was validated when it was set. */
+    }
+    renewRoom(session.operationGeneration, next).catch(function() {
+      /* The directory keeps the previous lobby until the next renewal. */
+    });
+  }
+
+  function pollDedicated() {
+    var dedicated = session.dedicated;
+    if (!dedicated) return;
+    var matchState;
+    try {
+      matchState = wasmFunction("platform_web_online_get_match_state")();
+    } catch (error) {
+      return;
+    }
+    session.matchState = matchState;
+    if (matchState !== dedicated.lastMatchState) {
+      telemetry("dedicated_" + (MATCH_STATE_NAMES[matchState] || "unknown"), "online");
+      /* The report has come up: the game just ended. */
+      if (matchState === MATCH_STATE.POSTGAME) advanceRotation();
+      dedicated.lastMatchState = matchState;
+    }
+  }
+
+  /* What the server's supervisor watches. */
+  function dedicatedStatus() {
+    var players = 0;
+    try {
+      players = wasmFunction("platform_web_online_get_player_count")();
+    } catch (error) {
+      players = 0;
+    }
+    return {
+      active: session.active,
+      dedicated: !!session.dedicated,
+      role: session.role,
+      roomId: session.room ? session.room.id : null,
+      roomExpiresAt: session.room ? session.room.expiresAt || null : null,
+      gameState: session.gameCommandIssued ? gameState() : GAME_STATE.IDLE,
+      matchState: MATCH_STATE_NAMES[session.matchState] || "none",
+      players: players,
+      connectedPeers: session.connectedPeerCount,
+      lobby: session.hostSettings ?
+        { mapIndex: session.hostSettings.mapIndex, modeIndex: session.hostSettings.modeIndex,
+          label: hostSettingsLabel() } : null,
+      rotationIndex: session.dedicated ? session.dedicated.index : 0,
+      gamesPlayed: session.dedicated ? session.dedicated.gamesPlayed : 0,
+    };
   }
 
   /* Quick join: the service seats this browser in the open public game, or
@@ -1760,6 +1954,7 @@
       return;
     }
     elements.dialog.dataset.gameState = String(state);
+    if (session.dedicated) pollDedicated();
     if (state === GAME_STATE.ERROR) {
       fail(new Error(GAME_ERRORS[gameError()] || "Halo could not enter the online lobby."));
       return;
@@ -1836,6 +2031,8 @@
     session.pendingInvite = null;
     session.pendingQuick = false;
     session.publicLobby = false;
+    session.dedicated = null;
+    session.matchState = MATCH_STATE.NONE;
     session.wizardStep = "map";
     syncTelemetryContext();
     renderRoster();
@@ -2101,9 +2298,12 @@
         showJoinConfirmation(session.pendingInvite);
       }
     },
+    isRuntimeReady: function() { return session.runtimeReady; },
     host: host,
     join: join,
     quickJoin: quickJoin,
+    hostDedicated: hostDedicated,
+    dedicatedStatus: dedicatedStatus,
     leave: function() { return leave(true); },
   });
 

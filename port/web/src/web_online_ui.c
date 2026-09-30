@@ -50,6 +50,12 @@ unsigned char network_game_client_has_local_player(
 	struct network_game_client *client,
 	short local_player_index);
 void platform_log(const char *format, ...);
+/* port/linux/game/network_lobby.c's, for a dedicated host */
+long network_lobby_player_count(void);
+void network_lobby_start_now(void);
+void network_lobby_end_game(void);
+unsigned char network_lobby_return_to_pregame(void);
+unsigned char network_lobby_restore_pregame_screen(void);
 
 enum
 {
@@ -72,6 +78,21 @@ enum
 	WEB_ONLINE_REQUEST_COMMAND_MASK = 0xff,
 	WEB_ONLINE_REQUEST_MAP_SHIFT = 8,
 	WEB_ONLINE_REQUEST_MODE_SHIFT = 16,
+
+	/* platform_web_online_host_dedicated's options, packed alike */
+	WEB_ONLINE_DEDICATED_MINIMUM_SHIFT = 0,
+	WEB_ONLINE_DEDICATED_COUNTDOWN_SHIFT = 8,
+	WEB_ONLINE_DEDICATED_POSTGAME_SHIFT = 16,
+	/* platform_web_online_set_next_game's: map, mode, and that one is set */
+	WEB_ONLINE_NEXT_GAME_VALID_BIT = 1 << 24,
+
+	/* a dedicated host: a game with no other player left in it ends after
+	this long; its lobby is put back this long after the client returns to
+	the pregame, once the stock map-select screen has taken over; a start
+	the server did not act on is asked again after this long */
+	WEB_ONLINE_DEDICATED_EMPTY_GAME_SECONDS = 30,
+	WEB_ONLINE_DEDICATED_RESTORE_SECONDS = 1,
+	WEB_ONLINE_DEDICATED_START_RETRY_SECONDS = 5,
 };
 
 #define WEB_FALSE ((unsigned char)0)
@@ -101,6 +122,12 @@ static atomic_uint web_online_customization_sequence = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_requested_color = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_requested_name[WEB_ONLINE_PLAYER_NAME_CHARACTERS];
 static unsigned int web_online_applied_customization_sequence;
+/* a dedicated host's options, its next game, and what it reports */
+static atomic_int web_online_dedicated_options = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_next_game = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_match_state = ATOMIC_VAR_INIT(_web_online_match_none);
+static atomic_int web_online_player_count = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_headless = ATOMIC_VAR_INIT(0);
 
 static struct
 {
@@ -116,6 +143,24 @@ static struct
 	int host_mode_index;
 	float seconds;
 	float player_retry_seconds;
+
+	/* a dedicated host (_web_online_command_host_dedicated) */
+	int dedicated;
+	int minimum_players;
+	float countdown_seconds;
+	float postgame_seconds;
+	/* how long enough players have been in the lobby */
+	float lobby_seconds;
+	/* until the start is asked (again) */
+	float start_retry_seconds;
+	/* how long the game has had no other player */
+	float empty_seconds;
+	/* how long the carnage report has shown */
+	float postgame_shown_seconds;
+	/* back from a game: the lobby's screen and countdown to put back */
+	int restore_pending;
+	float restore_seconds;
+	int last_client_state;
 } web_online;
 
 static void publish_state(int state)
@@ -162,6 +207,73 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_host_configured(
 		pack_request(_web_online_command_host, map_index, mode_index),
 		memory_order_release);
 	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_host_dedicated(
+	int map_index,
+	int mode_index,
+	int minimum_players,
+	int countdown_seconds,
+	int postgame_seconds)
+{
+	if (map_index < 0 || map_index >= _web_online_multiplayer_level_count ||
+		mode_index < 0 || mode_index >= _web_online_game_mode_count ||
+		minimum_players < 1 || minimum_players > 127 ||
+		countdown_seconds < 0 || countdown_seconds > WEB_ONLINE_DEDICATED_MAXIMUM_SECONDS ||
+		postgame_seconds < 0 || postgame_seconds > WEB_ONLINE_DEDICATED_MAXIMUM_SECONDS)
+	{
+		return 0;
+	}
+	/* The options first: the game thread reads them when it takes the
+	request. */
+	atomic_store_explicit(
+		&web_online_dedicated_options,
+		(minimum_players << WEB_ONLINE_DEDICATED_MINIMUM_SHIFT) |
+			(countdown_seconds << WEB_ONLINE_DEDICATED_COUNTDOWN_SHIFT) |
+			(postgame_seconds << WEB_ONLINE_DEDICATED_POSTGAME_SHIFT),
+		memory_order_release);
+	atomic_store_explicit(&web_online_next_game, 0, memory_order_release);
+	atomic_store_explicit(
+		&web_online_requested_request,
+		pack_request(_web_online_command_host_dedicated, map_index, mode_index),
+		memory_order_release);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_set_next_game(
+	int map_index,
+	int mode_index)
+{
+	if (map_index < 0 || map_index >= _web_online_multiplayer_level_count ||
+		mode_index < 0 || mode_index >= _web_online_game_mode_count)
+	{
+		return 0;
+	}
+	atomic_store_explicit(
+		&web_online_next_game,
+		WEB_ONLINE_NEXT_GAME_VALID_BIT | pack_request(0, map_index, mode_index),
+		memory_order_release);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_get_match_state(void)
+{
+	return atomic_load_explicit(&web_online_match_state, memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_get_player_count(void)
+{
+	return atomic_load_explicit(&web_online_player_count, memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE void platform_web_online_set_headless(int headless)
+{
+	atomic_store_explicit(&web_online_headless, headless ? 1 : 0, memory_order_release);
+}
+
+int platform_web_online_is_headless(void)
+{
+	return atomic_load_explicit(&web_online_headless, memory_order_acquire);
 }
 
 EMSCRIPTEN_KEEPALIVE int platform_web_online_set_player_customization(
@@ -334,9 +446,17 @@ static void fail_session(int error)
 	publish_state(_web_online_state_error);
 }
 
+static void publish_match(int state)
+{
+	atomic_store_explicit(&web_online_match_state, state, memory_order_release);
+}
+
 static void begin_request(int command, int map_index, int mode_index)
 {
-	platform_log("web online: request %s", command == _web_online_command_host ? "host" : "join");
+	int dedicated = command == _web_online_command_host_dedicated;
+
+	platform_log("web online: request %s",
+		dedicated ? "dedicated host" : command == _web_online_command_host ? "host" : "join");
 	if (web_online.command || web_online.setup)
 	{
 		reset_owned_game();
@@ -344,9 +464,23 @@ static void begin_request(int command, int map_index, int mode_index)
 		/* main_menu_load() runs near the beginning of the next frame. */
 		web_online.wait_frames = 1;
 	}
-	web_online.command = command;
+	/* A dedicated host is a host with a driver besides. */
+	web_online.command = dedicated ? _web_online_command_host : command;
+	web_online.dedicated = dedicated;
 	web_online.host_map_index = map_index;
 	web_online.host_mode_index = mode_index;
+	if (dedicated)
+	{
+		int options = atomic_load_explicit(&web_online_dedicated_options, memory_order_acquire);
+
+		web_online.minimum_players = (options >> WEB_ONLINE_DEDICATED_MINIMUM_SHIFT) & 0xff;
+		web_online.countdown_seconds = (float)((options >> WEB_ONLINE_DEDICATED_COUNTDOWN_SHIFT) & 0xff);
+		web_online.postgame_seconds = (float)((options >> WEB_ONLINE_DEDICATED_POSTGAME_SHIFT) & 0xff);
+		web_online.last_client_state = WEB_NONE;
+		platform_log("web online: dedicated host starts with %d player(s), %g s countdown, %g s postgame",
+			web_online.minimum_players, web_online.countdown_seconds, web_online.postgame_seconds);
+	}
+	publish_match(_web_online_match_none);
 	publish_error(_web_online_error_none);
 	publish_state(_web_online_state_waiting_for_main_menu);
 }
@@ -356,8 +490,158 @@ static void cancel_request(void)
 	if (web_online.command || web_online.setup)
 		reset_owned_game();
 	clear_session();
+	publish_match(_web_online_match_none);
 	publish_error(_web_online_error_none);
 	publish_state(_web_online_state_idle);
+}
+
+/* (a dedicated host) the next game's map and mode, if the browser set one,
+on the lobby */
+static void apply_next_game(void)
+{
+	int next = atomic_exchange_explicit(&web_online_next_game, 0, memory_order_acq_rel);
+	int map_index;
+	int mode_index;
+
+	if (!(next & WEB_ONLINE_NEXT_GAME_VALID_BIT))
+		return;
+	map_index = (next >> WEB_ONLINE_REQUEST_MAP_SHIFT) & 0xff;
+	mode_index = (next >> WEB_ONLINE_REQUEST_MODE_SHIFT) & 0xff;
+	if (player_ui_configure_network_server_game(map_index, mode_index))
+	{
+		web_online.host_map_index = map_index;
+		web_online.host_mode_index = mode_index;
+		platform_log("web online: next game is map %d mode %d", map_index, mode_index);
+	}
+	else
+	{
+		platform_log("web online: could not set the next game (map %d mode %d)", map_index, mode_index);
+	}
+}
+
+/* (a dedicated host) the driver: starts the game when players are in,
+ends one everybody has left, and brings the lobby back after each */
+static void update_dedicated(float seconds)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	short client_state;
+	long players;
+	long others;
+
+	if (!client)
+		return;
+	client_state = network_game_client_get_state(client, NULL);
+	players = network_lobby_player_count();
+	atomic_store_explicit(&web_online_player_count, (int)players, memory_order_release);
+	/* the host's own player, once it is in */
+	others = players - (web_online.player_added ? 1 : 0);
+	if (others < 0)
+		others = 0;
+
+	switch (client_state)
+	{
+	case _network_client_pregame:
+		web_online.empty_seconds = 0.0f;
+		web_online.postgame_shown_seconds = 0.0f;
+		if (web_online.last_client_state == _network_client_postgame)
+		{
+			web_online.restore_pending = WEB_TRUE;
+			web_online.restore_seconds = 0.0f;
+		}
+		if (web_online.restore_pending)
+		{
+			/* The stock return from a game shows the host a map-select screen
+			with the countdown paused (network_game_reset_to_pregame_ui). Let
+			it settle, then put the lobby's screen back, with the next game. */
+			web_online.restore_seconds += seconds;
+			web_online.lobby_seconds = 0.0f;
+			web_online.start_retry_seconds = 0.0f;
+			if (web_online.restore_seconds >= (float)WEB_ONLINE_DEDICATED_RESTORE_SECONDS)
+			{
+				apply_next_game();
+				if (network_lobby_restore_pregame_screen())
+				{
+					web_online.restore_pending = WEB_FALSE;
+					platform_log("web online: the lobby is back");
+				}
+				else
+				{
+					web_online.restore_seconds = 0.0f;
+				}
+			}
+			publish_match(_web_online_match_lobby);
+			break;
+		}
+		apply_next_game();
+		if (others >= web_online.minimum_players)
+		{
+			web_online.lobby_seconds += seconds;
+			publish_match(_web_online_match_countdown);
+			if (web_online.lobby_seconds >= web_online.countdown_seconds)
+			{
+				web_online.start_retry_seconds -= seconds;
+				if (web_online.start_retry_seconds <= 0.0f)
+				{
+					platform_log("web online: starting the game with %ld player(s)", players);
+					network_lobby_start_now();
+					web_online.start_retry_seconds = (float)WEB_ONLINE_DEDICATED_START_RETRY_SECONDS;
+				}
+			}
+		}
+		else
+		{
+			web_online.lobby_seconds = 0.0f;
+			web_online.start_retry_seconds = 0.0f;
+			publish_match(_web_online_match_lobby);
+		}
+		break;
+
+	case _network_client_ingame:
+		web_online.lobby_seconds = 0.0f;
+		web_online.start_retry_seconds = 0.0f;
+		web_online.postgame_shown_seconds = 0.0f;
+		publish_match(_web_online_match_ingame);
+		if (others == 0)
+		{
+			web_online.empty_seconds += seconds;
+			if (web_online.empty_seconds >= (float)WEB_ONLINE_DEDICATED_EMPTY_GAME_SECONDS)
+			{
+				platform_log("web online: ending the game nobody is left in");
+				network_lobby_end_game();
+				web_online.empty_seconds = 0.0f;
+			}
+		}
+		else
+		{
+			web_online.empty_seconds = 0.0f;
+		}
+		break;
+
+	case _network_client_postgame:
+		publish_match(_web_online_match_postgame);
+		web_online.postgame_shown_seconds += seconds;
+		if (web_online.postgame_shown_seconds >= web_online.postgame_seconds)
+		{
+			if (network_lobby_return_to_pregame())
+			{
+				platform_log("web online: back to the lobby");
+				web_online.postgame_shown_seconds = 0.0f;
+				web_online.restore_pending = WEB_TRUE;
+				web_online.restore_seconds = 0.0f;
+			}
+			else
+			{
+				/* asked again in a couple of seconds */
+				web_online.postgame_shown_seconds = web_online.postgame_seconds - 2.0f;
+			}
+		}
+		break;
+
+	default:
+		publish_match(_web_online_match_none);
+		break;
+	}
+	web_online.last_client_state = client_state;
 }
 
 static void setup_host(void)
@@ -445,6 +729,8 @@ static void update_host(float seconds)
 	if (web_online.seconds >= 0.5f)
 		add_primary_player_when_ready(client, seconds);
 	publish_state(_web_online_state_hosting);
+	if (web_online.dedicated)
+		update_dedicated(seconds);
 }
 
 static int load_join_pregame_screen(void)
@@ -555,8 +841,11 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 		cancel_request();
 		return;
 	}
-	if (command == _web_online_command_host || command == _web_online_command_join)
+	if (command == _web_online_command_host || command == _web_online_command_join ||
+		command == _web_online_command_host_dedicated)
+	{
 		begin_request(command, map_index, mode_index);
+	}
 
 	if (!web_online.command)
 		return;

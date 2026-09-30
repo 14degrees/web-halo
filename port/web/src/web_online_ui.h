@@ -14,6 +14,10 @@ enum web_online_command
 	_web_online_command_host,
 	_web_online_command_join,
 	_web_online_command_cancel,
+	/* a dedicated host: a server-run browser that keeps a public lobby open,
+	starts its games when players are in, and brings the lobby back after
+	each (platform_web_online_host_dedicated) */
+	_web_online_command_host_dedicated,
 };
 
 enum web_online_multiplayer_level
@@ -75,6 +79,24 @@ enum web_online_transport_state
 	_web_online_transport_failed,
 };
 
+/* where a dedicated host's game is (platform_web_online_get_match_state) */
+enum web_online_match_state
+{
+	_web_online_match_none = 0,
+	/* the lobby, waiting for players */
+	_web_online_match_lobby,
+	/* enough players are in: the game starts when the countdown ends */
+	_web_online_match_countdown,
+	_web_online_match_ingame,
+	/* the carnage report; the lobby comes back after a pause */
+	_web_online_match_postgame,
+};
+
+enum
+{
+	WEB_ONLINE_DEDICATED_MAXIMUM_SECONDS = 255,
+};
+
 enum
 {
 	WEB_ONLINE_PLAYER_NAME_CHARACTERS = 11,
@@ -101,6 +123,25 @@ int platform_web_online_get_state(void);
 int platform_web_online_get_error(void);
 void platform_web_online_set_transport_state(int state);
 int platform_web_online_get_transport_state(void);
+
+/* A dedicated host. minimum_players counts the players besides the host's
+own; the game starts countdown_seconds after that many are in the lobby,
+and the lobby returns postgame_seconds after a game ends. */
+int platform_web_online_host_dedicated(
+	int map_index,
+	int mode_index,
+	int minimum_players,
+	int countdown_seconds,
+	int postgame_seconds);
+/* The next game's map and mode: applied when the lobby is next open. */
+int platform_web_online_set_next_game(int map_index, int mode_index);
+int platform_web_online_get_match_state(void);
+/* The players in the network game, the host's own among them. */
+int platform_web_online_get_player_count(void);
+/* Before the game starts (Module.onRuntimeInitialized): draw nothing, as a
+server has no screen. Read by the platform layer when it seeds settings. */
+void platform_web_online_set_headless(int headless);
+int platform_web_online_is_headless(void);
 
 /* Called on Halo's game thread once per frame. */
 void web_online_ui_update(int main_menu_loaded, float seconds);

@@ -21,6 +21,7 @@ import {
   TOKEN_PATTERN,
   parseCreateRoomInput,
   parseCreateSessionInput,
+  parseLobbySettings,
   parseQuickJoinInput,
   type CreateRoomResponse,
   type CreateSessionResponse,
@@ -779,12 +780,22 @@ async function renewRoom(
   roomId: string,
 ): Promise<Response> {
   await requireValidRoomId(roomId, env);
-  const ticket = readTicketBody(await readJsonBody(request));
+  const payload = await readJsonBody(request);
+  const ticket = readTicketBody(payload);
+  let lobby: LobbySettings | undefined;
+  if ((payload as Record<string, unknown>).lobby !== undefined) {
+    const parsedLobby = parseLobbySettings((payload as Record<string, unknown>).lobby);
+    if (!parsedLobby.ok) {
+      throw new HttpError(400, "VALIDATION_FAILED", parsedLobby.message);
+    }
+    lobby = parsedLobby.value;
+  }
   const dedicated = await requestIsDedicatedHost(request, env);
   const result = await env.ROOMS.getByName(roomId).renewRoom(
     ticket,
     Date.now(),
     roomTtlMilliseconds(env, dedicated),
+    lobby,
   );
   if (!result.ok) {
     throw new HttpError(

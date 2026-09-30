@@ -289,4 +289,34 @@ describe("public lobby", () => {
     const longer = await dedicatedRenewal.json<RenewRoomResponse>();
     expect(longer.room.expiresAt).toBeGreaterThanOrEqual(before + 86_400_000 - 5_000);
   });
+
+  it("lets a renewal change the lobby the room advertises", async () => {
+    const buildId = freshBuild();
+    const room = await (await createRoom(buildId, { visibility: "public" })).json<CreateRoomResponse>();
+    const hostSocket = await connect(room.host.session.websocketUrl);
+    const bad = await exports.default.fetch(
+      jsonRequest(`/v1/rooms/${room.room.id}/renew`, {
+        lobby: { mapIndex: 2, modeIndex: 9 },
+        ticket: room.host.ticket,
+      }),
+    );
+    expect(bad.status).toBe(400);
+
+    const renewed = await exports.default.fetch(
+      jsonRequest(`/v1/rooms/${room.room.id}/renew`, {
+        lobby: { mapIndex: 5, modeIndex: 1 },
+        ticket: room.host.ticket,
+      }),
+    );
+    expect(renewed.status).toBe(200);
+    expect((await renewed.json<RenewRoomResponse>()).room.lobby).toEqual({ mapIndex: 5, modeIndex: 1 });
+
+    const joined = await (await quickJoin(buildId, "3a3a3a3a3a3a")).json<QuickJoinResponse>();
+    expect(joined.role).toBe("guest");
+    expect(joined.room.lobby).toEqual({ mapIndex: 5, modeIndex: 1 });
+    const entries = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).list(Date.now());
+    const entry = entries.find((candidate) => candidate.roomId === room.room.id);
+    expect(entry).toMatchObject({ mapIndex: 5, modeIndex: 1 });
+    hostSocket.close(1000, "test complete");
+  });
 });

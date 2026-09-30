@@ -2567,6 +2567,13 @@
       onRuntimeInitialized() {
         runtimeStage = "runtime-initialized";
         sendRuntimeTelemetry("runtime_initialized", runtimeStage);
+        /* A dedicated host (services/dedicated-host) sets window.HALO_DEDICATED
+           before the page loads. The game thread has not started yet, so this
+           is in time for the platform layer to run without a renderer. */
+        if (window.HALO_DEDICATED && window.HALO_DEDICATED.headless !== false &&
+            typeof Module._platform_web_online_set_headless === "function") {
+          Module._platform_web_online_set_headless(1);
+        }
         applyMute();
         if (window.HaloOnline) {
           window.HaloOnline.runtimeReady();

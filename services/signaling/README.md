@@ -70,9 +70,9 @@ openssl rand -hex 32 | npx wrangler secret put ROOM_ID_SECRET
 ```
 
 A dedicated host (a server-run copy of the browser build that keeps a public
-lobby open) authenticates with a separate bearer secret instead of Turnstile.
-It is optional; without it, public rooms are only ever hosted by players'
-browsers:
+lobby open; `services/dedicated-host/README.md`) authenticates with a
+separate bearer secret instead of Turnstile. It is optional; without it,
+public rooms are only ever hosted by players' browsers:
 
 ```sh
 openssl rand -hex 32 | npx wrangler secret put HOST_SERVICE_TOKEN
@@ -304,6 +304,8 @@ Content-Type: application/json
 
 Extends the room to one room TTL from now (the dedicated TTL when the request
 also carries the service credential) and returns `{ "v": 1, "room": {...} }`.
+An optional `lobby` (`{ "mapIndex", "modeIndex" }`) replaces the settings the
+room advertises, which is how a dedicated host publishes its map rotation.
 The browser host calls this every 50 minutes; a dedicated host relies on it to
 keep its lobby open indefinitely.
 

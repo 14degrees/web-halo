@@ -3,6 +3,7 @@
 #include "platform.h"
 #include "posix.h"
 #include "gl.h"
+#include "web_online_ui.h"
 
 #include <emscripten/emscripten.h>
 #include <emscripten/heap.h>
@@ -130,6 +131,13 @@ void platform_web_initialize(void)
 	setenv("HALO_NET_JOIN_FROM_CLIPBOARD", "false", 1);
 	setenv("HALO_FULLSCREEN", "false", 1);
 	setenv("HALO_WINDOW_SCALE", "1", 1);
+	/* A dedicated host (web_online_ui.h) runs on a server with no screen:
+	the page says so before the game starts. */
+	if (platform_web_online_is_headless())
+	{
+		setenv("HALO_NULL_RENDERER", "true", 1);
+		platform_log("web: headless, drawing nothing");
+	}
 }
 
 int host_gl_has_extension(const char *name)

@@ -369,9 +369,15 @@ export class SignalingRoom extends DurableObject<Env> {
     };
   }
 
-  /* The host extends the room's life by one TTL from now. A dedicated host
-     renews on a timer so its public lobby never expires while it runs. */
-  async renewRoom(ticket: string, now: number, roomTtlMs: number): Promise<RenewRoomResult> {
+  /* The host extends the room's life by one TTL from now, and may change the
+     lobby settings it advertises (a dedicated host rotating maps). A dedicated
+     host renews on a timer so its public lobby never expires while it runs. */
+  async renewRoom(
+    ticket: string,
+    now: number,
+    roomTtlMs: number,
+    lobby?: LobbySettings,
+  ): Promise<RenewRoomResult> {
     const room = this.getRoom();
     if (room === null) {
       await this.expireRoom();
@@ -382,6 +388,13 @@ export class SignalingRoom extends DurableObject<Env> {
     }
     const expiresAt = Math.max(room.expires_at, now + roomTtlMs);
     this.ctx.storage.sql.exec("UPDATE room SET expires_at = ? WHERE singleton = 1", expiresAt);
+    if (lobby !== undefined) {
+      this.ctx.storage.sql.exec(
+        "UPDATE room SET map_index = ?, mode_index = ? WHERE singleton = 1",
+        lobby.mapIndex,
+        lobby.modeIndex,
+      );
+    }
     await this.ctx.storage.setAlarm(expiresAt);
     await this.publishToDirectory(now);
     const renewed = this.getRoom();

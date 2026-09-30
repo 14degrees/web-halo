@@ -72,6 +72,11 @@ To play:
    Halo joins it. If nobody is playing yet, you host it, and everyone who
    presses the button next lands in your game.
 
+The public game is hosted by whoever pressed the button first, until a
+dedicated host is running: a headless copy of the browser build on a server,
+which keeps a lobby open around the clock and rotates maps between games.
+Refer to [services/dedicated-host/README.md](services/dedicated-host/README.md).
+
 To play with friends privately:
 
 1. Select **Play online**, choose the map and mode, then create a private lobby.

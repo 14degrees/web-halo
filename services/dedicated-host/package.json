@@ -1,0 +1,17 @@
+{
+  "name": "halo-web-dedicated-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs the Halo browser build headless as a dedicated public-lobby host.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node host.mjs",
+    "test": "node --test test/*.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

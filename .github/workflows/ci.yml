@@ -33,6 +33,8 @@ jobs:
         working-directory: services/signaling
       - name: Test browser JavaScript
         run: node --test port/web/tests/*.js
+      - name: Test dedicated host supervisor
+        run: node --test services/dedicated-host/test/*.mjs && node --check services/dedicated-host/host.mjs
       - name: Validate hosting Worker syntax
         run: node --check services/web/src/index.js
       - name: Validate operations CLI syntax
