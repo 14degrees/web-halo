@@ -14,6 +14,11 @@
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
   var GAME_POLL_MILLISECONDS = 200;
+  /* A host extends its room before the service's six-hour room life ends. */
+  var ROOM_RENEW_MILLISECONDS = 50 * 60 * 1000;
+  /* The map and mode the page assumes when quick join makes it host and the
+     service sends no lobby settings (Blood Gulch Slayer). */
+  var DEFAULT_PUBLIC_LOBBY = Object.freeze({ mapIndex: 9, modeIndex: 0 });
   var TURNSTILE_RENDER_ATTEMPTS = 80;
   var HOST_SETTINGS_STORAGE_KEY = "halo.web.host-settings.v1";
   var PLAYER_PROFILE_STORAGE_KEY = "halo.web.player-profile.v1";
@@ -96,6 +101,7 @@
     socketGeneration: 0,
     operationGeneration: 0,
     heartbeatTimer: 0,
+    renewTimer: 0,
     reconnectTimer: 0,
     reconnectAttempts: 0,
     gamePollTimer: 0,
@@ -111,6 +117,10 @@
     roster: new Map(),
     messageChain: Promise.resolve(),
     pendingInvite: null,
+    /* The join view is asking for a name before quick join, not an invite. */
+    pendingQuick: false,
+    /* This session is in a public room, hosting or joined through quick join. */
+    publicLobby: false,
     profile: null,
     hostWasReady: false,
     hostSettings: null,
@@ -144,6 +154,8 @@
     elements.status = byId("online-status");
     elements.description = byId("online-description");
     elements.setup = byId("online-setup");
+    elements.quick = byId("online-quick");
+    elements.quickJoin = byId("online-quick-join");
     elements.hostForm = byId("online-host-form");
     elements.host = byId("online-host");
     elements.map = byId("online-map");
@@ -414,6 +426,7 @@
 
   function setBusy(busy) {
     humanVerification.busy = !!busy;
+    if (elements.quickJoin) elements.quickJoin.disabled = !!busy || !session.runtimeReady;
     elements.map.disabled = !!busy;
     elements.mode.disabled = !!busy;
     setPickerLocked(elements.mapOptions, "halo-map-choice", !!busy);
@@ -766,7 +779,17 @@
   }
 
   function connectedFriendsLabel(count) {
-    return count === 1 ? "1 friend connected" : count + " friends connected";
+    var noun = session.publicLobby ? "player" : "friend";
+    return count === 1 ? "1 " + noun + " connected" : count + " " + noun + "s connected";
+  }
+
+  /* The other side, as the status lines name it. */
+  function hostNoun() {
+    return session.publicLobby ? "the host" : "your friend";
+  }
+
+  function setQuickVisible(visible) {
+    if (elements.quick) elements.quick.hidden = !visible;
   }
 
   function requireCurrentOperation(generation) {
@@ -786,21 +809,26 @@
   function showSetup() {
     if (elements.dialog) elements.dialog.dataset.view = "setup";
     if (elements.wizardSteps) elements.wizardSteps.hidden = false;
+    setQuickVisible(true);
     elements.setup.hidden = false;
     elements.invite.hidden = true;
     elements.progress.hidden = true;
     if (elements.joinConfirm) elements.joinConfirm.hidden = true;
+    session.pendingQuick = false;
     setWizardStep("map");
     setProfileLocked(false);
     renderTurnstile("create_room");
     setStatus("");
     elements.description.textContent =
-      "Pick a map and mode, then send the invite link to your friends.";
+      "Join the public game, or pick a map and mode and invite friends.";
   }
 
   function showProgress() {
     if (elements.dialog) elements.dialog.dataset.view = "progress";
-    if (elements.wizardSteps) elements.wizardSteps.hidden = session.role === "guest";
+    if (elements.wizardSteps) {
+      elements.wizardSteps.hidden = session.role === "guest" || session.publicLobby;
+    }
+    setQuickVisible(false);
     elements.setup.hidden = true;
     elements.invite.hidden = true;
     elements.progress.hidden = false;
@@ -809,6 +837,7 @@
 
   function showInvite() {
     if (elements.wizardSteps) elements.wizardSteps.hidden = true;
+    setQuickVisible(false);
     elements.setup.hidden = true;
     elements.progress.hidden = true;
     elements.invite.hidden = false;
@@ -820,18 +849,23 @@
     if (elements.dialog.open) elements.dialog.close();
   }
 
-  function showJoinConfirmation(invite) {
-    session.pendingInvite = invite;
+  /* The name-and-armor step before a join: of an invite, or (quick) of the
+     public game. Both verify the join_room Turnstile action. */
+  function showJoinConfirmation(invite, quick) {
+    session.pendingInvite = quick ? null : invite;
+    session.pendingQuick = !!quick;
     if (elements.dialog) elements.dialog.dataset.view = "join";
     if (elements.wizardSteps) elements.wizardSteps.hidden = true;
+    setQuickVisible(false);
     elements.setup.hidden = true;
     elements.invite.hidden = true;
     elements.progress.hidden = true;
     if (elements.joinConfirm) elements.joinConfirm.hidden = false;
-    if (elements.joinSummary) elements.joinSummary.textContent =
+    if (elements.joinSummary) elements.joinSummary.textContent = quick ?
+      "Choose your name and color, then jump into the public game." :
       "Choose your name and color, then join your friend's game.";
-    elements.description.textContent = "You're invited.";
-    setHeader("Ready to join", "waiting");
+    elements.description.textContent = quick ? "Public game." : "You're invited.";
+    setHeader(quick ? "Ready to play" : "Ready to join", "waiting");
     setStatus(session.runtimeReady ? "" : "Loading Halo…");
     setProfileLocked(false);
     renderTurnstile("join_room");
@@ -1102,10 +1136,11 @@
       if (connected) {
         setHeader(connectedFriendsLabel(connected), "connected");
         setStatus(connected === 1 ?
-          "Your friend is connected. Press Start Game in Halo when ready." :
-          connected + " friends are connected. Press Start Game in Halo when ready.");
+          (session.publicLobby ? "A player" : "Your friend") +
+            " is connected. Press Start Game in Halo when ready." :
+          connectedFriendsLabel(connected) + ". Press Start Game in Halo when ready.");
       } else if (session.active) {
-        setHeader("Waiting for friends", "waiting");
+        setHeader(session.publicLobby ? "Waiting for players" : "Waiting for friends", "waiting");
       }
     }
   }
@@ -1123,7 +1158,8 @@
           requestGame(COMMAND.JOIN);
           session.gameCommandIssued = true;
           startGamePolling();
-          setStatus("Connected. Finding your friend's Halo lobby…");
+          setStatus("Connected. Finding " + (session.publicLobby ? "the game's" : "your friend's") +
+            " Halo lobby…");
         } catch (error) {
           fail(error);
         }
@@ -1135,7 +1171,7 @@
         }, 700);
       }
     } else if (event.state === "connecting" && session.role === "guest") {
-      setStatus("Connecting directly to your friend…");
+      setStatus("Connecting directly to " + hostNoun() + "…");
     } else if (event.state === "failed" && session.role === "guest") {
       fail(new Error(event.detail || "Could not connect to the host."));
     }
@@ -1388,8 +1424,9 @@
       protocolVersion: PROTOCOL_VERSION,
       buildId: buildId(),
       identifier: localIdentifier(),
-      ticket: ticket,
     };
+    /* A public room's guests hold no ticket. */
+    if (ticket) body.ticket = ticket;
     if (turnstileToken) body.turnstileToken = turnstileToken;
     return fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id) + "/sessions", {
       method: "POST",
@@ -1454,6 +1491,7 @@
     await leave(false);
     showDialog();
     if (action === "join_room") showJoinConfirmation(invite);
+    else if (action === "quick_join") showJoinConfirmation(null, true);
     else showSetup();
     setVerificationState(
       "error",
@@ -1494,36 +1532,153 @@
         body: JSON.stringify(roomRequest),
       });
       requireCurrentOperation(operation);
-      var normalized = {
-        v: result.v,
-        room: result.room,
-        session: result.host && result.host.session,
-      };
-      validateRoomResponse(normalized);
-      session.room = result.room;
-      session.roomTicket = result.host.ticket;
-      session.selfPeerId = result.host.session.peerId;
-      updateLocalRoster();
-      session.inviteCode = result.invite && result.invite.code;
-      if (!session.inviteCode) throw new Error("The room did not return an invite.");
-      session.inviteUrl = result.invite && result.invite.url ?
-        result.invite.url : makeInviteUrl(session.inviteCode);
-      showInvite();
-      session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
-      configureTransport(session.iceServers);
-      await openSocket(result.host.session.websocketUrl, operation);
-      requireCurrentOperation(operation);
-      applyPlayerCustomization(profile);
-      requestConfiguredHost(settings);
-      session.gameCommandIssued = true;
-      startGamePolling();
-      setHeader("Preparing lobby…", "waiting");
-      setStatus("Opening Halo's lobby with " + hostSettingsLabel() + "…");
+      await completeHostSetup(result, settings, profile, operation);
     } catch (error) {
       if (operation === session.operationGeneration && (!error || !error.haloCanceled)) {
         if (isTurnstileRejection(error)) {
           recoveredVerification = true;
           await recoverTurnstile("create_room");
+        } else {
+          fail(error);
+        }
+      }
+    } finally {
+      if (!recoveredVerification) resetTurnstile();
+      if (operation === session.operationGeneration) setBusy(false);
+    }
+  }
+
+  /* The host's side of a room the service just created for it, whether
+     through the wizard or because quick join found no open game. */
+  async function completeHostSetup(result, settings, profile, operation) {
+    var normalized = {
+      v: result.v,
+      room: result.room,
+      session: result.host && result.host.session,
+    };
+    validateRoomResponse(normalized);
+    session.room = result.room;
+    session.roomTicket = result.host.ticket;
+    session.selfPeerId = result.host.session.peerId;
+    updateLocalRoster();
+    session.inviteCode = result.invite && result.invite.code;
+    if (!session.inviteCode) throw new Error("The room did not return an invite.");
+    session.inviteUrl = result.invite && result.invite.url ?
+      result.invite.url : makeInviteUrl(session.inviteCode);
+    showInvite();
+    session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
+    configureTransport(session.iceServers);
+    await openSocket(result.host.session.websocketUrl, operation);
+    requireCurrentOperation(operation);
+    applyPlayerCustomization(profile);
+    requestConfiguredHost(settings);
+    session.gameCommandIssued = true;
+    startGamePolling();
+    startRoomRenewal();
+    setHeader("Preparing lobby…", "waiting");
+    setStatus("Opening Halo's lobby with " + hostSettingsLabel() + "…");
+  }
+
+  /* A guest's side of a session the service minted, from an invite or from
+     quick join. */
+  async function completeGuestJoin(result, operation) {
+    validateRoomResponse(result);
+    session.room = result.room;
+    session.selfPeerId = result.session.peerId;
+    updateLocalRoster();
+    session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
+    configureTransport(session.iceServers);
+    await openSocket(result.session.websocketUrl, operation);
+    requireCurrentOperation(operation);
+    setGameTransportState(TRANSPORT_STATE.CONNECTING);
+  }
+
+  function stopRoomRenewal() {
+    if (session.renewTimer) global.clearInterval(session.renewTimer);
+    session.renewTimer = 0;
+  }
+
+  function startRoomRenewal() {
+    stopRoomRenewal();
+    var operation = session.operationGeneration;
+    session.renewTimer = global.setInterval(function() {
+      if (operation !== session.operationGeneration || !session.active ||
+          session.role !== "host" || !session.room || !session.roomTicket) {
+        return;
+      }
+      fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id) + "/renew", {
+        method: "POST",
+        body: JSON.stringify({ ticket: session.roomTicket }),
+      }).then(function(result) {
+        if (operation === session.operationGeneration && result && result.room) {
+          session.room = result.room;
+        }
+      }).catch(function() {
+        /* The room keeps its current expiry; the next renewal retries. */
+      });
+    }, ROOM_RENEW_MILLISECONDS);
+  }
+
+  /* Quick join: the service seats this browser in the open public game, or
+     makes it the host of a new one when nobody is playing. */
+  async function quickJoin(turnstileToken) {
+    if (!session.runtimeReady) {
+      showDialog();
+      showJoinConfirmation(null, true);
+      return;
+    }
+    var profile = readPlayerProfile();
+    savePlayerProfile(profile);
+    await leave(false);
+    var operation = ++session.operationGeneration;
+    var recoveredVerification = false;
+    session.active = true;
+    /* Provisional: the service's answer decides. */
+    session.role = "guest";
+    session.publicLobby = true;
+    syncTelemetryContext();
+    session.closing = false;
+    session.profile = profile;
+    writePlayerProfile(profile);
+    renderRoster();
+    showDialog();
+    showProgress();
+    setBusy(true);
+    setHeader("Finding a game…", "waiting");
+    setStatus("Looking for an open public game…");
+    try {
+      var request = {
+        protocolVersion: PROTOCOL_VERSION,
+        buildId: buildId(),
+        identifier: localIdentifier(),
+      };
+      if (turnstileToken) request.turnstileToken = turnstileToken;
+      var result = await fetchJson("/v1/quickjoin", {
+        method: "POST",
+        body: JSON.stringify(request),
+      });
+      requireCurrentOperation(operation);
+      if (result && result.role === "host") {
+        session.role = "host";
+        syncTelemetryContext();
+        var lobby = result.room && result.room.lobby ? result.room.lobby : DEFAULT_PUBLIC_LOBBY;
+        var settings = normalizeHostSettings(lobby);
+        session.hostSettings = settings;
+        await completeHostSetup(result, settings, profile, operation);
+        setStatus("Nobody was playing yet, so you're hosting " + hostSettingsLabel() +
+          ". Players who press Join multiplayer will land here.");
+      } else if (result && result.role === "guest") {
+        session.roomTicket = null;
+        await completeGuestJoin(result, operation);
+        setStatus("Game found. Connecting to the host…");
+      } else {
+        throw new Error("The room service returned an unexpected answer.");
+      }
+    } catch (error) {
+      if (operation === session.operationGeneration && (!error || !error.haloCanceled)) {
+        if (isTurnstileRejection(error)) {
+          recoveredVerification = true;
+          await recoverTurnstile("quick_join");
         } else {
           fail(error);
         }
@@ -1568,16 +1723,9 @@
     try {
       var result = await createSession(invite.ticket, turnstileToken);
       requireCurrentOperation(operation);
-      validateRoomResponse(result);
-      session.room = result.room;
-      session.selfPeerId = result.session.peerId;
-      updateLocalRoster();
-      session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
-      configureTransport(session.iceServers);
-      await openSocket(result.session.websocketUrl, operation);
-      requireCurrentOperation(operation);
-      setGameTransportState(TRANSPORT_STATE.CONNECTING);
-      setStatus("Room found. Connecting directly to your friend…");
+      session.publicLobby = !!(result && result.room && result.room.visibility === "public");
+      await completeGuestJoin(result, operation);
+      setStatus("Room found. Connecting directly to " + hostNoun() + "…");
     } catch (error) {
       if (operation === session.operationGeneration && (!error || !error.haloCanceled)) {
         if (isTurnstileRejection(error)) {
@@ -1621,12 +1769,15 @@
         if (!session.hostWasReady) showInvite();
         session.hostWasReady = true;
         setHeader(session.connectedPeerCount ?
-          connectedFriendsLabel(session.connectedPeerCount) : "Waiting for friends",
+          connectedFriendsLabel(session.connectedPeerCount) :
+          (session.publicLobby ? "Waiting for players" : "Waiting for friends"),
           session.connectedPeerCount ? "connected" : "waiting");
         setStatus(session.connectedPeerCount ?
           connectedFriendsLabel(session.connectedPeerCount) + ". " + hostSettingsLabel() +
             " is ready — press Start Game in Halo." :
-          hostSettingsLabel() + " is ready — send the invite link to your friends.");
+          session.publicLobby ?
+            hostSettingsLabel() + " is open to everyone — players who press Join multiplayer land here." :
+            hostSettingsLabel() + " is ready — send the invite link to your friends.");
       } else if (state === GAME_STATE.WAITING) {
         setStatus("Waiting for Halo's main menu…");
       } else if (state === GAME_STATE.HOST_STARTING) {
@@ -1639,12 +1790,13 @@
     if (state === GAME_STATE.WAITING) {
       setStatus("Waiting for Halo's main menu…");
     } else if (state === GAME_STATE.JOIN_SEARCHING) {
-      setStatus("Connected. Finding your friend's Halo lobby…");
+      setStatus("Connected. Finding " + (session.publicLobby ? "the game's" : "your friend's") +
+        " Halo lobby…");
     } else if (state === GAME_STATE.JOIN_CONNECTING) {
       setStatus("Halo found the lobby. Joining…");
     } else if (state === GAME_STATE.JOINED) {
       session.guestWasJoined = true;
-      setHeader("Connected to friend", "connected");
+      setHeader(session.publicLobby ? "In the public game" : "Connected to friend", "connected");
       setStatus("You're in the lobby.");
       global.setTimeout(function() {
         if (elements.dialog.open && session.active) elements.dialog.close();
@@ -1682,6 +1834,8 @@
     session.hostSettings = null;
     session.guestWasJoined = false;
     session.pendingInvite = null;
+    session.pendingQuick = false;
+    session.publicLobby = false;
     session.wizardStep = "map";
     syncTelemetryContext();
     renderRoster();
@@ -1703,6 +1857,7 @@
       }
       stopHeartbeat();
       stopGamePolling();
+      stopRoomRenewal();
       if (session.reconnectTimer) global.clearTimeout(session.reconnectTimer);
       session.reconnectTimer = 0;
       session.socketGeneration++;
@@ -1852,10 +2007,17 @@
         setStatus(error.message, "error");
       }
     });
+    if (elements.quickJoin) {
+      elements.quickJoin.addEventListener("click", function() {
+        showDialog();
+        showJoinConfirmation(null, true);
+      });
+    }
     if (elements.joinProfile) {
       elements.joinProfile.addEventListener("click", function() {
+        var quick = session.pendingQuick;
         var invite = session.pendingInvite;
-        if (!invite) {
+        if (!quick && !invite) {
           setStatus("That invite is no longer available.", "error");
           return;
         }
@@ -1866,7 +2028,8 @@
           return;
         }
         try {
-          join(invite, consumeTurnstile("join_room")).catch(fail);
+          if (quick) quickJoin(consumeTurnstile("join_room")).catch(fail);
+          else join(invite, consumeTurnstile("join_room")).catch(fail);
         } catch (error) {
           setStatus(error.message, "error");
         }
@@ -1940,6 +2103,7 @@
     },
     host: host,
     join: join,
+    quickJoin: quickJoin,
     leave: function() { return leave(true); },
   });
 

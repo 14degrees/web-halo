@@ -8,6 +8,10 @@ export const PEER_ID_PATTERN = /^[hg]_[A-Za-z0-9_-]{16}$/u;
 export const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,64}$/u;
 export const IDENTIFIER_PATTERN = /^[0-9a-f]{12}$/u;
 const BUILD_ID_PATTERN = /^[A-Za-z0-9._:+-]{1,96}$/u;
+/* The 13 stock multiplayer maps and 6 game modes the browser lobby offers, in
+   the order of port/web/src/web_online_ui.h. */
+export const LOBBY_MAP_COUNT = 13;
+export const LOBBY_MODE_COUNT = 6;
 
 export const PLAYER_STYLES = [
   "white",
@@ -39,19 +43,42 @@ export interface PlayerProfile {
 
 export type PeerRole = "host" | "guest";
 
+/* A private room is reachable only through its invite capability. A public
+   room is additionally listed in the lobby directory, and anyone on the same
+   build may join it through quick join or a ticket-less session request. */
+export type RoomVisibility = "private" | "public";
+
+export interface LobbySettings {
+  mapIndex: number;
+  modeIndex: number;
+}
+
 export interface CreateRoomInput {
   buildId: string;
   capacity?: number;
+  /* Only a host presenting the dedicated-host service credential may set
+     this. It lengthens the room TTL and ranks the room first in quick join. */
+  dedicated?: boolean;
   identifier: string;
+  lobby?: LobbySettings;
   protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
   turnstileToken?: string;
+  visibility?: RoomVisibility;
 }
 
 export interface CreateSessionInput {
   buildId: string;
   identifier: string;
   protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
-  ticket: string;
+  /* Absent for a guest of a public room. */
+  ticket?: string;
+  turnstileToken?: string;
+}
+
+export interface QuickJoinInput {
+  buildId: string;
+  identifier: string;
+  protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
   turnstileToken?: string;
 }
 
@@ -73,9 +100,12 @@ export interface IceServerDescriptor {
 export interface PublicRoomDescriptor {
   buildId: string;
   capacity: number;
+  dedicated: boolean;
   expiresAt: number;
   id: string;
+  lobby: LobbySettings | null;
   protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
+  visibility: RoomVisibility;
 }
 
 export interface CreateRoomResponse {
@@ -98,6 +128,17 @@ export interface CreateSessionResponse {
   iceServersExpiresAt: number | null;
   room: PublicRoomDescriptor;
   session: SessionDescriptor;
+  v: typeof SIGNALING_PROTOCOL_VERSION;
+}
+
+/* Quick join either seats the caller in an open public room or, when there is
+   none, makes the caller the host of a new public room. */
+export type QuickJoinResponse =
+  | (CreateSessionResponse & { role: "guest" })
+  | (CreateRoomResponse & { role: "host" });
+
+export interface RenewRoomResponse {
+  room: PublicRoomDescriptor;
   v: typeof SIGNALING_PROTOCOL_VERSION;
 }
 
@@ -199,6 +240,23 @@ function turnstileToken(value: unknown): string | undefined | null {
   return typeof value === "string" && value.length > 0 && value.length <= 2_048 ? value : null;
 }
 
+function isLobbyIndex(value: unknown, count: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < count;
+}
+
+export function parseLobbySettings(value: unknown): ValidationResult<LobbySettings> {
+  if (!isRecord(value)) {
+    return { ok: false, message: "lobby must be an object." };
+  }
+  if (!isLobbyIndex(value.mapIndex, LOBBY_MAP_COUNT)) {
+    return { ok: false, message: `lobby.mapIndex must be an integer from 0 to ${LOBBY_MAP_COUNT - 1}.` };
+  }
+  if (!isLobbyIndex(value.modeIndex, LOBBY_MODE_COUNT)) {
+    return { ok: false, message: `lobby.modeIndex must be an integer from 0 to ${LOBBY_MODE_COUNT - 1}.` };
+  }
+  return { ok: true, value: { mapIndex: value.mapIndex, modeIndex: value.modeIndex } };
+}
+
 export function parseCreateRoomInput(
   value: unknown,
 ): ValidationResult<CreateRoomInput> {
@@ -233,12 +291,68 @@ export function parseCreateRoomInput(
   ) {
     return { ok: false, message: "capacity must be an integer of at least 2." };
   }
+  if (
+    value.visibility !== undefined &&
+    value.visibility !== "private" &&
+    value.visibility !== "public"
+  ) {
+    return { ok: false, message: "visibility must be \"private\" or \"public\"." };
+  }
+  if (value.dedicated !== undefined && typeof value.dedicated !== "boolean") {
+    return { ok: false, message: "dedicated must be a boolean." };
+  }
+  let lobby: LobbySettings | undefined;
+  if (value.lobby !== undefined) {
+    const parsedLobby = parseLobbySettings(value.lobby);
+    if (!parsedLobby.ok) return parsedLobby;
+    lobby = parsedLobby.value;
+  }
 
   return {
     ok: true,
     value: {
       buildId: value.buildId,
       ...(value.capacity === undefined ? {} : { capacity: value.capacity }),
+      ...(value.dedicated === undefined ? {} : { dedicated: value.dedicated }),
+      identifier: value.identifier,
+      ...(lobby === undefined ? {} : { lobby }),
+      protocolVersion: value.protocolVersion,
+      ...(verifiedToken === undefined ? {} : { turnstileToken: verifiedToken }),
+      ...(value.visibility === undefined ? {} : { visibility: value.visibility }),
+    },
+  };
+}
+
+export function parseQuickJoinInput(
+  value: unknown,
+): ValidationResult<QuickJoinInput> {
+  if (!isRecord(value)) {
+    return { ok: false, message: "Body must be a JSON object." };
+  }
+  if (!isProtocolVersion(value.protocolVersion)) {
+    return { ok: false, message: "Unsupported protocolVersion." };
+  }
+  if (!isBuildId(value.buildId)) {
+    return {
+      ok: false,
+      message: "buildId must be 1-96 URL-safe characters.",
+    };
+  }
+  if (
+    typeof value.identifier !== "string" ||
+    !IDENTIFIER_PATTERN.test(value.identifier)
+  ) {
+    return {
+      ok: false,
+      message: "identifier must be exactly 12 lowercase hexadecimal characters.",
+    };
+  }
+  const verifiedToken = turnstileToken(value.turnstileToken);
+  if (verifiedToken === null) return { ok: false, message: "turnstileToken is malformed." };
+  return {
+    ok: true,
+    value: {
+      buildId: value.buildId,
       identifier: value.identifier,
       protocolVersion: value.protocolVersion,
       ...(verifiedToken === undefined ? {} : { turnstileToken: verifiedToken }),
@@ -270,7 +384,12 @@ export function parseCreateSessionInput(
       message: "identifier must be exactly 12 lowercase hexadecimal characters.",
     };
   }
-  if (typeof value.ticket !== "string" || !TOKEN_PATTERN.test(value.ticket)) {
+  /* A public room's guests need no ticket; the room object enforces that a
+     ticket-less session is only ever minted for a public room. */
+  if (
+    value.ticket !== undefined &&
+    (typeof value.ticket !== "string" || !TOKEN_PATTERN.test(value.ticket))
+  ) {
     return { ok: false, message: "ticket is malformed." };
   }
   const verifiedToken = turnstileToken(value.turnstileToken);
@@ -282,7 +401,7 @@ export function parseCreateSessionInput(
       buildId: value.buildId,
       identifier: value.identifier,
       protocolVersion: value.protocolVersion,
-      ticket: value.ticket,
+      ...(value.ticket === undefined ? {} : { ticket: value.ticket }),
       ...(verifiedToken === undefined ? {} : { turnstileToken: verifiedToken }),
     },
   };

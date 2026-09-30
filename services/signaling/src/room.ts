@@ -6,6 +6,7 @@ import {
   randomToken,
   hashToken,
 } from "./crypto";
+import { LOBBY_DIRECTORY_NAME, type LobbyEntry } from "./lobby";
 import {
   MAX_WEBSOCKET_MESSAGE_CHARACTERS,
   IDENTIFIER_PATTERN,
@@ -14,19 +15,26 @@ import {
   TOKEN_PATTERN,
   parseClientMessage,
   parsePlayerProfile,
+  type LobbySettings,
   type PeerRole,
   type PlayerProfile,
+  type PublicRoomDescriptor,
+  type RoomVisibility,
 } from "./protocol";
 
 interface RoomRow extends Record<string, SqlStorageValue> {
   build_id: string;
   capacity: number;
   created_at: number;
+  dedicated: number;
   expires_at: number;
   guest_ticket_hash: ArrayBuffer;
   host_ticket_hash: ArrayBuffer;
+  map_index: number | null;
+  mode_index: number | null;
   protocol_version: number;
   room_id: string;
+  visibility: string;
 }
 
 interface SessionRow extends Record<string, SqlStorageValue> {
@@ -56,12 +64,15 @@ interface PreparedSession {
 export interface CreateRoomCommand {
   buildId: string;
   capacity: number;
+  dedicated: boolean;
   identifier: string;
+  lobby: LobbySettings | null;
   now: number;
   protocolVersion: number;
   roomId: string;
   roomTtlMs: number;
   sessionTtlMs: number;
+  visibility: RoomVisibility;
 }
 
 export type CreateRoomResult =
@@ -80,7 +91,8 @@ export interface CreateSessionCommand {
   now: number;
   protocolVersion: number;
   sessionTtlMs: number;
-  ticket: string;
+  /* Absent: a guest of a public room. */
+  ticket?: string;
 }
 
 export type CreateSessionResult =
@@ -97,17 +109,18 @@ export type CreateSessionResult =
       ok: false;
     }
   | {
-      buildId: string;
-      capacity: number;
-      expiresAt: number;
       ok: true;
-      protocolVersion: number;
+      room: PublicRoomDescriptor;
       session: MintedSession;
     };
 
 export type CloseRoomResult =
   | { code: "INVALID_TICKET" | "ROOM_NOT_FOUND"; ok: false }
   | { ok: true };
+
+export type RenewRoomResult =
+  | { code: "INVALID_TICKET" | "ROOM_NOT_FOUND"; ok: false }
+  | { ok: true; room: PublicRoomDescriptor };
 
 export interface MintedSession {
   expiresAt: number;
@@ -144,6 +157,38 @@ function jsonMessage(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function roomVisibility(value: string): RoomVisibility {
+  return value === "public" ? "public" : "private";
+}
+
+function roomDescriptor(room: RoomRow): PublicRoomDescriptor {
+  if (room.protocol_version !== SIGNALING_PROTOCOL_VERSION) {
+    throw new Error("Room row holds an unsupported protocol version.");
+  }
+  return {
+    buildId: room.build_id,
+    capacity: room.capacity,
+    dedicated: room.dedicated === 1,
+    expiresAt: room.expires_at,
+    id: room.room_id,
+    lobby:
+      room.map_index === null || room.mode_index === null
+        ? null
+        : { mapIndex: room.map_index, modeIndex: room.mode_index },
+    protocolVersion: SIGNALING_PROTOCOL_VERSION,
+    visibility: roomVisibility(room.visibility),
+  };
+}
+
+/* Columns added after the first deployment. A room that outlives a deploy
+   keeps its table, so they are added to it on first use. */
+const ROOM_COLUMN_UPGRADES: ReadonlyArray<readonly [string, string]> = [
+  ["visibility", "TEXT NOT NULL DEFAULT 'private'"],
+  ["dedicated", "INTEGER NOT NULL DEFAULT 0"],
+  ["map_index", "INTEGER"],
+  ["mode_index", "INTEGER"],
+];
+
 const MAX_GUEST_WEBSOCKET_MESSAGES_PER_MINUTE = 240;
 const MAX_HOST_WEBSOCKET_MESSAGES_PER_MINUTE = 16_384;
 
@@ -163,7 +208,11 @@ export class SignalingRoom extends DurableObject<Env> {
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         host_ticket_hash BLOB NOT NULL,
-        guest_ticket_hash BLOB NOT NULL
+        guest_ticket_hash BLOB NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'private',
+        dedicated INTEGER NOT NULL DEFAULT 0,
+        map_index INTEGER,
+        mode_index INTEGER
       );
       CREATE TABLE IF NOT EXISTS pending_sessions (
         peer_id TEXT PRIMARY KEY,
@@ -208,8 +257,9 @@ export class SignalingRoom extends DurableObject<Env> {
       this.ctx.storage.sql.exec(
         `INSERT INTO room (
           singleton, room_id, build_id, protocol_version, capacity,
-          created_at, expires_at, host_ticket_hash, guest_ticket_hash
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          created_at, expires_at, host_ticket_hash, guest_ticket_hash,
+          visibility, dedicated, map_index, mode_index
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         command.roomId,
         command.buildId,
         command.protocolVersion,
@@ -218,11 +268,16 @@ export class SignalingRoom extends DurableObject<Env> {
         expiresAt,
         hostTicketHash,
         guestTicketHash,
+        command.visibility,
+        command.dedicated ? 1 : 0,
+        command.lobby === null ? null : command.lobby.mapIndex,
+        command.lobby === null ? null : command.lobby.modeIndex,
       );
       this.insertSession(hostSession);
     });
 
     await this.ctx.storage.setAlarm(expiresAt);
+    await this.publishToDirectory(command.now);
 
     return {
       expiresAt,
@@ -238,7 +293,7 @@ export class SignalingRoom extends DurableObject<Env> {
   ): Promise<CreateSessionResult> {
     const newSessionToken = randomToken();
     const [providedTicketHash, newSessionTokenHash] = await Promise.all([
-      hashToken(command.ticket),
+      command.ticket === undefined ? Promise.resolve(null) : hashToken(command.ticket),
       hashToken(newSessionToken),
     ]);
 
@@ -251,8 +306,14 @@ export class SignalingRoom extends DurableObject<Env> {
       return { code: "ROOM_NOT_FOUND", ok: false };
     }
 
-    const isHost = hashesMatch(providedTicketHash, room.host_ticket_hash);
-    const isGuest = hashesMatch(providedTicketHash, room.guest_ticket_hash);
+    /* A public room seats a ticket-less guest; every other combination must
+       present the host or invite capability. */
+    const isHost =
+      providedTicketHash !== null && hashesMatch(providedTicketHash, room.host_ticket_hash);
+    const isGuest =
+      providedTicketHash === null
+        ? roomVisibility(room.visibility) === "public"
+        : hashesMatch(providedTicketHash, room.guest_ticket_hash);
     if (!isHost && !isGuest) {
       return { code: "INVALID_TICKET", ok: false };
     }
@@ -302,13 +363,32 @@ export class SignalingRoom extends DurableObject<Env> {
     this.insertSession(session);
 
     return {
-      buildId: room.build_id,
-      capacity: room.capacity,
-      expiresAt: room.expires_at,
       ok: true,
-      protocolVersion: room.protocol_version,
+      room: roomDescriptor(room),
       session: session.session,
     };
+  }
+
+  /* The host extends the room's life by one TTL from now. A dedicated host
+     renews on a timer so its public lobby never expires while it runs. */
+  async renewRoom(ticket: string, now: number, roomTtlMs: number): Promise<RenewRoomResult> {
+    const room = this.getRoom();
+    if (room === null) {
+      await this.expireRoom();
+      return { code: "ROOM_NOT_FOUND", ok: false };
+    }
+    if (!hashesMatch(await hashToken(ticket), room.host_ticket_hash)) {
+      return { code: "INVALID_TICKET", ok: false };
+    }
+    const expiresAt = Math.max(room.expires_at, now + roomTtlMs);
+    this.ctx.storage.sql.exec("UPDATE room SET expires_at = ? WHERE singleton = 1", expiresAt);
+    await this.ctx.storage.setAlarm(expiresAt);
+    await this.publishToDirectory(now);
+    const renewed = this.getRoom();
+    if (renewed === null) {
+      return { code: "ROOM_NOT_FOUND", ok: false };
+    }
+    return { ok: true, room: roomDescriptor(renewed) };
   }
 
   async closeRoom(ticket: string): Promise<CloseRoomResult> {
@@ -414,13 +494,7 @@ export class SignalingRoom extends DurableObject<Env> {
             peerId: peer.peerId,
             role: peer.role,
           })),
-        room: {
-          buildId: room.build_id,
-          capacity: room.capacity,
-          expiresAt: room.expires_at,
-          id: room.room_id,
-          protocolVersion: room.protocol_version,
-        },
+        room: roomDescriptor(room),
         self: {
           identifier: attachment.identifier,
           peerId: attachment.peerId,
@@ -445,6 +519,7 @@ export class SignalingRoom extends DurableObject<Env> {
       server,
     );
     this.broadcastRoster();
+    this.ctx.waitUntil(this.publishToDirectory(now));
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -652,6 +727,70 @@ export class SignalingRoom extends DurableObject<Env> {
       socket,
     );
     this.broadcastRoster();
+    this.ctx.waitUntil(this.publishToDirectory(Date.now()));
+  }
+
+  /* A public room's entry in the lobby directory. Failures are logged, never
+     raised: the directory is a convenience for quick join, not a record. */
+  private async publishToDirectory(now: number): Promise<void> {
+    let room: RoomRow | null;
+    try {
+      room = this.getRoom();
+    } catch {
+      return;
+    }
+    if (room === null || roomVisibility(room.visibility) !== "public") {
+      return;
+    }
+    const connections = this.connections();
+    const hostConnected = connections.some(({ attachment }) => attachment.role === "host");
+    const guests = connections.length - (hostConnected ? 1 : 0);
+    const entry: LobbyEntry = {
+      buildId: room.build_id,
+      capacity: room.capacity,
+      createdAt: room.created_at,
+      dedicated: room.dedicated === 1,
+      expiresAt: room.expires_at,
+      hostConnected,
+      mapIndex: room.map_index,
+      modeIndex: room.mode_index,
+      /* A dedicated host is not a player; a browser host is. */
+      players: guests + (hostConnected && room.dedicated !== 1 ? 1 : 0),
+      protocolVersion: room.protocol_version,
+      roomId: room.room_id,
+    };
+    try {
+      await this.env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).upsert(entry, now);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+          message: "failed to publish room to the lobby directory",
+        }),
+      );
+    }
+  }
+
+  private async withdrawFromDirectory(): Promise<void> {
+    let room: RoomRow | null;
+    try {
+      room = this.getRoom();
+    } catch {
+      return;
+    }
+    if (room === null || roomVisibility(room.visibility) !== "public") {
+      return;
+    }
+    try {
+      await this.env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).remove(room.room_id);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+          message: "failed to withdraw room from the lobby directory",
+        }),
+      );
+    }
   }
 
   private broadcastRoster(): void {
@@ -765,6 +904,7 @@ export class SignalingRoom extends DurableObject<Env> {
   }
 
   private async expireRoom(): Promise<void> {
+    await this.withdrawFromDirectory();
     for (const socket of this.ctx.getWebSockets()) {
       try {
         socket.close(4001, "Room expired.");
@@ -777,20 +917,43 @@ export class SignalingRoom extends DurableObject<Env> {
 
   private getRoom(): RoomRow | null {
     try {
-      return (
-        this.ctx.storage.sql
-          .exec<RoomRow>(
-            `SELECT room_id, build_id, protocol_version, capacity, created_at,
-                    expires_at, host_ticket_hash, guest_ticket_hash
-               FROM room WHERE singleton = 1`,
-          )
-          .toArray()[0] ?? null
-      );
+      return this.selectRoom();
     } catch (error) {
       if (error instanceof Error && error.message.includes("no such table")) {
         return null;
       }
+      if (error instanceof Error && error.message.includes("no such column")) {
+        this.upgradeRoomColumns();
+        return this.selectRoom();
+      }
       throw error;
+    }
+  }
+
+  private selectRoom(): RoomRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<RoomRow>(
+          `SELECT room_id, build_id, protocol_version, capacity, created_at,
+                  expires_at, host_ticket_hash, guest_ticket_hash,
+                  visibility, dedicated, map_index, mode_index
+             FROM room WHERE singleton = 1`,
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  private upgradeRoomColumns(): void {
+    const existing = new Set(
+      this.ctx.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(room)")
+        .toArray()
+        .map(({ name }) => name),
+    );
+    for (const [column, definition] of ROOM_COLUMN_UPGRADES) {
+      if (!existing.has(column)) {
+        this.ctx.storage.sql.exec(`ALTER TABLE room ADD COLUMN ${column} ${definition}`);
+      }
     }
   }
 

@@ -11,6 +11,9 @@ export type RuntimeEnv = Omit<Env, "ALLOW_NO_ORIGIN" | "ENVIRONMENT"> & {
   CLOUDFLARE_ANALYTICS_TOKEN?: string;
   ALLOW_NO_ORIGIN: string;
   ENVIRONMENT: string;
+  /* Optional: the bearer credential a dedicated (server-run) host presents to
+     create public rooms without Turnstile and with the longer room TTL. */
+  HOST_SERVICE_TOKEN?: string;
   ROOM_ID_SECRET: string;
   TURN_KEY_ID?: string;
   TURN_KEY_SECRET?: string;

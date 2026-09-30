@@ -473,6 +473,18 @@
     .mode-choice-card img { width: 2.8rem; height: 2.8rem; object-fit: contain; }
     .mode-choice-card .choice-label { padding: .25rem; text-align: left; white-space: normal; }
     .wizard-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .7rem; }
+    .quick-play {
+      display: grid;
+      gap: .55rem;
+      margin-bottom: .95rem;
+      padding: .85rem .9rem;
+      border: 1px solid rgba(101, 194, 255, .28);
+      border-radius: .6rem;
+      background: rgba(6, 30, 50, .55);
+    }
+    .quick-play-copy { margin: 0; font-size: .8rem; line-height: 1.35; color: var(--halo-muted, #7395ae); }
+    .quick-play button { width: 100%; min-height: 2.7rem; }
+    .quick-play-divider { margin: 0 0 .5rem; }
     .join-direct { margin-top: .7rem; color: #8fa1aa; font-size: .76rem; }
     .join-direct summary { width: fit-content; cursor: pointer; }
     #online-wizard:has(#online-setup[hidden]) #online-wizard-steps { display: none; }
@@ -1468,7 +1480,7 @@
       </div>
     </article>
   </dialog>
-  <dialog id="online-dialog" aria-label="Play with friends">
+  <dialog id="online-dialog" aria-label="Play online">
     <div class="online-card">
       <button id="online-close" class="icon-button online-dialog-close" type="button" aria-label="Close">✕</button>
       <section id="online-profile" class="profile-panel" aria-label="Player profile">
@@ -1522,17 +1534,23 @@
       <section class="online-flow">
         <div class="online-heading">
           <div>
-            <h2 id="online-title">Play with friends</h2>
-            <p id="online-description">Pick a map and mode, then send the invite link to your friends.</p>
+            <h2 id="online-title">Play online</h2>
+            <p id="online-description">Join the public game, or pick a map and mode and invite friends.</p>
           </div>
         </div>
         <div id="online-status" class="online-status" role="status" hidden></div>
+        <section id="online-quick" class="quick-play" aria-labelledby="online-quick-title">
+          <p id="online-quick-title" class="host-setup-title">Public game</p>
+          <p class="quick-play-copy">Jump straight into the open game. If nobody is playing yet, you start it and everyone who joins next lands with you.</p>
+          <button id="online-quick-join" class="primary" type="button">Join multiplayer</button>
+        </section>
         <div id="online-wizard">
           <ol id="online-wizard-steps" class="wizard-steps" aria-label="Create a game">
             <li id="online-wizard-map" class="wizard-step" data-number="1" data-step="map" aria-current="step">Map</li>
             <li id="online-wizard-mode" class="wizard-step" data-number="2" data-step="mode">Mode</li>
           </ol>
           <div id="online-setup" class="online-stack">
+            <p class="host-setup-title quick-play-divider">Or play with friends</p>
             <form id="online-host-form" class="online-stack host-setup">
               <section id="online-step-map">
                 <p id="online-map-title" class="host-setup-title">Choose a map</p>

@@ -19,7 +19,13 @@
     "TURN_ACTOR_HOURLY_EGRESS_CAP_BYTES": "1000000000",
     "TURN_GLOBAL_DAILY_EGRESS_CAP_BYTES": "10000000000",
     "DEFAULT_ROOM_CAPACITY": "128",
-    "MAX_ROOM_CAPACITY": "128"
+    "MAX_ROOM_CAPACITY": "128",
+    // Rooms a dedicated host creates live this long between renewals.
+    "DEDICATED_ROOM_TTL_SECONDS": "86400",
+    // The game quick join starts when no public room is open:
+    // Blood Gulch (9) Slayer (0); see port/web/src/web_online_ui.h.
+    "PUBLIC_LOBBY_MAP_INDEX": "9",
+    "PUBLIC_LOBBY_MODE_INDEX": "0"
   },
   "triggers": {
     "crons": ["*/5 * * * *"]
@@ -41,6 +47,10 @@
       {
         "name": "ROOMS",
         "class_name": "SignalingRoom"
+      },
+      {
+        "name": "LOBBY_DIRECTORY",
+        "class_name": "LobbyDirectory"
       }
     ]
   },
@@ -74,6 +84,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["SignalingRoom"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["LobbyDirectory"]
     }
   ],
   "observability": {

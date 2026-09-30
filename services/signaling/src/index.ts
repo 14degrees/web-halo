@@ -11,16 +11,23 @@ import {
 } from "./abuse";
 import { roomIdSignatureMatches, signedRoomId } from "./crypto";
 import type { RuntimeEnv } from "./env";
+import { LOBBY_DIRECTORY_NAME } from "./lobby";
 import {
+  LOBBY_MAP_COUNT,
+  LOBBY_MODE_COUNT,
   MAX_HTTP_BODY_BYTES,
   ROOM_ID_PATTERN,
   SIGNALING_PROTOCOL_VERSION,
   TOKEN_PATTERN,
   parseCreateRoomInput,
   parseCreateSessionInput,
+  parseQuickJoinInput,
   type CreateRoomResponse,
   type CreateSessionResponse,
-  type PublicRoomDescriptor,
+  type LobbySettings,
+  type QuickJoinResponse,
+  type RenewRoomResponse,
+  type RoomVisibility,
   type SessionDescriptor,
 } from "./protocol";
 import {
@@ -33,6 +40,7 @@ import { generateIceServersWithFallback, revokeTurnCredential } from "./turn";
 import { enforceTurnBandwidthCaps, turnIsDisabled, turnUsageSummary } from "./turn_cap";
 import { requireHumanVerification } from "./turnstile";
 
+export { LobbyDirectory } from "./lobby";
 export { SignalingRoom } from "./room";
 export type {
   ClientMessage,
@@ -40,9 +48,13 @@ export type {
   CreateSessionResponse,
   IceCandidateSignal,
   IceServerDescriptor,
+  LobbySettings,
   PlayerProfile,
   PlayerStyle,
   PublicRoomDescriptor,
+  QuickJoinResponse,
+  RenewRoomResponse,
+  RoomVisibility,
   SessionDescriptionSignal,
   SessionDescriptor,
   WebRtcSignal,
@@ -50,6 +62,7 @@ export type {
 
 const ROOM_ROUTE = /^\/v1\/rooms\/([^/]+)$/u;
 const SESSION_ROUTE = /^\/v1\/rooms\/([^/]+)\/sessions$/u;
+const RENEW_ROUTE = /^\/v1\/rooms\/([^/]+)\/renew$/u;
 const WEBSOCKET_ROUTE = /^\/v1\/rooms\/([^/]+)\/ws$/u;
 const ADMIN_BAN_ROUTE = /^\/v1\/admin\/bans\/([0-9a-f]{32})$/u;
 const MINIMUM_ROOM_CAPACITY = 2;
@@ -138,6 +151,41 @@ async function requireAllowedActor(
     throw new HttpError(403, "PLAYER_BANNED", "This player is not allowed to create or join rooms.");
   }
   return actorId;
+}
+
+/* The dedicated host presents HOST_SERVICE_TOKEN as a bearer credential. It
+   is a server-to-server secret: it never appears in the page or an invite. */
+async function requestIsDedicatedHost(
+  request: Request,
+  env: RuntimeEnv,
+): Promise<boolean> {
+  const configured = env.HOST_SERVICE_TOKEN;
+  const supplied = request.headers.get("Authorization")?.replace(/^Bearer\s+/iu, "");
+  if (typeof configured !== "string" || configured.length < 32 || !supplied) {
+    return false;
+  }
+  const [configuredDigest, suppliedDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(configured)),
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(supplied)),
+  ]);
+  return crypto.subtle.timingSafeEqual(configuredDigest, suppliedDigest);
+}
+
+function defaultLobby(env: RuntimeEnv): LobbySettings {
+  return {
+    mapIndex: parsePositiveInteger(
+      env.PUBLIC_LOBBY_MAP_INDEX,
+      "PUBLIC_LOBBY_MAP_INDEX",
+      0,
+      LOBBY_MAP_COUNT - 1,
+    ),
+    modeIndex: parsePositiveInteger(
+      env.PUBLIC_LOBBY_MODE_INDEX,
+      "PUBLIC_LOBBY_MODE_INDEX",
+      0,
+      LOBBY_MODE_COUNT - 1,
+    ),
+  };
 }
 
 function parseBanInput(value: unknown): { actorId: string; reason: string; ttlSeconds?: number } {
@@ -374,29 +422,21 @@ function sessionDescriptor(
   };
 }
 
-function publicRoom(
-  roomId: string,
-  buildId: string,
-  protocolVersion: number,
-  capacity: number,
-  expiresAt: number,
-): PublicRoomDescriptor {
-  if (protocolVersion !== SIGNALING_PROTOCOL_VERSION) {
-    throw new Error("Durable Object returned an unsupported protocol version.");
-  }
-  return {
-    buildId,
-    capacity,
-    expiresAt,
-    id: roomId,
-    protocolVersion,
-  };
-}
-
 function inviteUrl(env: RuntimeEnv, inviteCode: string): string {
   const url = new URL(env.PUBLIC_GAME_URL);
   url.hash = `join=${encodeURIComponent(inviteCode)}`;
   return url.toString();
+}
+
+interface RoomAllocation {
+  actorId: string;
+  buildId: string;
+  capacity?: number;
+  dedicated: boolean;
+  identifier: string;
+  lobby: LobbySettings | null;
+  protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
+  visibility: RoomVisibility;
 }
 
 async function createRoom(
@@ -409,13 +449,37 @@ async function createRoom(
     throw new HttpError(400, "VALIDATION_FAILED", parsed.message);
   }
   const actorId = await requireAllowedActor(request, env);
-  const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
-  try {
-    await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "create_room");
-  } catch {
-    throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
+  const dedicated = parsed.value.dedicated === true;
+  if (dedicated && !(await requestIsDedicatedHost(request, env))) {
+    throw new HttpError(403, "DEDICATED_HOST_UNAUTHORIZED", "Dedicated hosting needs the service credential.");
   }
+  if (!dedicated) {
+    const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
+    try {
+      await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "create_room");
+    } catch {
+      throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
+    }
+  }
+  const visibility: RoomVisibility = parsed.value.visibility ?? (dedicated ? "public" : "private");
+  const body = await allocateRoom(request, env, {
+    actorId,
+    buildId: parsed.value.buildId,
+    ...(parsed.value.capacity === undefined ? {} : { capacity: parsed.value.capacity }),
+    dedicated,
+    identifier: parsed.value.identifier,
+    lobby: parsed.value.lobby ?? (visibility === "public" ? defaultLobby(env) : null),
+    protocolVersion: parsed.value.protocolVersion,
+    visibility,
+  });
+  return withCors(jsonResponse(body, 201), origin);
+}
 
+async function allocateRoom(
+  request: Request,
+  env: RuntimeEnv,
+  allocation: RoomAllocation,
+): Promise<CreateRoomResponse> {
   const defaultCapacity = parsePositiveInteger(
     env.DEFAULT_ROOM_CAPACITY,
     "DEFAULT_ROOM_CAPACITY",
@@ -428,7 +492,7 @@ async function createRoom(
     MINIMUM_ROOM_CAPACITY,
     MAXIMUM_ROOM_CAPACITY,
   );
-  const capacity = parsed.value.capacity ?? defaultCapacity;
+  const capacity = allocation.capacity ?? defaultCapacity;
   if (capacity > maximumCapacity) {
     throw new HttpError(
       400,
@@ -437,9 +501,7 @@ async function createRoom(
     );
   }
 
-  const roomTtlMs =
-    parsePositiveInteger(env.ROOM_TTL_SECONDS, "ROOM_TTL_SECONDS", 300, 86_400) *
-    1_000;
+  const roomTtlMs = roomTtlMilliseconds(env, allocation.dedicated);
   const sessionTtlMs =
     parsePositiveInteger(
       env.SESSION_TTL_SECONDS,
@@ -454,14 +516,17 @@ async function createRoom(
   for (let attempt = 0; attempt < 3; attempt += 1) {
     roomId = await signedRoomId(requireRoomIdSecret(env));
     result = await env.ROOMS.getByName(roomId).createRoom({
-      buildId: parsed.value.buildId,
+      buildId: allocation.buildId,
       capacity,
-      identifier: parsed.value.identifier,
+      dedicated: allocation.dedicated,
+      identifier: allocation.identifier,
+      lobby: allocation.lobby,
       now,
-      protocolVersion: parsed.value.protocolVersion,
+      protocolVersion: allocation.protocolVersion,
       roomId,
       roomTtlMs,
       sessionTtlMs,
+      visibility: allocation.visibility,
     });
     if (result.ok) {
       break;
@@ -477,17 +542,8 @@ async function createRoom(
 
   const requestUrl = new URL(request.url);
   const code = `${roomId}.${result.guestTicket}`;
-  const ice = (await turnIsDisabled(env)) ?
-    { expiresAt: null, iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }], turnUsernames: [] } :
-    await generateIceServersWithFallback(
-    env,
-    result.expiresAt,
-    Date.now(),
-    actorId,
-  );
-  await rememberTurnUsernames(env, actorId, ice.turnUsernames, ice.expiresAt);
-  recordTurnEvent(env, ice.turnUsernames.length ? "issued" : "stun-only", actorId, ice.turnUsernames.length);
-  const body: CreateRoomResponse = {
+  const ice = await issueIceServers(env, result.expiresAt, allocation.actorId);
+  return {
     host: {
       session: sessionDescriptor(requestUrl, roomId, result.hostSession),
       ticket: result.hostTicket,
@@ -495,16 +551,47 @@ async function createRoom(
     iceServers: ice.iceServers,
     iceServersExpiresAt: ice.expiresAt,
     invite: { code, url: inviteUrl(env, code) },
-    room: publicRoom(
-      roomId,
-      parsed.value.buildId,
-      parsed.value.protocolVersion,
+    room: {
+      buildId: allocation.buildId,
       capacity,
-      result.expiresAt,
-    ),
+      dedicated: allocation.dedicated,
+      expiresAt: result.expiresAt,
+      id: roomId,
+      lobby: allocation.lobby,
+      protocolVersion: allocation.protocolVersion,
+      visibility: allocation.visibility,
+    },
     v: SIGNALING_PROTOCOL_VERSION,
   };
-  return withCors(jsonResponse(body, 201), origin);
+}
+
+function roomTtlMilliseconds(env: RuntimeEnv, dedicated: boolean): number {
+  const seconds = dedicated
+    ? parsePositiveInteger(
+        env.DEDICATED_ROOM_TTL_SECONDS,
+        "DEDICATED_ROOM_TTL_SECONDS",
+        300,
+        86_400,
+      )
+    : parsePositiveInteger(env.ROOM_TTL_SECONDS, "ROOM_TTL_SECONDS", 300, 86_400);
+  return seconds * 1_000;
+}
+
+function sessionTtlMilliseconds(env: RuntimeEnv): number {
+  return parsePositiveInteger(env.SESSION_TTL_SECONDS, "SESSION_TTL_SECONDS", 30, 600) * 1_000;
+}
+
+async function issueIceServers(
+  env: RuntimeEnv,
+  roomExpiresAt: number,
+  actorId: string,
+): Promise<{ expiresAt: number | null; iceServers: CreateRoomResponse["iceServers"] }> {
+  const ice = (await turnIsDisabled(env)) ?
+    { expiresAt: null, iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }], turnUsernames: [] } :
+    await generateIceServersWithFallback(env, roomExpiresAt, Date.now(), actorId);
+  await rememberTurnUsernames(env, actorId, ice.turnUsernames, ice.expiresAt);
+  recordTurnEvent(env, ice.turnUsernames.length ? "issued" : "stun-only", actorId, ice.turnUsernames.length);
+  return { expiresAt: ice.expiresAt, iceServers: ice.iceServers };
 }
 
 function sessionError(result: Extract<CreateSessionResult, { ok: false }>): HttpError {
@@ -543,6 +630,40 @@ function sessionError(result: Extract<CreateSessionResult, { ok: false }>): Http
   }
 }
 
+/* One session request against a room, shared by the invite and quick-join
+   routes. */
+async function mintSession(
+  env: RuntimeEnv,
+  roomId: string,
+  input: { buildId: string; identifier: string; protocolVersion: number; ticket?: string },
+): Promise<CreateSessionResult> {
+  return env.ROOMS.getByName(roomId).createSession({
+    buildId: input.buildId,
+    identifier: input.identifier,
+    now: Date.now(),
+    protocolVersion: input.protocolVersion,
+    sessionTtlMs: sessionTtlMilliseconds(env),
+    ...(input.ticket === undefined ? {} : { ticket: input.ticket }),
+  });
+}
+
+async function sessionResponse(
+  request: Request,
+  env: RuntimeEnv,
+  roomId: string,
+  actorId: string,
+  result: Extract<CreateSessionResult, { ok: true }>,
+): Promise<CreateSessionResponse> {
+  const ice = await issueIceServers(env, result.room.expiresAt, actorId);
+  return {
+    iceServers: ice.iceServers,
+    iceServersExpiresAt: ice.expiresAt,
+    room: result.room,
+    session: sessionDescriptor(new URL(request.url), roomId, result.session),
+    v: SIGNALING_PROTOCOL_VERSION,
+  };
+}
+
 async function createSession(
   request: Request,
   env: RuntimeEnv,
@@ -562,59 +683,83 @@ async function createSession(
     throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
   }
 
-  const sessionTtlMs =
-    parsePositiveInteger(
-      env.SESSION_TTL_SECONDS,
-      "SESSION_TTL_SECONDS",
-      30,
-      600,
-    ) * 1_000;
-  const result = await env.ROOMS.getByName(roomId).createSession({
-    buildId: parsed.value.buildId,
-    identifier: parsed.value.identifier,
-    now: Date.now(),
-    protocolVersion: parsed.value.protocolVersion,
-    sessionTtlMs,
-    ticket: parsed.value.ticket,
-  });
+  const result = await mintSession(env, roomId, parsed.value);
   if (!result.ok) {
     throw sessionError(result);
   }
+  const body = await sessionResponse(request, env, roomId, actorId, result);
+  return withCors(jsonResponse(body, 201), origin);
+}
 
-  const ice = (await turnIsDisabled(env)) ?
-    { expiresAt: null, iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }], turnUsernames: [] } :
-    await generateIceServersWithFallback(
-    env,
-    result.expiresAt,
+/* Quick join: seat the caller in the best open public room, or make the
+   caller the host of a new one. One Turnstile token (the join action) covers
+   either outcome, so the page needs a single button. */
+async function quickJoin(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+): Promise<Response> {
+  const parsed = parseQuickJoinInput(await readJsonBody(request));
+  if (!parsed.ok) {
+    throw new HttpError(400, "VALIDATION_FAILED", parsed.message);
+  }
+  const actorId = await requireAllowedActor(request, env);
+  const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
+  try {
+    await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "join_room");
+  } catch {
+    throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
+  }
+
+  const directory = env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME);
+  const candidates = await directory.candidates(
+    parsed.value.buildId,
+    parsed.value.protocolVersion,
     Date.now(),
-    actorId,
   );
-  await rememberTurnUsernames(env, actorId, ice.turnUsernames, ice.expiresAt);
-  recordTurnEvent(env, ice.turnUsernames.length ? "issued" : "stun-only", actorId, ice.turnUsernames.length);
-  const body: CreateSessionResponse = {
-    iceServers: ice.iceServers,
-    iceServersExpiresAt: ice.expiresAt,
-    room: publicRoom(
-      roomId,
-      result.buildId,
-      result.protocolVersion,
-      result.capacity,
-      result.expiresAt,
-    ),
-    session: sessionDescriptor(new URL(request.url), roomId, result.session),
-    v: SIGNALING_PROTOCOL_VERSION,
+  for (const candidate of candidates) {
+    const result = await mintSession(env, candidate.roomId, parsed.value);
+    if (result.ok) {
+      const body: QuickJoinResponse = {
+        ...(await sessionResponse(request, env, candidate.roomId, actorId, result)),
+        role: "guest",
+      };
+      return withCors(jsonResponse(body, 201), origin);
+    }
+    if (result.code === "IDENTIFIER_IN_USE") {
+      /* This browser is already in that room (a refresh in flight). Sending it
+         to another room would split it from the players it was with. */
+      throw sessionError(result);
+    }
+    if (
+      result.code === "ROOM_NOT_FOUND" ||
+      result.code === "ROOM_EXPIRED" ||
+      result.code === "INVALID_TICKET"
+    ) {
+      await directory.remove(candidate.roomId);
+    }
+    /* Full, or a build the directory mislisted: try the next room. */
+  }
+
+  /* Nobody to join: the caller hosts. Creating a room counts against the
+     same limit as the wizard's route, so quick join cannot mint rooms faster. */
+  await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
+  const body: QuickJoinResponse = {
+    ...(await allocateRoom(request, env, {
+      actorId,
+      buildId: parsed.value.buildId,
+      dedicated: false,
+      identifier: parsed.value.identifier,
+      lobby: defaultLobby(env),
+      protocolVersion: parsed.value.protocolVersion,
+      visibility: "public",
+    })),
+    role: "host",
   };
   return withCors(jsonResponse(body, 201), origin);
 }
 
-async function closeRoom(
-  request: Request,
-  env: RuntimeEnv,
-  origin: string | null,
-  roomId: string,
-): Promise<Response> {
-  await requireValidRoomId(roomId, env);
-  const body = await readJsonBody(request);
+function readTicketBody(body: unknown): string {
   if (
     typeof body !== "object" ||
     body === null ||
@@ -624,9 +769,43 @@ async function closeRoom(
   ) {
     throw new HttpError(400, "VALIDATION_FAILED", "ticket is malformed.");
   }
-  const result = await env.ROOMS.getByName(roomId).closeRoom(
-    (body as { ticket: string }).ticket,
+  return (body as { ticket: string }).ticket;
+}
+
+async function renewRoom(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+  roomId: string,
+): Promise<Response> {
+  await requireValidRoomId(roomId, env);
+  const ticket = readTicketBody(await readJsonBody(request));
+  const dedicated = await requestIsDedicatedHost(request, env);
+  const result = await env.ROOMS.getByName(roomId).renewRoom(
+    ticket,
+    Date.now(),
+    roomTtlMilliseconds(env, dedicated),
   );
+  if (!result.ok) {
+    throw new HttpError(
+      404,
+      "ROOM_NOT_FOUND_OR_TICKET_INVALID",
+      "The room or host ticket is invalid.",
+    );
+  }
+  const body: RenewRoomResponse = { room: result.room, v: SIGNALING_PROTOCOL_VERSION };
+  return withCors(jsonResponse(body, 200), origin);
+}
+
+async function closeRoom(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+  roomId: string,
+): Promise<Response> {
+  await requireValidRoomId(roomId, env);
+  const ticket = readTicketBody(await readJsonBody(request));
+  const result = await env.ROOMS.getByName(roomId).closeRoom(ticket);
   if (!result.ok) {
     throw new HttpError(
       404,
@@ -651,7 +830,7 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
   if (request.method === "OPTIONS") {
     const response = new Response(null, {
       headers: {
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
         "Access-Control-Allow-Methods": "POST, DELETE, OPTIONS",
         "Access-Control-Max-Age": "86400",
       },
@@ -665,11 +844,23 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     return createRoom(request, env, origin);
   }
 
+  if (request.method === "POST" && url.pathname === "/v1/quickjoin") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "session-create");
+    await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
+    return quickJoin(request, env, origin);
+  }
+
   const sessionMatch = SESSION_ROUTE.exec(url.pathname);
   if (request.method === "POST" && sessionMatch?.[1] !== undefined) {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "session-create");
     await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
     return createSession(request, env, origin, sessionMatch[1]);
+  }
+
+  const renewMatch = RENEW_ROUTE.exec(url.pathname);
+  if (request.method === "POST" && renewMatch?.[1] !== undefined) {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "room-renew");
+    return renewRoom(request, env, origin, renewMatch[1]);
   }
 
   const websocketMatch = WEBSOCKET_ROUTE.exec(url.pathname);

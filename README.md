@@ -66,7 +66,13 @@ The public multiplayer build is available at
 It includes the stock multiplayer maps. Campaign missions are streamed in
 chunks from the deployment's private R2 game-data bucket.
 
-To play with friends:
+To play:
+
+1. Select **Play online**, then **Join multiplayer**. If a public game is open,
+   Halo joins it. If nobody is playing yet, you host it, and everyone who
+   presses the button next lands in your game.
+
+To play with friends privately:
 
 1. Select **Play online**, choose the map and mode, then create a private lobby.
 2. Copy the invite link and send the same link to up to 127 friends.
@@ -118,8 +124,10 @@ The game can play system link games on a local network and on the internet:
 - A system link game can have up to 128 players on up to 128 machines.
 - Linux, Windows and Android machines can play in the same game.
 - The browser build supports one host and up to 127 friends per reusable private
-  invite link. The Cloudflare service exchanges connection metadata; gameplay
-  travels directly between each friend and the host when their networks permit it.
+  invite link, and a public game that anyone can join with one button. The
+  Cloudflare service exchanges connection metadata and lists the public games;
+  gameplay travels directly between each friend and the host when their
+  networks permit it.
 - Native builds can use an invite link without a server from this project.
 - The default netcode is new. Each machine moves its own player at once,
   and the host makes the decisions for the game. Refer to
