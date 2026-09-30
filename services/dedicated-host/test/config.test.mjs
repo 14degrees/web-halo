@@ -33,6 +33,11 @@ test("config requires the service token and validates numbers", () => {
   assert.equal(config.countdownSeconds, 20);
   assert.equal(config.postgameSeconds, 15);
   assert.equal(config.headless, false);
+  assert.equal(config.statusPort, 0);
+  assert.equal(config.statusHost, "127.0.0.1");
+  const hosted = loadConfig({ HALO_HOST_SERVICE_TOKEN: TOKEN, PORT: "6543" });
+  assert.equal(hosted.statusPort, 6543, "a platform-assigned PORT serves the status endpoint");
+  assert.equal(hosted.statusHost, "0.0.0.0");
   assert.throws(() => loadConfig({ HALO_HOST_SERVICE_TOKEN: TOKEN, HALO_LOBBY_MIN_PLAYERS: "0" }), /HALO_LOBBY_MIN_PLAYERS/);
   assert.throws(() => loadConfig({ HALO_HOST_SERVICE_TOKEN: TOKEN, HALO_LOBBY_COUNTDOWN_SECONDS: "999" }), /COUNTDOWN/);
 });

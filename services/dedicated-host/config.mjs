@@ -70,7 +70,12 @@ export function loadConfig(env = process.env) {
     postgameSeconds: integer(env.HALO_LOBBY_POSTGAME_SECONDS, 15, 0, 255, "HALO_LOBBY_POSTGAME_SECONDS"),
     hostName: String(env.HALO_HOST_NAME ?? "Server").slice(0, 11) || "Server",
     hostStyle: String(env.HALO_HOST_STYLE ?? "white"),
-    statusPort: integer(env.HALO_STATUS_PORT, 0, 0, 65535, "HALO_STATUS_PORT"),
+    /* Platforms such as Railway hand the service a PORT and probe it from
+       outside the container, so the status endpoint follows it and listens
+       on every interface there; locally it stays on the loopback. */
+    statusPort: integer(env.HALO_STATUS_PORT ?? env.PORT, 0, 0, 65535, "HALO_STATUS_PORT"),
+    statusHost: env.PORT !== undefined || String(env.HALO_STATUS_PUBLIC ?? "") === "true" ? "0.0.0.0" : "127.0.0.1",
+    chromiumNoSandbox: String(env.HALO_CHROMIUM_NO_SANDBOX ?? "") === "true",
     startupTimeoutSeconds: integer(env.HALO_STARTUP_TIMEOUT_SECONDS, 600, 30, 3600, "HALO_STARTUP_TIMEOUT_SECONDS"),
     headless: String(env.HALO_HEADLESS ?? "true") !== "false",
     chromiumPath: String(env.HALO_CHROMIUM_PATH ?? "").trim() || null,

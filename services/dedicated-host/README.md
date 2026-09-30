@@ -53,6 +53,27 @@ docker run -d --name halo-lobby --restart unless-stopped \
 `--restart unless-stopped` matters: the process exits deliberately when the
 browser dies so the container runtime brings it back.
 
+## Run on Railway
+
+The folder carries a `railway.json`, so Railway builds the Dockerfile and
+restarts the service on failure without further setup:
+
+1. In Railway, **New Project → Deploy from GitHub repo** and pick this
+   repository and branch.
+2. In the service's **Settings → Source**, set **Root Directory** to
+   `services/dedicated-host`.
+3. In **Settings → Resources**, allow at least 4 GB of memory and 2 vCPU per
+   lobby you intend to run. Pick the region nearest your players: the host
+   runs the game, so everyone's latency is their distance to it.
+4. In **Variables**, add `HALO_HOST_SERVICE_TOKEN` and, if you want more than
+   Blood Gulch Slayer, `HALO_LOBBY_ROTATION`. Add `HALO_GAME_URL` if the game
+   is not at the default address.
+5. Deploy. The log shows `page loaded`, `runtime ready`, then `hosting`.
+   Railway's health check reads `/status`, which the process serves on the
+   `PORT` Railway assigns.
+
+A public domain on the service is optional; it only exposes `/status`.
+
 ## Settings
 
 | Variable | Default | Meaning |
@@ -66,7 +87,8 @@ browser dies so the container runtime brings it back.
 | `HALO_LOBBY_POSTGAME_SECONDS` | `15` | Seconds the carnage report shows before the lobby returns |
 | `HALO_HOST_NAME` | `Server` | The host player's name (11 characters); numbered when `HALO_LOBBIES` is above 1 |
 | `HALO_HOST_STYLE` | `white` | The host player's armor color |
-| `HALO_STATUS_PORT` | `0` (off) | Serves `GET /status` on 127.0.0.1 with each lobby's room, match state and player count |
+| `HALO_STATUS_PORT` | `PORT`, else `0` (off) | Serves `GET /status` with each lobby's room, match state and player count. On the loopback, or on every interface when `PORT` is set by the platform or `HALO_STATUS_PUBLIC=true` |
+| `HALO_CHROMIUM_NO_SANDBOX` | `false` | `true` when the container must run Chromium as root |
 | `HALO_HEADLESS` | `true` | `false` shows the browser window, for watching a lobby on a desktop |
 | `HALO_STARTUP_TIMEOUT_SECONDS` | `600` | How long the game may take to start before the page is reloaded |
 | `HALO_CHROMIUM_PATH` | unset | A Chromium executable, when not using the Playwright image |

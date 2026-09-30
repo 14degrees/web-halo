@@ -11,6 +11,8 @@ COPY config.mjs host.mjs ./
 ENV NODE_ENV=production
 # The image ships the Chromium this playwright-core version expects, under
 # PLAYWRIGHT_BROWSERS_PATH, so no browser download happens at build or run.
+# The status endpoint listens on PORT when a platform sets one (Railway),
+# else on this port on the loopback.
 ENV HALO_STATUS_PORT=8790
 EXPOSE 8790
 

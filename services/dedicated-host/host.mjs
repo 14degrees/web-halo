@@ -153,7 +153,7 @@ class Lobby {
   }
 }
 
-function startStatusServer(port, lobbies) {
+function startStatusServer(port, host, lobbies) {
   if (!port) return null;
   const server = http.createServer((request, response) => {
     if (request.url !== "/status") {
@@ -164,7 +164,7 @@ function startStatusServer(port, lobbies) {
     response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     response.end(JSON.stringify({ lobbies: body }));
   });
-  server.listen(port, "127.0.0.1", () => log(null, "status server", { port }));
+  server.listen(port, host, () => log(null, "status server", { host, port }));
   return server;
 }
 
@@ -181,11 +181,11 @@ async function main() {
   });
   const browser = await chromium.launch({
     headless: config.headless,
-    args: CHROMIUM_ARGUMENTS,
+    args: CHROMIUM_ARGUMENTS.concat(config.chromiumNoSandbox ? ["--no-sandbox"] : []),
     ...(config.chromiumPath ? { executablePath: config.chromiumPath } : {}),
   });
   const lobbies = Array.from({ length: config.lobbies }, (_, index) => new Lobby(index, config, browser));
-  const statusServer = startStatusServer(config.statusPort, lobbies);
+  const statusServer = startStatusServer(config.statusPort, config.statusHost, lobbies);
 
   let shuttingDown = false;
   const shutdown = async (signal) => {
