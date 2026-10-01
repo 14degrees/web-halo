@@ -56,9 +56,12 @@ type createRoomResponse struct {
 		Session sessionDescriptor `json:"session"`
 		Ticket  string            `json:"ticket"`
 	} `json:"host"`
-	IceServers []iceServer    `json:"iceServers"`
-	Room       roomDescriptor `json:"room"`
-	V          int            `json:"v"`
+	IceServers []iceServer `json:"iceServers"`
+	Invite     struct {
+		Code string `json:"code"`
+	} `json:"invite"`
+	Room roomDescriptor `json:"room"`
+	V    int            `json:"v"`
 }
 
 type createSessionResponse struct {
@@ -106,7 +109,16 @@ type room struct {
 	selfID    string
 	peers     *peerSet
 	waiting   map[string]time.Time
+	invite    string
 }
+
+// apiError is the room service's refusal, with its HTTP status.
+type apiError struct {
+	status int
+	text   string
+}
+
+func (e *apiError) Error() string { return e.text }
 
 func (r *room) api(ctx context.Context, method, path string, body any, out any) error {
 	encoded, err := json.Marshal(body)
@@ -127,20 +139,23 @@ func (r *room) api(ctx context.Context, method, path string, body any, out any) 
 	defer response.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if response.StatusCode/100 != 2 {
-		return fmt.Errorf("%s %s: %d %s", method, path, response.StatusCode, strings.TrimSpace(string(data)))
+		return &apiError{status: response.StatusCode,
+			text: fmt.Sprintf("%s %s: %d %s", method, path, response.StatusCode, strings.TrimSpace(string(data)))}
 	}
 	return json.Unmarshal(data, out)
 }
 
 // open creates the public dedicated room for this machine.
-func (r *room) open(ctx context.Context, identifier string, lobby lobbySettings) (string, error) {
+// open creates this machine's room: public (listed, quick join) or private
+// (a matchmade match: only players given its invite join).
+func (r *room) open(ctx context.Context, identifier string, lobby lobbySettings, visibility string) (string, error) {
 	var result createRoomResponse
 	err := r.api(ctx, http.MethodPost, "/v1/rooms", map[string]any{
 		"protocolVersion": protocolVersion,
 		"buildId":         r.config.BuildID,
 		"capacity":        roomCapacity,
 		"identifier":      identifier,
-		"visibility":      "public",
+		"visibility":      visibility,
 		"dedicated":       true,
 		"lobby":           lobby,
 	}, &result)
@@ -155,9 +170,10 @@ func (r *room) open(ctx context.Context, identifier string, lobby lobbySettings)
 	r.ticket = result.Host.Ticket
 	r.expiresAt = result.Room.ExpiresAt
 	r.selfID = result.Host.Session.PeerID
+	r.invite = result.Invite.Code
 	r.mu.Unlock()
 	r.peers.setICEServers(result.IceServers)
-	log.Printf("room %s… open (%d ICE servers)", shortID(result.Room.ID), len(result.IceServers))
+	log.Printf("room %s… open (%s, %d ICE servers)", shortID(result.Room.ID), visibility, len(result.IceServers))
 	return result.Host.Session.WebsocketURL, nil
 }
 

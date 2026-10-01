@@ -58,6 +58,14 @@ type peerSet struct {
 	link      *gameLink
 	signal    func(to string, signal map[string]any)
 	changed   func()
+	// which machines may connect (a matchmade match's roster); nil: any
+	allowed func(identifier string) bool
+}
+
+func (set *peerSet) setAllowed(allowed func(string) bool) {
+	set.mu.Lock()
+	set.allowed = allowed
+	set.mu.Unlock()
 }
 
 // newPeerSet makes the WebRTC side. With udpPort, every guest's traffic
@@ -122,6 +130,11 @@ func (set *peerSet) ensure(id, identifier string) {
 		return
 	}
 	set.mu.Lock()
+	if set.allowed != nil && !set.allowed(identifier) {
+		set.mu.Unlock()
+		log.Printf("peer %s (%s) refused: not in this match", id, identifier)
+		return
+	}
 	if _, exists := set.byID[set.resolveLocked(id)]; exists {
 		set.mu.Unlock()
 		return

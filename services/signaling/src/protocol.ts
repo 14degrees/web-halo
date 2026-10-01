@@ -260,7 +260,7 @@ export function parsePlayerProfile(
   return { ok: true, value: { name, style } };
 }
 
-function isBuildId(value: unknown): value is string {
+export function isBuildId(value: unknown): value is string {
   return typeof value === "string" && BUILD_ID_PATTERN.test(value);
 }
 

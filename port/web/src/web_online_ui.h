@@ -148,6 +148,8 @@ int platform_web_online_get_player_count(void);
 server has no screen. Read by the platform layer when it seeds settings. */
 void platform_web_online_set_headless(int headless);
 int platform_web_online_is_headless(void);
+/* (a dedicated host) the players the lobby waits for from now on */
+int platform_web_online_set_minimum_players(int minimum_players);
 
 /* Called on Halo's game thread once per frame. */
 void web_online_ui_update(int main_menu_loaded, float seconds);

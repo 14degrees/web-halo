@@ -20,6 +20,7 @@ gateway to game
   'H' map:u8 mode:u8 minimum:u8 countdown:u8 postgame:u8
                                  host the dedicated lobby
   'G' map:u8 mode:u8             the next game's map and mode
+  'm' minimum:u8                 the players the lobby waits for from now on
   'X'                            end the match for players waiting to join
   'Q'                            stop the server
 
@@ -61,6 +62,7 @@ int platform_web_online_host_dedicated(int map_index, int mode_index,
 	int minimum_players, int countdown_seconds, int postgame_seconds);
 int platform_web_online_set_next_game(int map_index, int mode_index);
 void platform_web_online_request_restart(void);
+int platform_web_online_set_minimum_players(int minimum_players);
 void platform_web_online_set_headless(int headless);
 int platform_web_online_get_match_state(void);
 int platform_web_online_get_countdown_remaining(void);
@@ -229,6 +231,10 @@ static void *link_reader(void *unused)
 			break;
 		case 'X':
 			platform_web_online_request_restart();
+			break;
+		case 'm':
+			if (length == 2)
+				platform_web_online_set_minimum_players(packet[1]);
 			break;
 		case 'Q':
 			fprintf(stderr, "halo-server: stopping at the gateway's request\n");

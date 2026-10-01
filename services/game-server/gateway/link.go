@@ -169,6 +169,11 @@ func (link *gameLink) setNextGame(mapIndex, modeIndex int) error {
 	return link.write([]byte{'G', byte(mapIndex), byte(modeIndex)})
 }
 
+// setMinimumPlayers changes the players the lobby waits for.
+func (link *gameLink) setMinimumPlayers(minimum int) error {
+	return link.write([]byte{'m', byte(minimum)})
+}
+
 func (link *gameLink) requestRestart() error {
 	return link.write([]byte{'X'})
 }

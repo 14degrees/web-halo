@@ -22,6 +22,9 @@ primary_region = "lax"
   HALO_SERVERS = "3"
   # matches run to their end; a newcomer goes to a server in its lobby
   HALO_RESTART_FOR_WAITING = "false"
+  # take matches from the matchmaker (gateway/pool.go), each in a fresh game
+  HALO_MODE = "pool"
+  HALO_MATCH_COUNTDOWN_SECONDS = "5"
 
 [[services]]
   protocol = "udp"

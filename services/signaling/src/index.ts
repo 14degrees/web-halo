@@ -13,13 +13,16 @@ import { roomIdSignatureMatches, signedRoomId } from "./crypto";
 import { HttpError } from "./errors";
 import type { RuntimeEnv } from "./env";
 import { DEDICATED_HOST_LEASE_MS, LOBBY_DIRECTORY_NAME } from "./lobby";
+import { MATCHMAKER_NAME, isPlaylist } from "./matchmaker";
 import {
   LOBBY_MAP_COUNT,
   LOBBY_MODE_COUNT,
+  IDENTIFIER_PATTERN,
   MAX_HTTP_BODY_BYTES,
   ROOM_ID_PATTERN,
   SIGNALING_PROTOCOL_VERSION,
   TOKEN_PATTERN,
+  isBuildId,
   parseCreateRoomInput,
   parseCreateSessionInput,
   parseLobbySettings,
@@ -45,6 +48,7 @@ import { handleWalletRequest, walletForToken } from "./wallet";
 
 export { Bank } from "./bank";
 export { LobbyDirectory } from "./lobby";
+export { Matchmaker } from "./matchmaker";
 export { SignalingRoom } from "./room";
 export type {
   ClientMessage,
@@ -69,6 +73,10 @@ const SESSION_ROUTE = /^\/v1\/rooms\/([^/]+)\/sessions$/u;
 const RENEW_ROUTE = /^\/v1\/rooms\/([^/]+)\/renew$/u;
 const WEBSOCKET_ROUTE = /^\/v1\/rooms\/([^/]+)\/ws$/u;
 const ADMIN_BAN_ROUTE = /^\/v1\/admin\/bans\/([0-9a-f]{32})$/u;
+const QUEUE_TICKET_ROUTE = /^\/v1\/queue\/([A-Za-z0-9_-]{16,64})$/u;
+const POOL_HEARTBEAT_ROUTE = /^\/v1\/pool\/servers\/([A-Za-z0-9_-]{16,64})\/heartbeat$/u;
+const POOL_MATCH_ROUTE =
+  /^\/v1\/pool\/servers\/([A-Za-z0-9_-]{16,64})\/matches\/([A-Za-z0-9_-]{8,64})\/(ready|end)$/u;
 const MINIMUM_ROOM_CAPACITY = 2;
 const MAXIMUM_ROOM_CAPACITY = 128;
 
@@ -826,6 +834,129 @@ async function listServers(env: RuntimeEnv, origin: string | null): Promise<Resp
   return withCors(jsonResponse({ browserHosted, now, servers, v: SIGNALING_PROTOCOL_VERSION }), origin);
 }
 
+/* ---------- matchmaking (src/matchmaker.ts) */
+
+function matchmaker(env: RuntimeEnv) {
+  return env.MATCHMAKER.getByName(MATCHMAKER_NAME);
+}
+
+function record(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "The request body must be an object.");
+  }
+  return body as Record<string, unknown>;
+}
+
+/* A player joins the queue: their machine, build, playlist and (to wager)
+   wallet. */
+async function enqueue(request: Request, env: RuntimeEnv, origin: string | null): Promise<Response> {
+  const body = record(await readJsonBody(request));
+  if (body.protocolVersion !== SIGNALING_PROTOCOL_VERSION || !isBuildId(body.buildId) ||
+      typeof body.identifier !== "string" || !IDENTIFIER_PATTERN.test(body.identifier)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "protocolVersion, buildId and identifier are required.");
+  }
+  const playlist = body.playlist ?? "ffa";
+  if (!isPlaylist(playlist)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "playlist is not one the matchmaker runs.");
+  }
+  await requireAllowedActor(request, env);
+  const walletToken = typeof body.walletToken === "string" ? body.walletToken : undefined;
+  const wallet = await walletForToken(env, walletToken);
+  const ticket = await matchmaker(env).enqueue({
+    buildId: body.buildId,
+    identifier: body.identifier,
+    now: Date.now(),
+    playlist,
+    wallet: wallet ?? null,
+  });
+  return withCors(jsonResponse({ ticket, v: SIGNALING_PROTOCOL_VERSION }, 201), origin);
+}
+
+async function requirePoolServer(request: Request, env: RuntimeEnv): Promise<void> {
+  if (!(await requestIsDedicatedHost(request, env))) {
+    throw new HttpError(403, "DEDICATED_HOST_UNAUTHORIZED", "Pool servers need the service credential.");
+  }
+}
+
+async function handleMatchmaking(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+  url: URL,
+): Promise<Response | null> {
+  const now = Date.now();
+  if (request.method === "POST" && url.pathname === "/v1/queue") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "session-create");
+    return enqueue(request, env, origin);
+  }
+  const ticketMatch = QUEUE_TICKET_ROUTE.exec(url.pathname);
+  if (ticketMatch) {
+    const ticketId = ticketMatch[1]!;
+    if (request.method === "GET") {
+      const ticket = await matchmaker(env).poll(ticketId, now);
+      if (!ticket) throw new HttpError(404, "TICKET_NOT_FOUND", "That queue ticket is unknown or has expired.");
+      return withCors(jsonResponse({ ticket, v: SIGNALING_PROTOCOL_VERSION }), origin);
+    }
+    if (request.method === "DELETE") {
+      const cancelled = await matchmaker(env).cancel(ticketId, now);
+      return withCors(jsonResponse({ cancelled, v: SIGNALING_PROTOCOL_VERSION }), origin);
+    }
+  }
+  if (request.method === "GET" && url.pathname === "/v1/matchmaker") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
+    const snapshot = await matchmaker(env).snapshot(now);
+    return withCors(jsonResponse({
+      events: snapshot.events.map((event) => ({ ...event, detail: event.detail ? JSON.parse(event.detail) : null })),
+      matches: snapshot.matches,
+      now,
+      queues: snapshot.queues,
+      servers: snapshot.servers,
+      v: SIGNALING_PROTOCOL_VERSION,
+    }), origin);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/pool/servers") {
+    await requirePoolServer(request, env);
+    const body = record(await readJsonBody(request));
+    if (!isBuildId(body.buildId)) throw new HttpError(400, "VALIDATION_FAILED", "buildId is required.");
+    const colo = typeof request.cf?.colo === "string" ? request.cf.colo : null;
+    const serverId = await matchmaker(env).registerServer(body.buildId, colo, now);
+    return withCors(jsonResponse({ serverId, v: SIGNALING_PROTOCOL_VERSION }, 201), origin);
+  }
+  const heartbeatMatch = POOL_HEARTBEAT_ROUTE.exec(url.pathname);
+  if (heartbeatMatch && request.method === "POST") {
+    await requirePoolServer(request, env);
+    const body = record(await readJsonBody(request));
+    const result = await matchmaker(env).heartbeat({
+      serverId: heartbeatMatch[1]!,
+      now,
+      ...(typeof body.matchState === "string" ? { matchState: body.matchState.slice(0, 16) } : {}),
+      ...(typeof body.players === "number" && Number.isInteger(body.players) ? { players: body.players } : {}),
+    });
+    if (!result.known) throw new HttpError(404, "SERVER_NOT_FOUND", "Register again.");
+    return withCors(jsonResponse({ assignment: result.assignment, v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
+  const poolMatch = POOL_MATCH_ROUTE.exec(url.pathname);
+  if (poolMatch && request.method === "POST") {
+    await requirePoolServer(request, env);
+    const [, serverId, matchId, action] = poolMatch;
+    const body = record(await readJsonBody(request));
+    let ok: boolean;
+    if (action === "ready") {
+      if (typeof body.roomId !== "string" || !ROOM_ID_PATTERN.test(body.roomId) ||
+          typeof body.inviteCode !== "string" || body.inviteCode.length > 512) {
+        throw new HttpError(400, "VALIDATION_FAILED", "roomId and inviteCode are required.");
+      }
+      ok = await matchmaker(env).matchReady(serverId!, matchId!, body.roomId, body.inviteCode, now);
+    } else {
+      const reason = typeof body.reason === "string" ? body.reason.slice(0, 64) : "finished";
+      ok = await matchmaker(env).matchEnded(serverId!, matchId!, reason, now);
+    }
+    if (!ok) throw new HttpError(409, "MATCH_NOT_ASSIGNED", "That match is not this server's.");
+    return withCors(jsonResponse({ ok, v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
+  return null;
+}
+
 function readTicketBody(body: unknown): string {
   if (
     typeof body !== "object" ||
@@ -924,6 +1055,11 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
   const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
   if (walletResponse !== null) {
     return withCors(jsonResponse(walletResponse), origin);
+  }
+
+  const matchmakingResponse = await handleMatchmaking(request, env, origin, url);
+  if (matchmakingResponse !== null) {
+    return matchmakingResponse;
   }
 
   if (request.method === "GET" && url.pathname === "/v1/servers") {

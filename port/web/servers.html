@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="dark">
   <title>Halo Servers</title>
   <style>
-    /* The server dashboard: every dedicated server the signaling Worker
-       knows (GET /v1/servers), refreshed every two seconds. */
+    /* The server dashboard: the matchmaker's queues, pool, matches and
+       event log (GET /v1/matchmaker). */
     :root {
       --bg: #06090c; --panel: #0c1218; --line: rgba(151, 189, 209, .16);
       --text: #e5f4ff; --muted: #8fa6b5; --accent: #7fb6e0;
@@ -48,18 +48,33 @@
     .empty, .error { padding: 2rem; border: 1px dashed var(--line); border-radius: .5rem; color: var(--muted); text-align: center; }
     .error { color: var(--lapsed); }
     footer { margin-top: 1.4rem; color: var(--muted); font-size: .8rem; }
+    h2 { margin: 1.6rem 0 .7rem; font-size: 1rem; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: .85rem; font-variant-numeric: tabular-nums; }
+    th, td { padding: .4rem .6rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    td { overflow-wrap: anywhere; }
+    #matches, #events { overflow-x: auto; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Dedicated servers</h1>
+    <h1>Servers</h1>
     <a href="/">Back to the game</a>
   </header>
   <section class="summary" id="summary"></section>
+  <h2>Queues</h2>
+  <section class="summary" id="queues"></section>
+  <h2>Server pool</h2>
   <section class="grid" id="servers"></section>
+  <h2>Matches</h2>
+  <section id="matches"></section>
+  <h2>Event log</h2>
+  <section id="events"></section>
   <footer id="footer">Loading…</footer>
   <script>
     "use strict";
+    /* The matchmaker's view (GET /v1/matchmaker): its queues, the servers in
+       its pool, recent matches and its event log, refreshed every 2 s. */
     const MAPS = [
       ["Battle Creek", "battle-creek"], ["Sidewinder", "sidewinder"], ["Damnation", "damnation"],
       ["Rat Race", "rat-race"], ["Prisoner", "prisoner"], ["Hang 'Em High", "hang-em-high"],
@@ -67,13 +82,16 @@
       ["Blood Gulch", "blood-gulch"], ["Wizard", "wizard"], ["Chiron TL-34", "chiron-tl-34"], ["Longest", "longest"],
     ];
     const MODES = ["Slayer", "Team Slayer", "Capture the Flag", "Oddball", "King of the Hill", "Race"];
-    const STATES = {
-      lobby: ["In lobby", "var(--live)"], countdown: ["Starting", "var(--countdown)"],
-      ingame: ["In match", "var(--ingame)"], postgame: ["Scores", "var(--postgame)"],
+    const SERVER_STATES = {
+      idle: ["Idle, waiting for a match", "var(--live)"],
+      assigned: ["Opening a match", "var(--countdown)"],
+      hosting: ["Hosting a match", "var(--ingame)"],
+    };
+    const MATCH_STATES = {
+      lobby: "Players connecting", countdown: "Starting", ingame: "In match", postgame: "Scores", none: "Booting",
     };
     let signalingUrl = null;
 
-    /* The signaling Worker's address, as the game page declares it. */
     async function findSignaling() {
       const page = await (await fetch("/index.html", { cache: "no-store" })).text();
       const meta = new DOMParser().parseFromString(page, "text/html")
@@ -100,65 +118,82 @@
       return node;
     }
 
-    function card(server) {
-      const map = MAPS[server.mapIndex] || ["Unknown map", null];
-      const mode = MODES[server.modeIndex] || "";
-      const [stateLabel, stateColor] = server.live ?
-        (STATES[server.matchState] || ["Starting up", "var(--muted)"]) : ["Unreachable", "var(--lapsed)"];
-      const art = element("div", { class: "art", style: map[1] ? `background-image:url(/assets/ui/maps/${map[1]}.png)` : "" }, [
+    function stat(value, label) {
+      return element("div", { class: "stat" }, [element("b", { text: String(value) }), element("span", { text: label })]);
+    }
+
+    function mapLabel(match) {
+      const map = MAPS[match.mapIndex] || ["Unknown map", null];
+      return `${map[0]} · ${MODES[match.modeIndex] || ""}`;
+    }
+
+    function serverCard(server, matches) {
+      const match = server.match ? matches.find((candidate) => candidate.id === server.match) : null;
+      const [stateLabel, stateColor] = SERVER_STATES[server.state] || [server.state, "var(--muted)"];
+      const map = match ? MAPS[match.mapIndex] : null;
+      const art = element("div", { class: "art", style: map ? `background-image:url(/assets/ui/maps/${map[1]}.png)` : "" }, [
         element("span", { class: "badge", style: `background:${stateColor}`, text: stateLabel }),
       ]);
-      const players = server.names.length ?
-        element("div", { class: "players" }, server.names.map((name) => element("span", { text: name }))) :
-        document.createTextNode("Nobody");
       const rows = [
-        ["Players", String(server.players)],
-        ["Who", players],
-        [server.matchState === "ingame" ? "Match time" : "State for", duration(server.matchSeconds)],
-        ["Heartbeat", server.lastSeenSeconds === null ? "never" : duration(server.lastSeenSeconds) + " ago"],
-        ["Up for", duration(server.uptimeSeconds)],
+        ["Match", match ? `${match.id} · ${mapLabel(match)}` : "None"],
+        ["Game", match ? (MATCH_STATES[match.matchState] || match.matchState || "–") : "–"],
+        ["Players", match ? `${match.players} of ${match.roster}` : "–"],
+        ["Heartbeat", duration(server.seenSeconds) + " ago"],
+        ["Up for", duration(server.upSeconds)],
         ["Build", server.buildId],
       ];
       const list = element("dl", { class: "rows" });
-      rows.forEach(([label, value]) => list.append(element("dt", { text: label }), element("dd", {}, [value])));
-      return element("article", { class: "card" + (server.live ? "" : " lapsed") }, [
+      rows.forEach(([label, value]) => list.append(element("dt", { text: label }), element("dd", { text: value })));
+      return element("article", { class: "card" }, [
         art,
         element("div", { class: "body" }, [
           element("div", { class: "title" }, [
-            element("span", { class: "dot", style: `background:${server.live ? "var(--live)" : "var(--lapsed)"}` }),
-            element("span", { text: server.name }),
+            element("span", { class: "dot", style: `background:${stateColor}` }),
+            element("span", { text: "Server " + server.id }),
           ]),
-          element("div", { class: "meta", text: `${map[0]} · ${mode}${server.colo ? " · near " + server.colo : ""}` }),
+          element("div", { class: "meta", text: server.colo ? "near " + server.colo : "" }),
           list,
         ]),
       ]);
     }
 
-    function stat(value, label) {
-      return element("div", { class: "stat" }, [element("b", { text: String(value) }), element("span", { text: label })]);
+    function table(headings, rows) {
+      if (!rows.length) return element("div", { class: "empty", text: "Nothing yet." });
+      return element("table", {}, [
+        element("thead", {}, [element("tr", {}, headings.map((heading) => element("th", { text: heading })))]),
+        element("tbody", {}, rows.map((cells) => element("tr", {}, cells.map((cell) => element("td", { text: cell }))))),
+      ]);
     }
 
     async function refresh() {
       const footer = document.getElementById("footer");
       try {
         signalingUrl = signalingUrl || await findSignaling();
-        const response = await fetch(signalingUrl + "/v1/servers", { cache: "no-store" });
-        if (!response.ok) throw new Error("The server list answered " + response.status);
+        const response = await fetch(signalingUrl + "/v1/matchmaker", { cache: "no-store" });
+        if (!response.ok) throw new Error("The matchmaker answered " + response.status);
         const data = await response.json();
-        const live = data.servers.filter((server) => server.live);
-        const summary = document.getElementById("summary");
-        summary.replaceChildren(
-          stat(live.length, "Servers up"),
-          stat(live.filter((server) => server.matchState === "ingame").length, "In a match"),
-          stat(live.filter((server) => server.matchState !== "ingame").length, "Open to join"),
-          stat(live.reduce((sum, server) => sum + server.players, 0), "Players"),
+        const live = data.matches.filter((match) => match.state !== "ended");
+        document.getElementById("summary").replaceChildren(
+          stat(data.servers.length, "Servers"),
+          stat(data.servers.filter((server) => server.state === "idle").length, "Idle"),
+          stat(live.length, "Matches running"),
+          stat(live.reduce((sum, match) => sum + match.players, 0), "Players in matches"),
         );
-        const grid = document.getElementById("servers");
-        const ordered = [...data.servers].sort((a, b) => Number(b.live) - Number(a.live) || b.players - a.players);
-        grid.replaceChildren(...(ordered.length ? ordered.map(card) :
-          [element("div", { class: "empty", text: "No dedicated servers are running." })]));
-        footer.textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 2 s` +
-          (data.browserHosted ? ` · ${data.browserHosted} game(s) hosted by a player's browser` : "");
+        document.getElementById("queues").replaceChildren(...data.queues.map((queue) =>
+          stat(queue.queued, queue.label + " queue" + (queue.oldestSeconds !== null ? ` · ${queue.oldestSeconds} s` : ""))));
+        document.getElementById("servers").replaceChildren(...(data.servers.length ?
+          data.servers.map((server) => serverCard(server, data.matches)) :
+          [element("div", { class: "empty", text: "No servers are in the pool." })]));
+        document.getElementById("matches").replaceChildren(table(
+          ["Match", "Playlist", "Map", "State", "Game", "Players", "Age", "Ended"],
+          data.matches.map((match) => [match.id, match.playlist, mapLabel(match), match.state,
+            MATCH_STATES[match.matchState] || match.matchState || "–", `${match.players} of ${match.roster}`,
+            duration(match.ageSeconds), match.endReason || ""])));
+        document.getElementById("events").replaceChildren(table(
+          ["Time", "Event", "Subject", "Detail"],
+          data.events.map((event) => [new Date(event.at).toLocaleTimeString(), event.kind.replace(/_/g, " "),
+            event.subject || "", event.detail ? JSON.stringify(event.detail) : ""])));
+        footer.textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 2 s`;
       } catch (error) {
         footer.textContent = "";
         document.getElementById("servers").replaceChildren(

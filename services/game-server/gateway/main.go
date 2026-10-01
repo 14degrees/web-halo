@@ -41,24 +41,28 @@ const (
 )
 
 type config struct {
-	SignalingURL      string
-	Origin            string
-	ServiceToken      string
-	BuildID           string
-	GameBinary        string
-	DataRoot          string
-	SaveRoot          string
-	LinkPath          string
-	HostName          string
-	Rotation          []lobbySettings
-	MinimumPlayers    int
-	CountdownSeconds  int
-	PostgameSeconds   int
-	StatusAddress     string
-	UDPHost           string
-	UDPPort           int
-	PublicIP          string
-	RestartForWaiting bool
+	SignalingURL     string
+	Origin           string
+	ServiceToken     string
+	BuildID          string
+	GameBinary       string
+	DataRoot         string
+	SaveRoot         string
+	LinkPath         string
+	HostName         string
+	Rotation         []lobbySettings
+	MinimumPlayers   int
+	CountdownSeconds int
+	PostgameSeconds  int
+	StatusAddress    string
+	// "open": a public lobby anyone quick-joins; "pool": matches from the
+	// matchmaker (pool.go)
+	Mode                  string
+	MatchCountdownSeconds int
+	UDPHost               string
+	UDPPort               int
+	PublicIP              string
+	RestartForWaiting     bool
 }
 
 func environment(name, fallback string) string {
@@ -154,6 +158,13 @@ func loadConfig() (*config, error) {
 	if c.PostgameSeconds, err = integer("HALO_LOBBY_POSTGAME_SECONDS", 15, 0, 255); err != nil {
 		return nil, err
 	}
+	c.Mode = environment("HALO_MODE", "open")
+	if c.Mode != "open" && c.Mode != "pool" {
+		return nil, errors.New(`HALO_MODE must be "open" or "pool"`)
+	}
+	if c.MatchCountdownSeconds, err = integer("HALO_MATCH_COUNTDOWN_SECONDS", 5, 0, 255); err != nil {
+		return nil, err
+	}
 	if c.UDPPort, err = integer("HALO_WEBRTC_UDP_PORT", 0, 0, 65535); err != nil {
 		return nil, err
 	}
@@ -220,7 +231,7 @@ func (s *server) gameStatus(status gameStatus) {
 	if status.Match != previous {
 		log.Printf("match: %s (%d players)", stateName(status.Match), status.Players)
 		/* the report has come up: the game just ended */
-		if status.Match == matchPostgame {
+		if status.Match == matchPostgame && s.config.Mode == "open" {
 			s.advanceRotation()
 		}
 	}
@@ -473,13 +484,16 @@ func run() error {
 		return errors.New("the game never said hello")
 	}
 	log.Printf("game linked: machine %s", identifier)
+	if c.Mode == "pool" {
+		return s.runPool(ctx, identifier, gameDone, linkDone)
+	}
 
 	first := c.Rotation[0]
 	if err := s.link.hostDedicated(first.MapIndex, first.ModeIndex, c.MinimumPlayers, c.CountdownSeconds, c.PostgameSeconds); err != nil {
 		return err
 	}
 	openContext, cancel := context.WithTimeout(ctx, 30*time.Second)
-	socketURL, err := s.room.open(openContext, identifier, first)
+	socketURL, err := s.room.open(openContext, identifier, first, "public")
 	cancel()
 	if err != nil {
 		_ = s.link.stop()

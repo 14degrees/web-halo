@@ -1958,7 +1958,7 @@
     }
   }
 
-  async function join(value, turnstileToken) {
+  async function join(value, turnstileToken, matchmade) {
     if (!session.runtimeReady) {
       showDialog();
       showJoinConfirmation(value);
@@ -1978,6 +1978,9 @@
     }
     session.active = true;
     session.role = "guest";
+    /* (known now, so the lobby stays up while the session is made) */
+    session.matchmade = !!matchmade;
+    session.publicLobby = session.matchmade;
     syncTelemetryContext();
     session.closing = false;
     session.room = { id: invite.roomId };
@@ -1992,7 +1995,10 @@
     try {
       var result = await createSession(invite.ticket, turnstileToken);
       requireCurrentOperation(operation);
-      session.publicLobby = !!(result && result.room && result.room.visibility === "public");
+      /* A matchmade match's room is private (only its players hold the
+         invite), but it plays in the public lobby's screens. */
+      session.matchmade = !!matchmade;
+      session.publicLobby = session.matchmade || !!(result && result.room && result.room.visibility === "public");
       await completeGuestJoin(result, operation);
       setStatus("Room found. Connecting directly to " + hostNoun() + "…");
     } catch (error) {
@@ -2080,6 +2086,7 @@
 
   function resetSessionState() {
     session.active = false;
+    session.matchmade = false;
     session.role = null;
     session.room = null;
     session.roomTicket = null;
@@ -2393,9 +2400,101 @@
     } catch (error) {
       /* An invalid edit keeps the last good profile. */
     }
-    var token = null;
-    try { token = consumeTurnstile("join_room"); } catch (error) { token = null; }
-    quickJoin(token).catch(function(error) { fail(error); });
+    enqueueForMatch();
+  }
+
+  /* ---------- matchmaking (services/signaling/src/matchmaker.ts)
+
+     Play queues this machine (and wallet) for a playlist. The page polls
+     its ticket every second; the matchmaker groups players, gives the match
+     a server, and the poll returns the server's invite once its room is
+     open. Matches are accepted automatically. */
+
+  var QUEUE_POLL_MILLISECONDS = 1000;
+
+  async function enqueueForMatch() {
+    if (lobby.queue) return;
+    var queue = { id: null, state: "joining", queued: 0, playlist: lobby.playlist || "ffa", polledAt: 0 };
+    lobby.queue = queue;
+    try {
+      var request = {
+        protocolVersion: PROTOCOL_VERSION,
+        buildId: buildId(),
+        identifier: localIdentifier(),
+        playlist: queue.playlist,
+      };
+      if (wallet.token) request.walletToken = wallet.token;
+      var result = await fetchJson("/v1/queue", { method: "POST", body: JSON.stringify(request) });
+      if (lobby.queue !== queue) return;
+      applyTicket(result.ticket);
+    } catch (error) {
+      if (lobby.queue !== queue) return;
+      lobby.queue = null;
+      lobby.started = false;
+      scheduleRejoin(error && error.message ? error.message : "Could not join the queue.");
+    }
+  }
+
+  function applyTicket(ticket) {
+    var queue = lobby.queue;
+    if (!queue || !ticket) return;
+    queue.id = ticket.id;
+    queue.state = ticket.state;
+    queue.queued = ticket.queued;
+    queue.waited = ticket.waitedSeconds;
+    queue.match = ticket.match || null;
+    if (ticket.state === "ready" && ticket.match && ticket.match.inviteCode && !queue.joined && !session.active) {
+      queue.joined = true;
+      join(ticket.match.inviteCode, null, true).catch(function(error) { fail(error); });
+      return;
+    }
+    if ((ticket.state === "ended" || ticket.state === "cancelled" || ticket.state === "expired") && !session.active) {
+      /* the match is over or never happened: back in the queue, if still
+         wanted */
+      lobby.queue = null;
+      lobby.started = false;
+    }
+  }
+
+  function pollQueue() {
+    var queue = lobby.queue;
+    if (!queue || !queue.id || queue.polling || session.active) return;
+    if (Date.now() - queue.polledAt < QUEUE_POLL_MILLISECONDS) return;
+    queue.polling = true;
+    queue.polledAt = Date.now();
+    fetchJson("/v1/queue/" + encodeURIComponent(queue.id), { method: "GET" })
+      .then(function(result) { if (lobby.queue === queue) applyTicket(result.ticket); })
+      .catch(function(error) {
+        if (lobby.queue === queue && error && /unknown or has expired/.test(error.message || "")) {
+          lobby.queue = null;
+          lobby.started = false;
+        }
+      })
+      .then(function() { queue.polling = false; });
+  }
+
+  function cancelQueue() {
+    var queue = lobby.queue;
+    lobby.queue = null;
+    if (queue && queue.id && queue.state === "queued") {
+      fetchJson("/v1/queue/" + encodeURIComponent(queue.id), { method: "DELETE" }).catch(function() {});
+    }
+  }
+
+  var PLAYLIST_LABELS = { ffa: "Free-for-all", duel: "1v1" };
+
+  function queueStatus() {
+    var queue = lobby.queue;
+    var label = PLAYLIST_LABELS[queue.playlist] || queue.playlist;
+    if (queue.state === "joining") return { text: "Joining the " + label + " queue…" };
+    if (queue.state === "queued") {
+      var others = Math.max(0, (queue.queued || 1) - 1);
+      return { text: "Searching for " + label + " players… " +
+        (others === 0 ? "nobody else is queued yet." : others + (others === 1 ? " other player" : " other players") + " queued.") };
+    }
+    if (queue.state === "assigning") return { text: "Match found. Setting up a server…" };
+    if (queue.state === "ready") return { text: "Match found. Joining the server…" };
+    return { text: "Searching for players…" };
   }
 
   function scheduleRejoin(message) {
@@ -2437,6 +2536,7 @@
 
   function lobbyStatus(state) {
     if (lobby.error && !session.active) return { text: lobby.error, tone: "error" };
+    if (lobby.queue && !session.active) return queueStatus();
     if (!session.runtimeReady) {
       var label = byId("loading-label");
       var text = (label && label.textContent) || "Loading Halo…";
@@ -2469,7 +2569,8 @@
     }
     if (state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) return { text: "Joining the match…" };
     if (state === CLIENT_STATE.PREGAME && info && info.state === "lobby") {
-      return { text: "Waiting for another player. The countdown starts when someone joins." };
+      return { text: session.matchmade ? "Waiting for the other players to connect…" :
+        "Waiting for another player. The countdown starts when someone joins." };
     }
     if (state === CLIENT_STATE.PREGAME) return { text: "In the lobby. The match starts automatically." };
     if (state === CLIENT_STATE.POSTGAME) return { text: "Match over. The next one starts shortly." };
@@ -2688,6 +2789,12 @@
     }
     if (!lobby.busySince) lobby.busySince = Date.now();
     if (Date.now() - lobby.busySince < 8000) return;
+    if (session.matchmade) {
+      /* this match started without us (we loaded too late): queue again */
+      lobby.busySince = 0;
+      leave(false).then(function() { scheduleRejoin("The match started without you."); });
+      return;
+    }
     refreshListing();
     var open = (lobby.listing || []).some(function(room) {
       return room.dedicated && (room.matchState === "lobby" || room.matchState === "countdown") &&
@@ -2700,6 +2807,7 @@
   }
 
   function tickLobby() {
+    pollQueue();
     moveToOpenServer(clientState());
     restartForWaitingPlayers();
     broadcastMatch();
@@ -3318,6 +3426,7 @@
       }
       if (session.active || lobby.wantsPlay) {
         lobby.wantsPlay = false;
+        cancelQueue();
         lobby.error = null;
         if (lobby.rejoinTimer) global.clearTimeout(lobby.rejoinTimer);
         lobby.rejoinTimer = 0;

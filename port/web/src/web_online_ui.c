@@ -143,6 +143,8 @@ static atomic_int web_online_player_count = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_headless = ATOMIC_VAR_INIT(0);
 /* a player is waiting to join: end the match so the next one includes them */
 static atomic_int web_online_restart_requested = ATOMIC_VAR_INIT(0);
+/* (a dedicated host) a new number of players to start with, or -1 */
+static atomic_int web_online_minimum_players_request = ATOMIC_VAR_INIT(-1);
 /* the latest kill by this machine's player and where its body is on the
 screen, in ten-thousandths of the picture (game thread writes, page reads) */
 static atomic_int web_online_kill_sequence = ATOMIC_VAR_INIT(0);
@@ -280,6 +282,17 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_set_next_game(
 		&web_online_next_game,
 		WEB_ONLINE_NEXT_GAME_VALID_BIT | pack_request(0, map_index, mode_index),
 		memory_order_release);
+	return 1;
+}
+
+/* (a dedicated host) the players the lobby waits for from now on: a
+matchmade server waits for its whole roster, then for whoever came once
+the load deadline passes */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_set_minimum_players(int minimum_players)
+{
+	if (minimum_players < 0 || minimum_players > 127)
+		return 0;
+	atomic_store_explicit(&web_online_minimum_players_request, minimum_players, memory_order_release);
 	return 1;
 }
 
@@ -612,6 +625,15 @@ static void update_dedicated(float seconds)
 
 	if (!client)
 		return;
+	{
+		int minimum = atomic_exchange_explicit(&web_online_minimum_players_request, -1, memory_order_acq_rel);
+
+		if (minimum >= 0)
+		{
+			web_online.minimum_players = minimum;
+			platform_log("web online: the lobby now waits for %d player(s)", minimum);
+		}
+	}
 	client_state = network_game_client_get_state(client, NULL);
 	players = network_lobby_player_count();
 	atomic_store_explicit(&web_online_player_count, (int)players, memory_order_release);

@@ -60,6 +60,10 @@
       {
         "name": "BANK",
         "class_name": "Bank"
+      },
+      {
+        "name": "MATCHMAKER",
+        "class_name": "Matchmaker"
       }
     ]
   },
@@ -101,6 +105,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["Bank"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["Matchmaker"]
     }
   ],
   "observability": {
