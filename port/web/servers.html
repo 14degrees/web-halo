@@ -64,6 +64,8 @@
   <section class="summary" id="summary"></section>
   <h2>Queues</h2>
   <section class="summary" id="queues"></section>
+  <h2>Machines</h2>
+  <section id="machines"></section>
   <h2>Server pool</h2>
   <section class="grid" id="servers"></section>
   <h2>Matches</h2>
@@ -138,6 +140,7 @@
         ["Match", match ? `${match.id} · ${mapLabel(match)}` : "None"],
         ["Game", match ? (MATCH_STATES[match.matchState] || match.matchState || "–") : "–"],
         ["Players", match ? `${match.players} of ${match.roster}` : "–"],
+        ["Machine", server.machine || "–"],
         ["Heartbeat", duration(server.seenSeconds) + " ago"],
         ["Up for", duration(server.upSeconds)],
         ["Build", server.buildId],
@@ -184,6 +187,13 @@
         document.getElementById("servers").replaceChildren(...(data.servers.length ?
           data.servers.map((server) => serverCard(server, data.matches)) :
           [element("div", { class: "empty", text: "No servers are in the pool." })]));
+        const MACHINE_STATES = { started: "Running", starting: "Starting", stopped: "Stopped (autoscaler)",
+          stopping: "Stopping", created: "Starting" };
+        document.getElementById("machines").replaceChildren(table(
+          ["Machine", "State", "Servers", "All idle for", "In this state"],
+          (data.machines || []).map((machine) => [machine.name, MACHINE_STATES[machine.state] || machine.state,
+            String(machine.servers), machine.idleSeconds === null ? "–" : duration(machine.idleSeconds),
+            duration(machine.stateSeconds)])));
         document.getElementById("matches").replaceChildren(table(
           ["Match", "Playlist", "Map", "State", "Game", "Players", "Age", "Ended"],
           data.matches.map((match) => [match.id, match.playlist, mapLabel(match), match.state,

@@ -8,6 +8,9 @@
     // Safe-by-default deployment settings. The exact public game origin is
     // allowed alongside the two deterministic local-development origins.
     "ENVIRONMENT": "production",
+    // The game server pool's Fly app, which the matchmaker scales (its
+    // FLY_API_TOKEN is a secret; services/game-server/fly/pool.py).
+    "FLY_APP_NAME": "halo-game-lilchocobo",
     "ALLOWED_ORIGINS": "https://halo.lilchocobo2.workers.dev,http://127.0.0.1:8765,http://localhost:8765",
     "ALLOW_NO_ORIGIN": "false",
     "PUBLIC_GAME_URL": "https://halo.lilchocobo2.workers.dev",

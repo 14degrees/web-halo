@@ -911,6 +911,7 @@ async function handleMatchmaking(
     const snapshot = await matchmaker(env).snapshot(now);
     return withCors(jsonResponse({
       events: snapshot.events.map((event) => ({ ...event, detail: event.detail ? JSON.parse(event.detail) : null })),
+      machines: snapshot.machines,
       matches: snapshot.matches,
       now,
       queues: snapshot.queues,
@@ -923,7 +924,9 @@ async function handleMatchmaking(
     const body = record(await readJsonBody(request));
     if (!isBuildId(body.buildId)) throw new HttpError(400, "VALIDATION_FAILED", "buildId is required.");
     const colo = typeof request.cf?.colo === "string" ? request.cf.colo : null;
-    const serverId = await matchmaker(env).registerServer(body.buildId, colo, now);
+    const machineId = typeof body.machineId === "string" && /^[0-9a-z]{6,32}$/u.test(body.machineId) ?
+      body.machineId : null;
+    const serverId = await matchmaker(env).registerServer(body.buildId, colo, machineId, now);
     return withCors(jsonResponse({ serverId, v: SIGNALING_PROTOCOL_VERSION }, 201), origin);
   }
   const heartbeatMatch = POOL_HEARTBEAT_ROUTE.exec(url.pathname);

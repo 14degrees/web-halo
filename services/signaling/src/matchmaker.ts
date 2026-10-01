@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 import { randomToken } from "./crypto";
+import { FlyMachines, type FlyMachine } from "./fly";
 
 /* The matchmaker: one singleton Durable Object that queues players, groups
    them into matches, and gives each match a dedicated server from the pool.
@@ -49,6 +50,17 @@ const ASSIGNING_TIMEOUT_MS = 30_000;
 const MATCH_TIMEOUT_MS = 30 * 60_000;
 /* ended matches and tickets are kept this long, for late polls and the log */
 const HISTORY_MS = 10 * 60_000;
+
+/* The autoscaler (with FLY_APP_NAME and FLY_API_TOKEN): game server machines
+   named pool-0 .. pool-N, each running MACHINE_SERVERS servers
+   (services/game-server/fly/pool.py). pool-0 always runs. Another machine
+   starts when fewer than MINIMUM_IDLE_SERVERS are free; one whose servers
+   have all been idle for SCALE_DOWN_IDLE_MS stops, if enough stay free. */
+const MACHINE_SERVERS = 3;
+const MINIMUM_IDLE_SERVERS = 2;
+const SCALE_DOWN_IDLE_MS = 10 * 60_000;
+const AUTOSCALE_EVERY_MS = 10_000;
+const ALWAYS_ON_MACHINE = "pool-0";
 
 export type TicketState = "queued" | "assigning" | "ready" | "ended" | "cancelled" | "expired";
 
@@ -132,6 +144,7 @@ interface ServerRow extends Record<string, SqlStorageValue> {
   id: string;
   build_id: string;
   colo: string | null;
+  machine_id: string | null;
   state: string;
   match_id: string | null;
   registered_at: number;
@@ -201,6 +214,20 @@ export class Matchmaker extends DurableObject<Env> {
     if (!columns.includes("player_key")) {
       this.ctx.storage.sql.exec("ALTER TABLE tickets ADD COLUMN player_key TEXT");
     }
+    const serverColumns = this.ctx.storage.sql
+      .exec<{ name: string }>("PRAGMA table_info(servers)").toArray().map(({ name }) => name);
+    if (!serverColumns.includes("machine_id")) {
+      this.ctx.storage.sql.exec("ALTER TABLE servers ADD COLUMN machine_id TEXT");
+    }
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS machines (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL,
+        idle_since INTEGER,
+        changed_at INTEGER NOT NULL
+      );
+    `);
   }
 
   /* ---------- the event log */
@@ -329,13 +356,14 @@ export class Matchmaker extends DurableObject<Env> {
 
   /* ---------- servers */
 
-  async registerServer(buildId: string, colo: string | null, now: number): Promise<string> {
+  async registerServer(buildId: string, colo: string | null, machineId: string | null, now: number): Promise<string> {
     const id = randomToken(16);
     this.ctx.storage.sql.exec(
-      `INSERT INTO servers (id, build_id, colo, state, registered_at, seen_at) VALUES (?, ?, ?, 'idle', ?, ?)`,
-      id, buildId, colo, now, now,
+      `INSERT INTO servers (id, build_id, colo, machine_id, state, registered_at, seen_at)
+       VALUES (?, ?, ?, ?, 'idle', ?, ?)`,
+      id, buildId, colo, machineId, now, now,
     );
-    this.log(now, "server_registered", id, { buildId, colo });
+    this.log(now, "server_registered", id, { buildId, colo, machineId });
     this.formMatches(now);
     await this.schedule(now);
     return id;
@@ -555,7 +583,89 @@ export class Matchmaker extends DurableObject<Env> {
     const now = Date.now();
     this.sweep(now);
     this.formMatches(now);
+    try {
+      await this.autoscale(now);
+    } catch (error) {
+      this.log(now, "autoscale_failed", null, { error: error instanceof Error ? error.message : String(error) });
+    }
     await this.schedule(now);
+  }
+
+  /* ---------- the autoscaler */
+
+  private fly(): FlyMachines | null {
+    const env = this.env as unknown as { FLY_APP_NAME?: string; FLY_API_TOKEN?: string };
+    return env.FLY_APP_NAME && env.FLY_API_TOKEN ? new FlyMachines(env.FLY_APP_NAME, env.FLY_API_TOKEN) : null;
+  }
+
+  private async autoscale(now: number): Promise<void> {
+    const fly = this.fly();
+    if (!fly) return;
+    const last = this.ctx.storage.sql
+      .exec<{ value: number }>("SELECT value FROM counters WHERE name = 'autoscale_at'").toArray()[0]?.value ?? 0;
+    if (now - last < AUTOSCALE_EVERY_MS) return;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO counters (name, value) VALUES ('autoscale_at', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+      now,
+    );
+    const machines = (await fly.list()).filter((machine) => machine.name.startsWith("pool-"))
+      .sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }));
+    for (const machine of machines) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO machines (id, name, state, changed_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, changed_at =
+           CASE WHEN machines.state = excluded.state THEN machines.changed_at ELSE excluded.changed_at END,
+           state = excluded.state`,
+        machine.id, machine.name, machine.state, now,
+      );
+    }
+    this.ctx.storage.sql.exec(
+      `DELETE FROM machines WHERE id NOT IN (${machines.map(() => "?").join(",") || "''"})`,
+      ...machines.map((machine) => machine.id),
+    );
+    const running = (machine: FlyMachine) => machine.state === "started" || machine.state === "starting" ||
+      machine.state === "created";
+    const serversOn = (machine: FlyMachine) => this.ctx.storage.sql.exec<ServerRow>(
+      "SELECT * FROM servers WHERE machine_id = ? AND seen_at > ?", machine.id, now - SERVER_TIMEOUT_MS,
+    ).toArray();
+    const idle = this.ctx.storage.sql.exec<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM servers WHERE state = 'idle' AND seen_at > ?", now - SERVER_TIMEOUT_MS,
+    ).one().count;
+    /* a running machine with no servers registered yet is still booting */
+    const booting = machines.filter((machine) => running(machine) && serversOn(machine).length === 0).length;
+
+    if (idle + booting * MACHINE_SERVERS < MINIMUM_IDLE_SERVERS) {
+      const stopped = machines.find((machine) => !running(machine) && machine.state !== "destroyed");
+      if (stopped) {
+        await fly.start(stopped.id);
+        this.log(now, "machine_started", stopped.name, { idle, booting });
+      }
+      return;
+    }
+
+    for (const machine of machines) {
+      if (!running(machine) || machine.name === ALWAYS_ON_MACHINE) continue;
+      const servers = serversOn(machine);
+      const allIdle = servers.length > 0 && servers.every((server) => server.state === "idle");
+      const row = this.ctx.storage.sql.exec<{ idle_since: number | null }>(
+        "SELECT idle_since FROM machines WHERE id = ?", machine.id,
+      ).one();
+      if (!allIdle) {
+        this.ctx.storage.sql.exec("UPDATE machines SET idle_since = NULL WHERE id = ?", machine.id);
+        continue;
+      }
+      if (row.idle_since === null) {
+        this.ctx.storage.sql.exec("UPDATE machines SET idle_since = ? WHERE id = ?", now, machine.id);
+        continue;
+      }
+      if (now - row.idle_since < SCALE_DOWN_IDLE_MS || idle - servers.length < MINIMUM_IDLE_SERVERS) continue;
+      /* out of the pool first, so no match lands on a machine going down */
+      this.ctx.storage.sql.exec("DELETE FROM servers WHERE machine_id = ?", machine.id);
+      this.ctx.storage.sql.exec("UPDATE machines SET idle_since = NULL WHERE id = ?", machine.id);
+      await fly.stop(machine.id);
+      this.log(now, "machine_stopped", machine.name, { idleMinutes: Math.round((now - row.idle_since) / 60_000) });
+      return;
+    }
   }
 
   /* ---------- the dashboard */
@@ -563,7 +673,9 @@ export class Matchmaker extends DurableObject<Env> {
   async snapshot(now: number): Promise<{
     queues: Array<{ playlist: Playlist; label: string; queued: number; oldestSeconds: number | null }>;
     servers: Array<{ id: string; buildId: string; colo: string | null; state: string; match: string | null;
-      seenSeconds: number; upSeconds: number }>;
+      seenSeconds: number; upSeconds: number; machine: string | null }>;
+    machines: Array<{ name: string; state: string; servers: number; idleSeconds: number | null;
+      stateSeconds: number }>;
     matches: Array<{ id: string; playlist: string; state: string; mapIndex: number; modeIndex: number;
       roster: number; players: number; matchState: string | null; ageSeconds: number; endReason: string | null }>;
     /* detail: JSON text */
@@ -586,7 +698,21 @@ export class Matchmaker extends DurableObject<Env> {
         match: server.match_id ? server.match_id.slice(0, 6) : null,
         seenSeconds: Math.round((now - server.seen_at) / 1000),
         upSeconds: Math.round((now - server.registered_at) / 1000),
+        machine: server.machine_id
+          ? this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM machines WHERE id = ?", server.machine_id)
+            .toArray()[0]?.name ?? null
+          : null,
       }));
+    const machines = this.ctx.storage.sql.exec<{ id: string; name: string; state: string; idle_since: number | null;
+      changed_at: number }>("SELECT * FROM machines ORDER BY name").toArray().map((machine) => ({
+      name: machine.name,
+      state: machine.state,
+      servers: this.ctx.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM servers WHERE machine_id = ?", machine.id,
+      ).one().count,
+      idleSeconds: machine.idle_since === null ? null : Math.round((now - machine.idle_since) / 1000),
+      stateSeconds: Math.round((now - machine.changed_at) / 1000),
+    }));
     const matches = this.ctx.storage.sql.exec<MatchRow>(
       "SELECT * FROM matches ORDER BY created_at DESC LIMIT 20",
     ).toArray().map((match) => ({
@@ -602,6 +728,6 @@ export class Matchmaker extends DurableObject<Env> {
       at: event.at, kind: event.kind, subject: event.subject ? event.subject.slice(0, 6) : null,
       detail: event.detail,
     }));
-    return { queues, servers, matches, events };
+    return { queues, servers, machines, matches, events };
   }
 }

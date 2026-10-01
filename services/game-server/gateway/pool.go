@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -61,7 +62,8 @@ func (s *server) poolRegister(ctx context.Context) (string, error) {
 	for attempt := 0; ; attempt++ {
 		callContext, cancel := context.WithTimeout(ctx, 15*time.Second)
 		err := s.room.api(callContext, http.MethodPost, "/v1/pool/servers",
-			map[string]any{"buildId": s.config.BuildID}, &result)
+			/* the Fly machine it runs on, which the autoscaler starts and stops */
+			map[string]any{"buildId": s.config.BuildID, "machineId": os.Getenv("FLY_MACHINE_ID")}, &result)
 		cancel()
 		if err == nil && result.ServerID != "" {
 			return result.ServerID, nil
