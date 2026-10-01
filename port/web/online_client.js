@@ -3699,11 +3699,26 @@
     lobby.wager.view = view;
   }
 
-  /* After the match: follow it to its settlement, every couple of seconds
-     for up to three minutes. */
+  /* During the match: the balances, every few seconds (each kill's
+     "wager" message updates them sooner). After it: follow the match to its
+     settlement, every couple of seconds for up to three minutes. */
   function tickWager() {
     var wager = lobby.wager;
-    if (!wager || wager.done || session.active || wager.polling) return;
+    if (!wager || wager.done || wager.polling) return;
+    if (session.active) {
+      wager.joined = true;
+      wager.endedAt = 0;
+      if (Date.now() - wager.polledAt < 5000) return;
+      wager.polling = true;
+      wager.polledAt = Date.now();
+      fetchJson("/v1/wagers/" + encodeURIComponent(wager.matchId), { method: "GET" })
+        .then(function(result) { applyWagerView(result.wager); })
+        .catch(function() { /* the next tick tries again */ })
+        .then(function() { wager.polling = false; });
+      return;
+    }
+    /* not in it yet: the match is still being joined */
+    if (!wager.joined) return;
     if (!wager.endedAt) wager.endedAt = Date.now();
     if (Date.now() - wager.polledAt < 2000) return;
     if (Date.now() - wager.endedAt > 180000) {
@@ -3735,7 +3750,7 @@
     var box = lobbyElement("lobby-wager-result");
     if (!box) return;
     var result = lobby.wagerResult;
-    var pending = lobby.wager && !lobby.wager.done && !session.active && lobby.wager.endedAt;
+    var pending = lobby.wager && lobby.wager.joined && !lobby.wager.done && !session.active && lobby.wager.endedAt;
     var key = result ? result.view.matchId + ":" + result.view.state : pending ? "pending:" + lobby.wager.matchId : "";
     if (box.dataset.key === key) return;
     box.dataset.key = key;
