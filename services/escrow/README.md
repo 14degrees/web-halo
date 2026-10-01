@@ -30,3 +30,16 @@ within the session's limit, locked SOL cannot be withdrawn, voids and
 reclaims return stakes, holds expire, and the fee is capped.
 
 Program ID: `3dPU7bDe3Bqfzx7z2g4hVr9cNQGeZqR1oHCkti5uD3bJ`.
+
+## Devnet
+
+Deployed to devnet at exact size (upgrade authority: the deployer key). The
+keys live outside git in `build/escrow-keys/` (`deployer`, `operator`,
+`authority`); the operator's wallet is also the fee vault. To set up the
+config on a fresh cluster and play one wagered match with two throwaway
+players through the Worker's own client (`services/signaling/src/escrow.ts`):
+
+```sh
+cd services/signaling
+npm run escrow:devnet -- <rpc-url> ../../build/escrow-keys
+```
