@@ -191,6 +191,14 @@ wallets.
 
 ### Watching it
 
+- Money problems raise an alert: a settlement the network kept refusing
+  (the stakes stay locked until it's retried or the players reclaim them),
+  stakes that wouldn't lock, and the settlement wallet under 0.05 SOL
+  (checked every five minutes). Alerts go to the Worker's logs, and to a
+  Discord or Slack incoming webhook if one is set
+  (`npx wrangler secret put ALERT_WEBHOOK_URL`), at most once an hour each.
+- The dashboard's event log shows how each wagered match's money ended
+  (`wager_settled`, `wager_void`, `wager_settle_gave_up`).
 - `/servers.html` (the dashboard) logs `stakes_locked` and `stakes_failed`
   beside each match.
 - `GET /v1/wagers/:matchId` returns a match's wager: state, balances,
@@ -200,10 +208,6 @@ wallets.
 
 ## Known gaps
 
-- A voided match still counts toward the session's 0.5 SOL daily limit (the
-  program does not give it back). Approving a new session is one click.
-- The old house ledger (`src/bank.ts` and the `/v1/wallet` deposit,
-  faucet and withdraw routes) is unused and still in the code.
 - Team Stakes is Team Slayer only; there is no objective (CTF) wagering.
 - Before real money: an audit of the program, hardware or multisig keys for
   the upgrade authority and operator, legal advice, and a mainnet deploy of

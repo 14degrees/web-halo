@@ -19,6 +19,7 @@ import {
   vaultAddress,
   voidMatchInstruction,
 } from "./escrow";
+import { alert } from "./alerts";
 import { MATCHMAKER_NAME } from "./matchmaker";
 import { SolanaRpc, SolanaRpcError, base58Encode, keypairFromSecret, type Keypair, walletPlayerName } from "./solana";
 
@@ -435,6 +436,7 @@ export class Wager extends DurableObject<Env> {
         record.attempts = 0;
         record.error = null;
         this.write(record);
+        await this.report(record, record.state);
         return record.closed ? null : 0;
       }
       let instruction: Instruction;
@@ -457,7 +459,11 @@ export class Wager extends DurableObject<Env> {
         record.attempts += 1;
         this.write(record);
         /* the players can reclaim their stakes themselves after the delay */
-        return record.attempts >= SETTLE_ATTEMPTS ? null : 5_000 * record.attempts;
+        if (record.attempts >= SETTLE_ATTEMPTS) {
+          await this.giveUp(record, kind);
+          return null;
+        }
+        return 5_000 * record.attempts;
       }
       return 0;
     }
@@ -517,10 +523,33 @@ export class Wager extends DurableObject<Env> {
     return "sent";
   }
 
+  /* A settle or void the network kept refusing: the players' stakes stay
+     locked until someone fixes it, or until they reclaim them themselves. */
+  private async giveUp(record: WagerRecord, kind: string): Promise<void> {
+    await this.report(record, `${kind}_gave_up`);
+    await alert(this.env_, `gave-up:${record.matchId}`,
+      `match ${record.matchId}: the ${kind} failed ${record.attempts} times (${record.error ?? "no error"}); ` +
+      `its stakes stay locked until it is retried or the players reclaim them`);
+  }
+
+  /* The matchmaker's log (the dashboard) hears how each wagered match ends. */
+  private async report(record: WagerRecord, outcome: string): Promise<void> {
+    try {
+      await this.env.MATCHMAKER.getByName(MATCHMAKER_NAME).wagerReport(record.matchId, outcome, {
+        error: record.error, signatures: record.signatures, payouts: record.payouts,
+      });
+    } catch {
+      /* the log is best effort */
+    }
+  }
+
   private async lockFailed(record: WagerRecord, reason: string): Promise<void> {
     record.state = "failed";
     record.error = reason;
     this.write(record);
+    if (reason !== "The match ended before the stakes were locked.") {
+      await alert(this.env_, `lock:${record.matchId}`, `match ${record.matchId}: the stakes didn't lock (${reason})`);
+    }
     await this.env.MATCHMAKER.getByName(MATCHMAKER_NAME).escrowLocked(record.matchId, false, reason);
   }
 }

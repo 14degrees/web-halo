@@ -577,6 +577,11 @@ export class Matchmaker extends DurableObject<Env> {
     return true;
   }
 
+  /* How a wagered match's money ended (src/wager.ts), for the log. */
+  async wagerReport(matchId: string, outcome: string, detail: unknown): Promise<void> {
+    this.log(Date.now(), `wager_${outcome}`, matchId, detail);
+  }
+
   /* The wager's report on the stakes: locked (the players may join) or not
      (the match is void, and its players told why). */
   async escrowLocked(matchId: string, locked: boolean, reason: string | null): Promise<void> {

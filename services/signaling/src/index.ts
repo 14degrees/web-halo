@@ -45,12 +45,12 @@ import {
 import { generateIceServersWithFallback, revokeTurnCredential } from "./turn";
 import { enforceTurnBandwidthCaps, turnIsDisabled, turnUsageSummary } from "./turn_cap";
 import { requireHumanVerification } from "./turnstile";
+import { checkSettlementWallet } from "./alerts";
 import { handlePartyRequest } from "./parties";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
 
-export { Bank } from "./bank";
 export { LobbyDirectory } from "./lobby";
 export { Matchmaker } from "./matchmaker";
 export { SignalingRoom } from "./room";
@@ -1246,5 +1246,6 @@ export default {
   },
   async scheduled(_controller: ScheduledController, env: RuntimeEnv, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(enforceTurnBandwidthCaps(env));
+    ctx.waitUntil(checkSettlementWallet(env));
   },
 } satisfies ExportedHandler<RuntimeEnv>;

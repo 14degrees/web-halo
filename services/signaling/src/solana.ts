@@ -97,7 +97,7 @@ export async function keypairFromSecret(secret: string): Promise<Keypair> {
     bytes = base58Decode(trimmed);
   }
   if (bytes === null || bytes.length !== 64) {
-    throw new Error("The house key must be a 64-byte Solana secret key.");
+    throw new Error("A Solana secret key must be 64 bytes.");
   }
   const seed = bytes.slice(0, 32);
   const address = base58Encode(bytes.slice(32));

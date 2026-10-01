@@ -1,7 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { BANK_NAME } from "../src/bank";
 import type { CreateRoomResponse, QuickJoinResponse } from "../src/index";
 import {
   base58Decode,
@@ -108,7 +107,7 @@ describe("wallet accounts", () => {
     const summary = await (await exports.default.fetch(new Request(`${API_ORIGIN}/v1/wallet`, {
       headers: { Authorization: `Bearer ${token}`, Origin: GAME_ORIGIN },
     }))).json<Record<string, unknown>>();
-    expect(summary).toMatchObject({ cluster: "devnet", lamports: 0, name: walletPlayerName(wallet.address), wallet: wallet.address });
+    expect(summary).toMatchObject({ cluster: "devnet", name: walletPlayerName(wallet.address), wallet: wallet.address });
 
     const other = await newWallet();
     const challenge = await (await exports.default.fetch(
@@ -127,18 +126,5 @@ describe("wallet accounts", () => {
       wallet: wallet.address,
     }));
     expect(replay.status).toBe(401);
-  });
-
-  it("grants devnet test SOL once a day", async () => {
-    const wallet = await newWallet();
-    const token = await signIn(wallet);
-    const claim = (): Promise<Response> => exports.default.fetch(
-      jsonRequest("/v1/wallet/faucet", {}, { Authorization: `Bearer ${token}` }),
-    );
-    const first = await claim();
-    expect(first.status).toBe(200);
-    expect(await first.json()).toMatchObject({ lamports: 1_000_000_000 });
-    const second = await claim();
-    expect(second.status).toBe(429);
   });
 });

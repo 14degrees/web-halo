@@ -29,11 +29,10 @@
     // Blood Gulch (9) Slayer (0); see port/web/src/web_online_ui.h.
     "PUBLIC_LOBBY_MAP_INDEX": "9",
     "PUBLIC_LOBBY_MODE_INDEX": "0",
-    // The wager experiment: Solana devnet, 0.1 SOL a kill.
+    // Wallets and the escrow program's cluster.
     "SOLANA_CLUSTER": "devnet",
     // Tried in order: Solana's own devnet endpoint refuses Cloudflare.
     "SOLANA_RPC_URL": "https://api.devnet.solana.com,https://solana-devnet.api.onfinality.io/public",
-    "WAGER_LAMPORTS": "100000000",
     // The escrow program (services/escrow) on SOLANA_CLUSTER: where its fee
     // goes and the fee's rate (it may not exceed the program's own setting).
     // Its authority key and session secret are secrets.
@@ -64,10 +63,6 @@
       {
         "name": "LOBBY_DIRECTORY",
         "class_name": "LobbyDirectory"
-      },
-      {
-        "name": "BANK",
-        "class_name": "Bank"
       },
       {
         "name": "MATCHMAKER",
@@ -133,6 +128,11 @@
     {
       "tag": "v6",
       "new_sqlite_classes": ["Party"]
+    },
+    {
+      // the house ledger, replaced by the escrow program's vaults
+      "tag": "v7",
+      "deleted_classes": ["Bank"]
     }
   ],
   "observability": {

@@ -1401,16 +1401,6 @@
       applyWagerView(message.wager);
       return;
     }
-    if (message.type === "reward") {
-      var myName = session.profile && session.profile.name;
-      if (myName && message.killer === myName && typeof message.killerLamports === "number") {
-        wallet.lamports = message.killerLamports;
-      }
-      if (myName && message.victim === myName && typeof message.victimLamports === "number") {
-        wallet.lamports = message.victimLamports;
-      }
-      return;
-    }
     if (message.type === "waiting") {
       if (session.role === "host" && typeof message.from === "string") lobby.waitingPeers.set(message.from, Date.now());
       return;
@@ -3617,7 +3607,6 @@
     address: null,
     token: null,
     name: null,
-    lamports: 0,
     onchainLamports: null,
     enabled: false,
     /* the player's vault in the escrow program (GET /v1/escrow) */
@@ -3831,7 +3820,6 @@
     wallet.address = null;
     wallet.account = null;
     wallet.name = null;
-    wallet.lamports = 0;
     wallet.vault = null;
     wallet.playSession = null;
     saveWallet();
