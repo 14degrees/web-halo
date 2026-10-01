@@ -2477,6 +2477,11 @@
     var list = lobbyElement("lobby-players");
     if (!list || typeof document.createElement !== "function") return;
     var players = Array.from(session.roster.values());
+    /* A dedicated server is in the room but not in the match: it has no
+       player, so it is not listed. */
+    if (session.room && session.room.dedicated) {
+      players = players.filter(function(player) { return player.role !== "host"; });
+    }
     if (!session.active) {
       /* Before joining: everyone in the public rooms, from the listing. */
       players = [];
