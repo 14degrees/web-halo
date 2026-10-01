@@ -166,6 +166,13 @@ assert.match(worker,
 assert.match(stageCloudflare,
   /asset_build_id[\s\S]*?sha256[\s\S]*?stamp_build_id[\s\S]*?halo-build-id/,
   'staged deployments must carry a content-addressed build ID');
+assert.match(webPlatform,
+  /wasmfs_create_fetch_backend\("assets\/maps"/,
+  'map downloads must remain relative when the game is hosted below /halo/');
+assert.match(shell, /<script src="coi-serviceworker\.js"><\/script>/,
+  'static hosting must bootstrap cross-origin isolation before Halo loads');
+assert.match(stageCloudflare, /coi-serviceworker\.js/,
+  'the staged browser build must include the isolation service worker');
 
 const normalizerSource = shell.match(
   /function normalizeTelemetryError\(value\) \{[\s\S]*?\n    \}/);

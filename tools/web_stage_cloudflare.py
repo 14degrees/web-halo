@@ -103,6 +103,11 @@ def main() -> int:
     ):
         total += checked_copy(web_build / name, output / name)
 
+    total += checked_copy(
+        repository / "port" / "web" / "coi-serviceworker.js",
+        output / "coi-serviceworker.js",
+    )
+
     # Cloudflare serves index.html for the root URL. Keep halo.html too so old
     # invite links and the local development URL continue to work.
     total += checked_copy(web_build / "halo.html", output / "index.html")

@@ -105,7 +105,10 @@ void platform_web_initialize(void)
 	 * 32 MiB, so it remains entirely in chunk zero even when a CDN does not
 	 * advertise ranges. Campaign maps are over 64 MiB and stay on the ranged
 	 * path when served by the local range-capable development server. */
-	maps = wasmfs_create_fetch_backend("/assets/maps", 32 * 1024 * 1024);
+	/* Keep the fetch URL relative to the page so the same build can be hosted
+	 * at the origin root or beneath a path such as /halo/. The virtual mount
+	 * remains /assets/maps inside Halo. */
+	maps = wasmfs_create_fetch_backend("assets/maps", 32 * 1024 * 1024);
 	if (wasmfs_create_directory("/assets/maps", 0555, maps) != 0 && errno != EEXIST)
 		platform_log("web: cannot mount the maps backend");
 	for (index = 0; index < sizeof(map_files) / sizeof(map_files[0]); index++)
