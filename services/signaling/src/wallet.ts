@@ -24,6 +24,10 @@ const SIGNATURE_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{64,90}$/u;
 /* A payout's network fee, charged to the withdrawal so the house wallet,
    funded only by deposits, never runs short. */
 const WITHDRAWAL_FEE_LAMPORTS = 5_000;
+/* Devnet only: play balance a wallet may claim once a day, so players can
+   wager without finding a faucet. */
+const FAUCET_LAMPORTS = 1_000_000_000;
+const FAUCET_INTERVAL_SECONDS = 24 * 60 * 60;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
 function randomToken(): string {
@@ -145,6 +149,20 @@ export async function handleWalletRequest(
 
   if (request.method === "GET" && path === "/v1/wallet") {
     return walletSummary(env, await requireWallet(request, env));
+  }
+
+  if (request.method === "POST" && path === "/v1/wallet/faucet") {
+    const wallet = await requireWallet(request, env);
+    if (cluster(env) !== "devnet") {
+      throw new HttpError(403, "FAUCET_DEVNET_ONLY", "Test SOL exists only on devnet.");
+    }
+    const key = `wallet-faucet:${wallet}`;
+    if (await env.HALO_ABUSE.get(key)) {
+      throw new HttpError(429, "FAUCET_USED", "You already claimed test SOL today.");
+    }
+    await env.HALO_ABUSE.put(key, "claimed", { expirationTtl: FAUCET_INTERVAL_SECONDS });
+    await bank(env).creditFaucet(wallet, FAUCET_LAMPORTS, Date.now());
+    return walletSummary(env, wallet);
   }
 
   if (!wagersEnabled(env)) {

@@ -3036,6 +3036,24 @@
     }
   }
 
+  async function claimTestSol() {
+    if (wallet.busy || !wallet.token) return;
+    wallet.busy = true;
+    setWalletStatus("Adding 1 test SOL…");
+    try {
+      applyWalletSummary(await fetchJson("/v1/wallet/faucet", {
+        method: "POST",
+        headers: walletHeaders(),
+        body: "{}",
+      }));
+      setWalletStatus("Added 1 test SOL to your balance. Go wager it.");
+    } catch (error) {
+      setWalletStatus((error && error.message) || "Could not add test SOL.", "error");
+    } finally {
+      wallet.busy = false;
+    }
+  }
+
   async function withdrawFromHouse() {
     if (wallet.busy || !wallet.token) return;
     wallet.busy = true;
@@ -3065,9 +3083,12 @@
     var balance = formatSol(wallet.lamports) + " SOL";
     var balanceElement = lobbyElement("lobby-wallet-balance");
     if (balanceElement && balanceElement.textContent !== balance) balanceElement.textContent = balance;
-    ["lobby-wallet-connect", "lobby-wallet-deposit", "lobby-wallet-withdraw"].forEach(function(id) {
+    ["lobby-wallet-connect", "lobby-wallet-faucet", "lobby-wallet-deposit", "lobby-wallet-withdraw"].forEach(function(id) {
       var button = lobbyElement(id);
-      if (button) button.disabled = wallet.busy || (id !== "lobby-wallet-connect" && !wallet.enabled);
+      if (button) {
+        button.disabled = wallet.busy ||
+          ((id === "lobby-wallet-deposit" || id === "lobby-wallet-withdraw") && !wallet.enabled);
+      }
     });
     var status = lobbyElement("lobby-wallet-status");
     if (status && status.textContent !== wallet.status) status.textContent = wallet.status;
@@ -3254,6 +3275,7 @@
     discoverWallets();
     restoreWallet();
     lobbyElement("lobby-wallet-connect").addEventListener("click", function() { signInWithWallet(); });
+    lobbyElement("lobby-wallet-faucet").addEventListener("click", function() { claimTestSol(); });
     lobbyElement("lobby-wallet-deposit").addEventListener("click", function() { depositToHouse(); });
     lobbyElement("lobby-wallet-withdraw").addEventListener("click", function() { withdrawFromHouse(); });
     lobbyElement("lobby-wallet-signout").addEventListener("click", signOutWallet);

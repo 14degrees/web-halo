@@ -98,6 +98,20 @@ export class Bank extends DurableObject<Env> {
     return { credited: true, lamports: this.read(wallet) };
   }
 
+  /* Test SOL on devnet: play balance with nothing on chain behind it. */
+  async creditFaucet(wallet: string, lamports: number, now: number): Promise<number> {
+    this.ctx.storage.transactionSync(() => {
+      this.write(wallet, this.read(wallet) + lamports);
+      this.ctx.storage.sql.exec(
+        "INSERT INTO ledger (at, kind, source, target, lamports, reference) VALUES (?, 'faucet', NULL, ?, ?, NULL)",
+        now,
+        wallet,
+        lamports,
+      );
+    });
+    return this.read(wallet);
+  }
+
   /* A kill: up to `wager` lamports from the victim to the killer, never
      taking a balance below zero. */
   async transferForKill(

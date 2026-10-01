@@ -129,6 +129,19 @@ describe("wallet accounts", () => {
     expect(replay.status).toBe(401);
   });
 
+  it("grants devnet test SOL once a day", async () => {
+    const wallet = await newWallet();
+    const token = await signIn(wallet);
+    const claim = (): Promise<Response> => exports.default.fetch(
+      jsonRequest("/v1/wallet/faucet", {}, { Authorization: `Bearer ${token}` }),
+    );
+    const first = await claim();
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ lamports: 1_000_000_000 });
+    const second = await claim();
+    expect(second.status).toBe(429);
+  });
+
   it("moves the wager from victim to killer on a dedicated host's kill report", async () => {
     nextBuild += 1;
     const buildId = `wallet-test-build-${nextBuild}`;
