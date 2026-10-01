@@ -26,7 +26,7 @@ export const MATCHMAKER_NAME = "main";
 /* the queue's playlists: players per match, and how long a match waits for
    more than the minimum before it forms */
 export const PLAYLISTS = {
-  ffa: { label: "Free-for-all", minimum: 2, maximum: 8, fillMs: 10_000, rotation: [[5, 0], [9, 0], [4, 0], [3, 0]] },
+  ffa: { label: "Free-for-all", minimum: 2, maximum: 8, fillMs: 10_000, rotation: [[5, 0]] },
   duel: { label: "1v1", minimum: 2, maximum: 2, fillMs: 0, rotation: [[4, 0], [6, 0], [10, 0]] },
 } as const satisfies Record<string, {
   label: string; minimum: number; maximum: number; fillMs: number; rotation: ReadonlyArray<readonly [number, number]>;
