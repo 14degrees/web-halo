@@ -2487,6 +2487,14 @@
   }
 
   var PLAYLIST_LABELS = { ffa: "Free-for-all", team: "2v2 Team Slayer", duel: "1v1" };
+  /* each playlist's players and the map its lobby shows before a match is
+     found (services/signaling/src/matchmaker.ts) */
+  var PLAYLIST_SIZES = { ffa: 8, team: 4, duel: 2 };
+  var PLAYLIST_PREVIEWS = {
+    ffa: { mapIndex: 5, modeIndex: 0 },
+    team: { mapIndex: 0, modeIndex: 1 },
+    duel: { mapIndex: 4, modeIndex: 0 },
+  };
 
   function queueStatus() {
     var queue = lobby.queue;
@@ -2591,25 +2599,26 @@
     if (session.room && session.room.dedicated) {
       players = players.filter(function(player) { return player.role !== "host"; });
     }
+    /* Halo 3's roster: you, then open slots up to the playlist's size while
+       the matchmaker looks for players */
+    var playlist = (lobby.queue && lobby.queue.playlist) || lobby.playlist || DEFAULT_PLAYLIST;
+    var slots = 0;
     if (!session.active) {
-      /* Before joining: everyone in the public rooms, from the listing. */
-      players = [];
-      (lobby.listing || []).forEach(function(room, roomIndex) {
-        (room.names || []).forEach(function(player, index) {
-          players.push({
-            peerId: "listed-" + roomIndex + "-" + index,
-            role: player.host ? "host" : "guest",
-            profile: { name: player.name, style: player.style },
-          });
-        });
-      });
+      players = [{ peerId: "self", role: "guest", profile: currentProfile(), self: true }];
+      if (lobby.queue) slots = (PLAYLIST_SIZES[playlist] || 4) - 1;
+    } else if (session.matchmade) {
+      slots = Math.max(0, ((lobby.queue && lobby.queue.match && lobby.queue.match.players) || players.length) - players.length);
     }
     var count = lobbyElement("lobby-count");
-    var total = session.active ? players.length : Math.max(players.length, listedPlayerCount());
-    if (count) count.textContent = total === 1 ? "1 player online" : total + " players online";
+    var total = players.length;
+    var searching = !!(lobby.queue && !session.active && lobby.queue.state !== "assigning" && lobby.queue.state !== "ready");
+    if (count) {
+      count.textContent = !session.active && !lobby.queue ? "Your party" :
+        total + (slots ? " of " + (total + slots) : "") + (total + slots === 1 ? " player" : " players");
+    }
     var signature = players.map(function(player) {
       return player.peerId + ":" + (player.profile ? player.profile.name + "/" + player.profile.style : "");
-    }).join("|") + "#" + session.selfPeerId;
+    }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "");
     if (list.dataset.signature === signature) return;
     list.dataset.signature = signature;
     while (list.firstChild) list.removeChild(list.firstChild);
@@ -2630,6 +2639,7 @@
       };
       var row = document.createElement("li");
       row.dataset.style = profile.style;
+      if (player.self || player.peerId === session.selfPeerId) row.className = "self";
       var name = document.createElement("span");
       name.textContent = profile.name;
       var role = document.createElement("span");
@@ -2639,18 +2649,30 @@
       row.appendChild(role);
       list.appendChild(row);
     });
+    for (var slot = 0; slot < slots; slot++) {
+      var open = document.createElement("li");
+      open.className = "slot" + (searching ? " searching" : "");
+      open.textContent = searching ? "Searching…" : "Connecting…";
+      list.appendChild(open);
+    }
   }
 
   function renderLobbyGame() {
-    var listed = listedRoom();
-    var settings = (session.room && session.room.lobby) || session.hostSettings ||
-      (!session.active && listed && listed.mapIndex !== null ? listed : null) || DEFAULT_PUBLIC_LOBBY;
+    var playlist = (lobby.queue && lobby.queue.playlist) || lobby.playlist || DEFAULT_PLAYLIST;
+    var found = lobby.queue && lobby.queue.match;
+    var settings = (session.room && session.room.lobby) || session.hostSettings || found ||
+      PLAYLIST_PREVIEWS[playlist] || DEFAULT_PUBLIC_LOBBY;
+    var playlistLabel = lobbyElement("lobby-playlist");
+    if (playlistLabel && playlistLabel.textContent !== PLAYLIST_LABELS[playlist]) {
+      playlistLabel.textContent = PLAYLIST_LABELS[playlist] || playlist;
+    }
     var mapIndex = Number(settings.mapIndex);
     var modeIndex = Number(settings.modeIndex);
     var mapName = selectedLabel(elements.map, mapIndex) || "Blood Gulch";
     var modeName = selectedLabel(elements.mode, modeIndex) || "Slayer";
     var mapLabel = lobbyElement("lobby-map-name");
-    if (mapLabel && mapLabel.textContent !== mapName) {
+    if (mapLabel && mapLabel.dataset.key !== mapIndex + ":" + modeIndex) {
+      mapLabel.dataset.key = mapIndex + ":" + modeIndex;
       mapLabel.textContent = mapName;
       lobbyElement("lobby-mode").textContent = modeName;
       lobbyElement("lobby-map-caption").textContent = modeName + " on " + mapName;
@@ -2893,7 +2915,7 @@
     if (play) {
       var leaving = session.active || lobby.wantsPlay;
       play.dataset.mode = leaving ? "leave" : "play";
-      play.textContent = leaving ? "Leave" : "Play";
+      play.textContent = leaving ? "Leave" : "Find match";
       play.disabled = false;
     }
     renderLobbyGame();

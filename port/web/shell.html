@@ -549,6 +549,88 @@
     }
     #lobby-players li .role { margin-left: auto; font-size: .75rem; letter-spacing: .1em; text-transform: uppercase; opacity: .8; }
     #lobby-players li.empty { background: rgba(255,255,255,.05); color: #7f9ab3; font-style: italic; text-shadow: none; }
+    /* ---------- Halo 3's multiplayer lobby (after github.com/14degrees/
+       halo-3-menus-remake): the looping lobby film, a blurred menu column on
+       the left, the roster's bars on the right */
+    #lobby {
+      grid-template-columns: minmax(19rem, 31rem) 1fr minmax(18rem, 27rem);
+      align-items: stretch; gap: 0; padding: 0 4vw 0 6vw;
+      font-family: "Conduit ITC", "Arial Narrow", "Avenir Next Condensed", "Segoe UI", sans-serif;
+      background: #02040a;
+    }
+    #lobby::before { display: none; }
+    .lobby-film { position: absolute; inset: 0; z-index: -2; width: 100%; height: 100%; object-fit: cover; }
+    #lobby::after {
+      content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+      background: linear-gradient(90deg, rgba(0,0,0,.35), transparent 45%, rgba(0,0,0,.25)),
+        linear-gradient(0deg, rgba(0,0,0,.45), transparent 30%);
+    }
+    .lobby-left {
+      align-content: start; gap: .9rem; height: 100%; overflow-y: auto;
+      padding: clamp(1.5rem, 7vh, 4.5rem) 1.2rem 2rem;
+      background: rgba(0, 0, 0, .2); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
+    }
+    .lobby-title { color: #fff; font-weight: 400; font-size: clamp(1.7rem, 2.8vw, 2.4rem); letter-spacing: .01em; }
+    .lobby-facts { gap: .15rem; font-size: 1.05rem; letter-spacing: .04em; color: #8094b4; }
+    .lobby-facts span { color: #e1e8f2; }
+    .lobby-map { border: 2px solid rgba(128, 148, 180, .55); border-radius: 0; box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
+    .lobby-map figcaption { font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; }
+    #lobby-status { color: #b9c7dc; font-size: 1rem; }
+    #lobby-countdown { color: #8094b4; }
+    #lobby-countdown strong { text-shadow: 0 0 1.2rem rgba(255, 170, 90, .45); }
+    #lobby-play, #lobby-play[data-mode="leave"] {
+      min-height: 0; padding: .55rem .7rem; border: 0; border-radius: 0;
+      background: transparent; box-shadow: none; color: #8094b4; text-align: left;
+      font: 400 1.6rem/1.15 inherit; letter-spacing: .02em;
+    }
+    #lobby-play::before { content: "▸ "; color: transparent; }
+    /* the focused item pulses brown and orange, as Halo 3's does */
+    #lobby-play[data-mode="play"], #lobby-play:hover:not(:disabled), #lobby-play:focus-visible {
+      background: #54362e; color: #e4e4e4; animation: h3-pulse 2s infinite; outline: none;
+    }
+    #lobby-play[data-mode="play"]::before { color: #ffb069; }
+    @keyframes h3-pulse {
+      0%, 100% { background-color: #54362e; }
+      50% { background-color: #714834; }
+    }
+    .lobby-links { gap: 0; flex-direction: column; }
+    .lobby-links button { padding: .45rem .7rem; text-align: left; color: #8094b4; text-decoration: none; font-size: 1.15rem; }
+    .lobby-links button:hover { background: rgba(64, 86, 132, .35); color: #e1e8f2; }
+    .lobby-center { display: none; }
+    .lobby-right { align-content: start; gap: .35rem; padding-top: clamp(1.5rem, 16vh, 9rem); grid-column: 3; }
+    .lobby-count { margin: 0 0 .25rem; color: #8094b4; font-size: 1rem; letter-spacing: .1em; }
+    #lobby-players { gap: .28rem; }
+    #lobby-players li {
+      position: relative; min-height: 2.55rem; padding: 0 .9rem 0 3.1rem; border-radius: 0;
+      background: linear-gradient(180deg, rgba(74, 98, 146, .88), rgba(40, 56, 92, .88));
+      clip-path: polygon(0 0, 100% 0, calc(100% - .7rem) 100%, 0 100%);
+      color: #f2f5fa; font-size: 1.12rem; letter-spacing: .02em; text-shadow: 0 1px 1px rgba(0,0,0,.6);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+    }
+    /* the player's emblem: a plate in their armor colour */
+    #lobby-players li::before {
+      content: ""; position: absolute; left: .35rem; top: .3rem; bottom: .3rem; width: 1.95rem;
+      background: linear-gradient(135deg, rgba(255,255,255,.35), transparent 55%), var(--player-color, #78986a);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,.45);
+    }
+    /* you: the focused, light bar */
+    #lobby-players li.self {
+      background: linear-gradient(180deg, #eef2f2, #c2cccc); color: #1d2533; text-shadow: none;
+    }
+    #lobby-players li .role { color: inherit; opacity: .7; font-size: .78rem; margin-right: .5rem; }
+    /* an open slot while the matchmaker looks for players */
+    #lobby-players li.empty, #lobby-players li.slot {
+      background: rgba(30, 42, 68, .45); color: #8094b4; font-style: normal; text-shadow: none;
+      box-shadow: inset 0 0 0 1px rgba(128, 148, 180, .18);
+    }
+    #lobby-players li.slot::before { background: rgba(128, 148, 180, .15); box-shadow: none; }
+    #lobby-players li.slot.searching { animation: h3-slot 1.6s ease-in-out infinite; }
+    @keyframes h3-slot { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+    @media (max-width: 900px) {
+      #lobby { grid-template-columns: 1fr; padding: 0; overflow-y: auto; }
+      .lobby-left { height: auto; }
+      .lobby-right { grid-column: 1; padding: 1rem 1.2rem 2rem; }
+    }
     #lobby-spartan-panel { display: grid; gap: .6rem; padding: .9rem; border: 1px solid rgba(101,194,255,.3); border-radius: .35rem; background: rgba(4, 12, 24, .85); }
     #lobby-spartan-panel[hidden] { display: none; }
     #lobby-spartan-panel input { padding: .45rem .6rem; border: 1px solid rgba(101,194,255,.4); border-radius: .25rem; background: #06101f; color: #fff; font: inherit; font-size: 1rem; }
@@ -1646,10 +1728,12 @@
     </section>
   </main>
   <section id="lobby" aria-label="Matchmaking lobby" hidden>
+    <video class="lobby-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
     <div class="lobby-left">
-      <h1 class="lobby-title">Matchmaking lobby</h1>
+      <h1 class="lobby-title">Multiplayer lobby</h1>
       <p class="lobby-facts">
-        Network: <span>Online · public</span><br>
+        Network: <span>Online</span><br>
+        Playlist: <span id="lobby-playlist">Team Slayer</span><br>
         Game: <span id="lobby-mode">Slayer</span><br>
         Map: <span id="lobby-map-name">Blood Gulch</span>
       </p>
