@@ -510,8 +510,6 @@
     #lobby.fading { opacity: 0; pointer-events: none; }
     .lobby-left { display: grid; gap: 1.1rem; align-content: center; }
     .lobby-title { margin: 0; font-size: clamp(1.6rem, 3.2vw, 2.6rem); letter-spacing: .04em; text-transform: uppercase; font-weight: 700; }
-    .lobby-facts { display: grid; gap: .3rem; margin: 0; font-size: 1rem; letter-spacing: .06em; text-transform: uppercase; color: #a9c6e0; }
-    .lobby-facts span { color: #e5f4ff; }
     .lobby-map { position: relative; overflow: hidden; border: 1px solid rgba(101, 194, 255, .35); border-radius: .35rem; aspect-ratio: 16 / 9; background: #0b1a2c; }
     .lobby-map img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .lobby-map figcaption { position: absolute; left: 0; right: 0; bottom: 0; padding: .45rem .7rem; background: linear-gradient(transparent, rgba(0,0,0,.75)); font-size: .95rem; letter-spacing: .05em; }
@@ -529,8 +527,6 @@
     #lobby-play:hover:not(:disabled) { background: linear-gradient(180deg, #2aa0f2, #0d5ea8); }
     #lobby-play:disabled { opacity: .55; cursor: default; box-shadow: none; }
     #lobby-play[data-mode="leave"] { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.25); font-size: 1rem; min-height: 2.6rem; box-shadow: none; }
-    .lobby-links { display: flex; gap: 1rem; font-size: .9rem; }
-    .lobby-links button { padding: 0; border: 0; background: none; color: #7fb6e0; text-decoration: underline; cursor: pointer; font: inherit; }
     .lobby-center { display: grid; place-items: center; height: 100%; }
     #lobby-nameplate {
       display: grid; gap: .3rem; min-width: min(100%, 20rem); padding: 1.1rem 1.6rem;
@@ -574,8 +570,6 @@
       background: rgba(0, 0, 0, .2); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
     }
     .lobby-title { color: #fff; font-weight: 400; font-size: clamp(1.7rem, 2.8vw, 2.4rem); letter-spacing: .01em; }
-    .lobby-facts { gap: .15rem; font-size: 1.05rem; letter-spacing: .04em; color: #8094b4; }
-    .lobby-facts span { color: #e1e8f2; }
     .lobby-map { border: 2px solid rgba(128, 148, 180, .55); border-radius: 0; box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
     .lobby-map figcaption { font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; }
     #lobby-status { color: #b9c7dc; font-size: 1rem; }
@@ -596,9 +590,6 @@
       0%, 100% { background-color: #54362e; }
       50% { background-color: #714834; }
     }
-    .lobby-links { gap: 0; flex-direction: column; }
-    .lobby-links button { padding: .45rem .7rem; text-align: left; color: #8094b4; text-decoration: none; font-size: 1.15rem; }
-    .lobby-links button:hover { background: rgba(64, 86, 132, .35); color: #e1e8f2; }
     .lobby-center { display: none; }
     .lobby-right { align-content: start; gap: .35rem; padding-top: clamp(1.5rem, 16vh, 9rem); grid-column: 3; }
     .lobby-count { margin: 0 0 .25rem; color: #8094b4; font-size: 1rem; letter-spacing: .1em; }
@@ -665,6 +656,62 @@
       #lobby { grid-template-columns: 1fr; padding: 0; overflow-y: auto; }
       .lobby-left { height: auto; }
       .lobby-right { grid-column: 1; padding: 1rem 1.2rem 2rem; }
+    }
+    /* ---------- Halo 3's lobby column: the menu on top, the playlist's card
+       at the bottom */
+    .lobby-menu { display: flex; flex-direction: column; margin-top: .4rem; }
+    .lobby-menu-item, .lobby-menu .lobby-menu-static {
+      margin: 0; padding: .5rem .7rem; border: 0; background: transparent; color: #8094b4; text-align: left;
+      font: 400 1.35rem/1.2 inherit; letter-spacing: .02em; text-transform: uppercase; cursor: pointer;
+    }
+    .lobby-menu .lobby-menu-static { cursor: default; }
+    .lobby-menu-item span, .lobby-menu-static span { color: #c9d4e6; }
+    .lobby-menu-item:hover, .lobby-menu-item:focus-visible { background: #54362e; color: #e4e4e4; animation: h3-pulse 2s infinite; outline: none; }
+    .lobby-menu-item:hover span { color: #fff; }
+    #lobby-playlist-open::after { content: "  ▸"; color: #ffb069; }
+    #lobby-play, #lobby-play[data-mode="leave"] { font-size: 1.35rem; text-transform: uppercase; }
+    .lobby-card { margin-top: auto; display: grid; gap: .45rem; padding-top: 1rem; }
+    #lobby-playlist-description { margin: 0; color: #b9c7dc; font-size: 1rem; }
+    #lobby-playlist-counts { margin: 0; color: #8094b4; font-size: .95rem; }
+    /* ---------- the playlist picker */
+    #playlist-dialog {
+      position: fixed; inset: 0; margin: auto; height: fit-content; min-height: 0; overflow: hidden;
+      width: min(56rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); padding: 0;
+      border: 1px solid rgba(128, 148, 180, .45); background: linear-gradient(160deg, #0c1a30, #050b16); color: #e1e8f2;
+      font-family: "Conduit ITC", "Arial Narrow", "Avenir Next Condensed", "Segoe UI", sans-serif;
+      box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, .7);
+    }
+    #playlist-dialog::before, #playlist-dialog::after { display: none; }
+    #playlist-dialog::backdrop { background: rgba(0, 4, 12, .72); backdrop-filter: blur(4px); }
+    .playlist-card { position: relative; display: grid; grid-template-columns: minmax(14rem, 19rem) 1fr; min-height: 24rem; }
+    .playlist-list { padding: 1.4rem 0; background: rgba(0, 0, 0, .25); border-right: 1px solid rgba(128, 148, 180, .25); }
+    .playlist-list h2 { margin: 0 1.2rem .8rem; font-weight: 400; font-size: 1.6rem; text-transform: uppercase; color: #fff; }
+    #playlist-options button {
+      display: flex; justify-content: space-between; align-items: baseline; width: 100%; padding: .6rem 1.2rem;
+      border: 0; background: transparent; color: #8094b4; font: inherit; font-size: 1.25rem; text-align: left;
+      text-transform: uppercase; cursor: pointer;
+    }
+    #playlist-options button small { font-size: .8rem; color: #8094b4; text-transform: none; }
+    #playlist-options button[aria-selected="true"] { background: #54362e; color: #e4e4e4; animation: h3-pulse 2s infinite; }
+    #playlist-options button[aria-selected="true"] small { color: #ffd2a8; }
+    #playlist-options button:hover:not([aria-selected="true"]) { background: rgba(64, 86, 132, .35); color: #e1e8f2; }
+    .playlist-detail { display: flex; flex-direction: column; gap: .6rem; padding: 1.6rem 1.6rem 1.4rem; }
+    .playlist-detail h3 { margin: 0; font-weight: 400; font-size: 1.9rem; text-transform: uppercase; color: #fff; }
+    #playlist-detail-size { margin: 0; color: #ffb069; text-transform: uppercase; letter-spacing: .06em; }
+    #playlist-detail-description { margin: 0; color: #b9c7dc; font-size: 1.1rem; }
+    #playlist-detail-maps { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: .5rem; margin-top: .4rem; }
+    #playlist-detail-maps figure { position: relative; margin: 0; border: 1px solid rgba(128, 148, 180, .45); aspect-ratio: 16 / 9; overflow: hidden; }
+    #playlist-detail-maps img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    #playlist-detail-maps figcaption { position: absolute; left: 0; right: 0; bottom: 0; padding: .25rem .45rem; background: linear-gradient(transparent, rgba(0,0,0,.8)); font-size: .85rem; text-transform: uppercase; }
+    #playlist-detail-counts { margin: 0; color: #8094b4; }
+    #playlist-dialog-select {
+      align-self: flex-start; margin-top: auto; padding: .55rem 1.6rem; border: 0;
+      background: #54362e; color: #e4e4e4; font: inherit; font-size: 1.2rem; text-transform: uppercase; cursor: pointer;
+      animation: h3-pulse 2s infinite;
+    }
+    @media (max-width: 720px) {
+      .playlist-card { grid-template-columns: 1fr; }
+      .playlist-list { border-right: 0; }
     }
     /* ---------- the Spartan modal: a preview, then name, armor and emblem */
     #spartan-dialog {
@@ -1799,24 +1846,25 @@
   <section id="lobby" aria-label="Matchmaking lobby" hidden>
     <video class="lobby-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
     <div class="lobby-left">
-      <h1 class="lobby-title">Multiplayer lobby</h1>
-      <p class="lobby-facts">
-        Network: <span>Online</span><br>
-        Playlist: <span id="lobby-playlist">Team Slayer</span><br>
-        Game: <span id="lobby-mode">Slayer</span><br>
-        Map: <span id="lobby-map-name">Blood Gulch</span>
-      </p>
-      <figure class="lobby-map">
-        <img id="lobby-map-image" src="assets/ui/maps/blood-gulch.png" alt="">
-        <figcaption id="lobby-map-caption">Slayer on Blood Gulch</figcaption>
-      </figure>
+      <h1 class="lobby-title">Matchmaking lobby</h1>
+      <nav class="lobby-menu" aria-label="Matchmaking">
+        <p class="lobby-menu-item lobby-menu-static">Network: <span>Online</span></p>
+        <button id="lobby-playlist-open" class="lobby-menu-item" type="button">Playlist: <span id="lobby-playlist">Team Doubles</span></button>
+        <button id="lobby-play" type="button">Start matchmaking</button>
+        <button id="lobby-spartan-toggle" class="lobby-menu-item" type="button">Spartan</button>
+        <button id="lobby-friends" class="lobby-menu-item" type="button">Play with friends</button>
+      </nav>
       <p id="lobby-countdown" aria-live="off" hidden><span>Match starts in</span><strong id="lobby-countdown-seconds">10</strong></p>
       <p id="lobby-status" role="status" aria-live="polite">Loading Halo…</p>
-      <button id="lobby-play" type="button">Play</button>
-      <div class="lobby-links">
-        <button id="lobby-spartan-toggle" type="button" aria-expanded="false">Spartan</button>
-        <button id="lobby-friends" type="button">Play with friends</button>
-      </div>
+      <section class="lobby-card" aria-label="Playlist">
+        <figure class="lobby-map">
+          <img id="lobby-map-image" src="assets/ui/maps/battle-creek.png" alt="">
+          <figcaption id="lobby-map-caption">Team Slayer on Battle Creek</figcaption>
+        </figure>
+        <p id="lobby-playlist-description">Two on two Team Slayer.</p>
+        <p id="lobby-playlist-counts"></p>
+        <span id="lobby-mode" hidden></span><span id="lobby-map-name" hidden></span>
+      </section>
     </div>
     <section id="lobby-wallet" aria-label="Wallet">
       <div id="lobby-wallet-out">
@@ -1854,6 +1902,23 @@
       <ul id="lobby-players"><li class="empty">Nobody here yet — press Play</li></ul>
     </div>
   </section>
+  <dialog id="playlist-dialog" aria-labelledby="playlist-dialog-title">
+    <div class="playlist-card">
+      <button id="playlist-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
+      <div class="playlist-list">
+        <h2 id="playlist-dialog-title">Playlists</h2>
+        <div id="playlist-options" role="listbox" aria-label="Playlists"></div>
+      </div>
+      <div class="playlist-detail">
+        <h3 id="playlist-detail-name">Team Doubles</h3>
+        <p id="playlist-detail-size"></p>
+        <p id="playlist-detail-description"></p>
+        <div id="playlist-detail-maps"></div>
+        <p id="playlist-detail-counts"></p>
+        <button id="playlist-dialog-select" type="button">Select</button>
+      </div>
+    </div>
+  </dialog>
   <dialog id="spartan-dialog" aria-labelledby="spartan-dialog-title">
     <div class="spartan-card">
       <button id="spartan-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>

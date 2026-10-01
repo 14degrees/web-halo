@@ -2491,7 +2491,7 @@
 
   async function enqueueForMatch() {
     if (lobby.queue) return;
-    var queue = { id: null, state: "joining", queued: 0, playlist: lobby.playlist || DEFAULT_PLAYLIST, polledAt: 0 };
+    var queue = { id: null, state: "joining", queued: 0, playlist: selectedPlaylist().id, polledAt: 0 };
     lobby.queue = queue;
     try {
       var request = {
@@ -2560,19 +2560,132 @@
     }
   }
 
-  var PLAYLIST_LABELS = { ffa: "Free-for-all", team: "2v2 Team Slayer", duel: "1v1" };
-  /* each playlist's players and the map its lobby shows before a match is
-     found (services/signaling/src/matchmaker.ts) */
-  var PLAYLIST_SIZES = { ffa: 8, team: 4, duel: 2 };
-  var PLAYLIST_PREVIEWS = {
-    ffa: { mapIndex: 5, modeIndex: 0 },
-    team: { mapIndex: 0, modeIndex: 1 },
-    duel: { mapIndex: 4, modeIndex: 0 },
-  };
+  /* ---------- playlists (services/signaling/src/matchmaker.ts, GET
+     /v1/playlists): what the lobby offers, with who is searching and
+     playing; until the service answers, this copy */
+  var PLAYLIST_STORAGE_KEY = "halo-playlist";
+  var FALLBACK_PLAYLISTS = [
+    { id: "team", label: "Team Doubles", description: "Two on two Team Slayer.", minimum: 2, maximum: 4, teams: true,
+      maps: [0, 6, 4], modes: [1, 1, 1], searching: 0, playing: 0 },
+    { id: "ffa", label: "Rumble Pit", description: "Free-for-all Slayer.", minimum: 2, maximum: 8, teams: false,
+      maps: [5, 4, 3, 6], modes: [0, 0, 0, 0], searching: 0, playing: 0 },
+  ];
+  var PLAYLIST_REFRESH_MILLISECONDS = 5000;
+
+  function playlists() {
+    return lobby.playlists && lobby.playlists.length ? lobby.playlists : FALLBACK_PLAYLISTS;
+  }
+
+  function playlistById(id) {
+    var list = playlists();
+    for (var index = 0; index < list.length; index++) if (list[index].id === id) return list[index];
+    return null;
+  }
+
+  /* the playlist Find match queues for: the player's pick, kept */
+  function selectedPlaylist() {
+    if (!lobby.playlist) {
+      try { lobby.playlist = global.localStorage.getItem(PLAYLIST_STORAGE_KEY); } catch (error) { lobby.playlist = null; }
+    }
+    return playlistById(lobby.playlist) || playlistById(DEFAULT_PLAYLIST) || playlists()[0];
+  }
+
+  function teamSize(playlist) {
+    if (playlist.teams) {
+      var side = Math.floor(playlist.maximum / 2);
+      return playlist.minimum === playlist.maximum || side <= 2 ? side + " on " + side : "Up to " + side + " on " + side;
+    }
+    return playlist.maximum === 2 ? "One on one" : "Up to " + playlist.maximum + " players, free-for-all";
+  }
+
+  function playlistCounts(playlist) {
+    var parts = [];
+    if (playlist.searching) parts.push(playlist.searching + " searching");
+    if (playlist.playing) parts.push(playlist.playing + " playing");
+    return parts.length ? parts.join(" · ") : "Nobody searching yet";
+  }
+
+  function refreshPlaylists() {
+    if (lobby.playlistsBusy || Date.now() - (lobby.playlistsAt || 0) < PLAYLIST_REFRESH_MILLISECONDS) return;
+    lobby.playlistsBusy = true;
+    lobby.playlistsAt = Date.now();
+    fetchJson("/v1/playlists", { method: "GET" })
+      .then(function(result) {
+        if (result && Array.isArray(result.playlists)) lobby.playlists = result.playlists;
+        renderPlaylistDialog();
+      })
+      .catch(function() { /* the next refresh tries again */ })
+      .then(function() { lobby.playlistsBusy = false; });
+  }
+
+  function choosePlaylist(id) {
+    if (!playlistById(id) || id === selectedPlaylist().id) return;
+    lobby.playlist = id;
+    try { global.localStorage.setItem(PLAYLIST_STORAGE_KEY, id); } catch (error) { /* this load only */ }
+    /* searching already: search the new playlist instead */
+    if (lobby.queue && !session.active) {
+      cancelQueue();
+      lobby.started = false;
+    }
+  }
+
+  function renderPlaylistDialog() {
+    var dialog = lobbyElement("playlist-dialog");
+    if (!dialog || !dialog.open) return;
+    var focused = playlistById(lobby.playlistFocus) || selectedPlaylist();
+    var options = lobbyElement("playlist-options");
+    var signature = playlists().map(function(playlist) {
+      return playlist.id + ":" + playlist.searching + ":" + playlist.playing;
+    }).join("|") + "#" + focused.id;
+    if (options.dataset.signature !== signature) {
+      options.dataset.signature = signature;
+      options.replaceChildren.apply(options, playlists().map(function(playlist) {
+        var option = document.createElement("button");
+        option.type = "button";
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", playlist.id === focused.id ? "true" : "false");
+        option.append(playlist.label);
+        var count = document.createElement("small");
+        count.textContent = playlist.searching ? playlist.searching + " searching" : "";
+        option.appendChild(count);
+        option.addEventListener("click", function() {
+          lobby.playlistFocus = playlist.id;
+          renderPlaylistDialog();
+        });
+        option.addEventListener("dblclick", function() {
+          choosePlaylist(playlist.id);
+          dialog.close();
+        });
+        return option;
+      }));
+    }
+    lobbyElement("playlist-detail-name").textContent = focused.label;
+    lobbyElement("playlist-detail-size").textContent = teamSize(focused);
+    lobbyElement("playlist-detail-description").textContent = focused.description;
+    lobbyElement("playlist-detail-counts").textContent = playlistCounts(focused);
+    var maps = lobbyElement("playlist-detail-maps");
+    if (maps.dataset.playlist !== focused.id) {
+      maps.dataset.playlist = focused.id;
+      maps.replaceChildren.apply(maps, focused.maps.map(function(mapIndex, index) {
+        var figure = document.createElement("figure");
+        var image = document.createElement("img");
+        image.src = "assets/ui/maps/" + (MAP_SLUGS[mapIndex] || "blood-gulch") + ".png";
+        image.alt = "";
+        var caption = document.createElement("figcaption");
+        caption.textContent = (selectedLabel(elements.map, mapIndex) || "") + " · " +
+          (selectedLabel(elements.mode, focused.modes[index]) || "");
+        figure.appendChild(image);
+        figure.appendChild(caption);
+        return figure;
+      }));
+    }
+    lobbyElement("playlist-dialog-select").textContent =
+      focused.id === selectedPlaylist().id ? "Selected" : "Select " + focused.label;
+  }
 
   function queueStatus() {
     var queue = lobby.queue;
-    var label = PLAYLIST_LABELS[queue.playlist] || queue.playlist;
+    var label = (playlistById(queue.playlist) || { label: queue.playlist }).label;
     if (queue.state === "joining") return { text: "Joining the " + label + " queue…" };
     if (queue.state === "queued") {
       var others = Math.max(0, (queue.queued || 1) - 1);
@@ -2630,12 +2743,7 @@
       return { text: lobby.wantsPlay ? text + " You'll join as soon as it's ready." : text };
     }
     if (lobby.rejoinTimer) return { text: "Connection lost. Reconnecting…" };
-    if (!session.active) {
-      var online = listedPlayerCount();
-      if (online === 1) return { text: "1 player is online. Press Play to join them." };
-      if (online > 1) return { text: online + " players are online. Press Play to join them." };
-      return { text: "Nobody is playing yet. Press Play and others will join you." };
-    }
+    if (!session.active) return { text: "Ready" };
     if (!session.room || !session.selfPeerId) return { text: "Finding a game…" };
     if (session.role === "host") {
       var match = hostMatchState();
@@ -2675,11 +2783,11 @@
     }
     /* Halo 3's roster: you, then open slots up to the playlist's size while
        the matchmaker looks for players */
-    var playlist = (lobby.queue && lobby.queue.playlist) || lobby.playlist || DEFAULT_PLAYLIST;
+    var playlist = (lobby.queue && playlistById(lobby.queue.playlist)) || selectedPlaylist();
     var slots = 0;
     if (!session.active) {
       players = [{ peerId: "self", role: "guest", profile: currentProfile(), self: true }];
-      if (lobby.queue) slots = (PLAYLIST_SIZES[playlist] || 4) - 1;
+      if (lobby.queue) slots = playlist.maximum - 1;
     } else if (session.matchmade) {
       slots = Math.max(0, ((lobby.queue && lobby.queue.match && lobby.queue.match.players) || players.length) - players.length);
     }
@@ -2740,14 +2848,17 @@
   }
 
   function renderLobbyGame() {
-    var playlist = (lobby.queue && lobby.queue.playlist) || lobby.playlist || DEFAULT_PLAYLIST;
+    var playlist = (lobby.queue && playlistById(lobby.queue.playlist)) || selectedPlaylist();
     var found = lobby.queue && lobby.queue.match;
     var settings = (session.room && session.room.lobby) || session.hostSettings || found ||
-      PLAYLIST_PREVIEWS[playlist] || DEFAULT_PUBLIC_LOBBY;
+      { mapIndex: playlist.maps[0], modeIndex: playlist.modes[0] };
     var playlistLabel = lobbyElement("lobby-playlist");
-    if (playlistLabel && playlistLabel.textContent !== PLAYLIST_LABELS[playlist]) {
-      playlistLabel.textContent = PLAYLIST_LABELS[playlist] || playlist;
-    }
+    if (playlistLabel && playlistLabel.textContent !== playlist.label) playlistLabel.textContent = playlist.label;
+    var description = lobbyElement("lobby-playlist-description");
+    if (description && description.textContent !== playlist.description) description.textContent = playlist.description;
+    var counts = lobbyElement("lobby-playlist-counts");
+    var countText = teamSize(playlist) + " · " + playlistCounts(playlist);
+    if (counts && counts.textContent !== countText) counts.textContent = countText;
     var mapIndex = Number(settings.mapIndex);
     var modeIndex = Number(settings.modeIndex);
     var mapName = selectedLabel(elements.map, mapIndex) || "Blood Gulch";
@@ -2917,6 +3028,7 @@
 
   function tickLobby() {
     pollQueue();
+    if (document.body.dataset.lobby === "open") refreshPlaylists();
     moveToOpenServer(clientState());
     restartForWaitingPlayers();
     broadcastMatch();
@@ -2997,7 +3109,7 @@
     if (play) {
       var leaving = session.active || lobby.wantsPlay;
       play.dataset.mode = leaving ? "leave" : "play";
-      play.textContent = leaving ? "Leave" : "Find match";
+      play.textContent = session.active ? "Leave match" : lobby.wantsPlay ? "Stop searching" : "Start matchmaking";
       play.disabled = false;
     }
     renderLobbyGame();
@@ -3599,6 +3711,24 @@
       lobby.error = null;
       lobby.started = false;
     });
+    /* the playlist picker */
+    var playlistDialog = lobbyElement("playlist-dialog");
+    lobbyElement("lobby-playlist-open").addEventListener("click", function() {
+      lobby.playlistFocus = selectedPlaylist().id;
+      playlistDialog.showModal();
+      lobby.playlistsAt = 0;
+      refreshPlaylists();
+      renderPlaylistDialog();
+    });
+    lobbyElement("playlist-dialog-close").addEventListener("click", function() { playlistDialog.close(); });
+    lobbyElement("playlist-dialog-select").addEventListener("click", function() {
+      choosePlaylist(lobby.playlistFocus || selectedPlaylist().id);
+      playlistDialog.close();
+    });
+    playlistDialog.addEventListener("click", function(event) {
+      if (event.target === playlistDialog) playlistDialog.close();
+    });
+    playlistDialog.addEventListener("keydown", function(event) { event.stopPropagation(); });
     /* the Spartan modal: name, armor and emblem, with a preview */
     var spartanDialog = lobbyElement("spartan-dialog");
     var closeSpartan = function() { if (spartanDialog.open) spartanDialog.close(); };
