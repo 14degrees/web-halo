@@ -8,6 +8,7 @@ import {
 } from "./crypto";
 import { BANK_NAME } from "./bank";
 import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
+import { MATCHMAKER_NAME } from "./matchmaker";
 import { walletPlayerName } from "./solana";
 
 /* when the room's dedicated host last pinged (lobby.ts, DEDICATED_HOST_LEASE_MS) */
@@ -66,6 +67,8 @@ interface SocketAttachment {
   role: PeerRole;
   /* The signed-in wallet this player wagers with, if any. */
   wallet?: string;
+  /* matches this player has finished (the matchmaker's count): their rank */
+  matches?: number;
 }
 
 interface PreparedSession {
@@ -701,7 +704,10 @@ export class SignalingRoom extends DurableObject<Env> {
       /* A wagering player plays under their wallet's name, so a kill report
          can never be pinned on someone else. */
       sender.profile = sender.wallet === undefined ? message.profile :
-        { name: walletPlayerName(sender.wallet), style: message.profile.style };
+        { ...message.profile, name: walletPlayerName(sender.wallet) };
+      if (sender.matches === undefined && sender.role === "guest") {
+        this.ctx.waitUntil(this.lookUpRank(sender.peerId, sender.identifier));
+      }
       try {
         socket.serializeAttachment(sender);
       } catch (error) {
@@ -893,6 +899,26 @@ export class SignalingRoom extends DurableObject<Env> {
     }
   }
 
+  /* A player's rank comes from the matchmaker's count of their finished
+     matches, never from the player. */
+  private async lookUpRank(peerId: string, identifier: string): Promise<void> {
+    let matches: number | null = null;
+    try {
+      matches = await this.env.MATCHMAKER.getByName(MATCHMAKER_NAME).matchesFor(identifier);
+    } catch {
+      return;
+    }
+    const connection = this.connectionForPeer(peerId);
+    if (!connection || matches === null) return;
+    connection.attachment.matches = matches;
+    try {
+      connection.socket.serializeAttachment(connection.attachment);
+    } catch {
+      /* the socket is closing */
+    }
+    this.broadcastRoster();
+  }
+
   private broadcastRoster(): void {
     const connections = this.connections();
     const encoded = jsonMessage({
@@ -900,6 +926,7 @@ export class SignalingRoom extends DurableObject<Env> {
         peerId: attachment.peerId,
         profile: attachment.profile ?? null,
         role: attachment.role,
+        matches: attachment.matches ?? null,
       })),
       type: "roster",
       v: SIGNALING_PROTOCOL_VERSION,

@@ -19,6 +19,7 @@ import {
   LOBBY_MODE_COUNT,
   IDENTIFIER_PATTERN,
   MAX_HTTP_BODY_BYTES,
+  PLAYER_KEY_PATTERN,
   ROOM_ID_PATTERN,
   SIGNALING_PROTOCOL_VERSION,
   TOKEN_PATTERN,
@@ -862,9 +863,12 @@ async function enqueue(request: Request, env: RuntimeEnv, origin: string | null)
   await requireAllowedActor(request, env);
   const walletToken = typeof body.walletToken === "string" ? body.walletToken : undefined;
   const wallet = await walletForToken(env, walletToken);
+  const playerKey = typeof body.playerKey === "string" && PLAYER_KEY_PATTERN.test(body.playerKey) ?
+    body.playerKey : null;
   const ticket = await matchmaker(env).enqueue({
     buildId: body.buildId,
     identifier: body.identifier,
+    playerKey,
     now: Date.now(),
     playlist,
     wallet: wallet ?? null,

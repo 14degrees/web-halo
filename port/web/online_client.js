@@ -578,6 +578,73 @@
     return "Spartan " + value;
   }
 
+  /* ---------- emblems and ranks (Halo 3's emblem_foregrounds_ui.png and
+     exp_med_ui.png, from the halo-3-menus-remake art) */
+  var EMBLEM_COUNT = 70;
+  var EMBLEM_COLUMNS = 12;
+  var RANK_COUNT = 42;
+  var RANK_COLUMNS = 11;
+  var PLAYER_KEY_STORAGE_KEY = "halo-player-key";
+  var EMBLEM_STORAGE_KEY = "halo-emblem";
+  var cachedPlayerKey = null;
+
+  /* This browser's lasting player ID: the matchmaker counts its matches
+     (its rank), where the machine identifier changes on every load. */
+  function playerKey() {
+    if (cachedPlayerKey) return cachedPlayerKey;
+    try { cachedPlayerKey = global.localStorage.getItem(PLAYER_KEY_STORAGE_KEY); } catch (error) { cachedPlayerKey = null; }
+    if (!cachedPlayerKey || !/^[A-Za-z0-9_-]{16,64}$/.test(cachedPlayerKey)) {
+      var bytes = new Uint8Array(18);
+      global.crypto.getRandomValues(bytes);
+      cachedPlayerKey = btoa(String.fromCharCode.apply(null, bytes)).replace(/\+/g, "-").replace(/\//g, "_");
+      try { global.localStorage.setItem(PLAYER_KEY_STORAGE_KEY, cachedPlayerKey); } catch (error) { /* this load only */ }
+    }
+    return cachedPlayerKey;
+  }
+
+  function validEmblem(value) {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < EMBLEM_COUNT;
+  }
+
+  function textHash(text) {
+    var hash = 0;
+    for (var index = 0; index < text.length; index++) hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+    return hash;
+  }
+
+  /* the emblem this player chose, or one their player ID picks */
+  function chosenEmblem() {
+    var stored = NaN;
+    try { stored = Number(global.localStorage.getItem(EMBLEM_STORAGE_KEY)); } catch (error) { stored = NaN; }
+    return validEmblem(stored) ? stored : textHash(playerKey()) % EMBLEM_COUNT;
+  }
+
+  /* the rank icon for a number of finished matches: a step up the ladder
+     early, slower later (0 recruit, 3 a step, 12 two, 48 four, 588 general) */
+  function rankIndex(matches) {
+    return Math.min(RANK_COUNT - 1, Math.floor(Math.sqrt(Math.max(0, matches) * 3)));
+  }
+
+  function emblemElement(index) {
+    var plate = document.createElement("span");
+    plate.className = "emblem";
+    var symbol = document.createElement("span");
+    symbol.style.setProperty("--emblem-column", String(index % EMBLEM_COLUMNS));
+    symbol.style.setProperty("--emblem-row", String(Math.floor(index / EMBLEM_COLUMNS)));
+    plate.appendChild(symbol);
+    return plate;
+  }
+
+  function rankElement(matches) {
+    var icon = document.createElement("span");
+    icon.className = "rank";
+    var index = rankIndex(matches);
+    icon.style.setProperty("--rank-column", String(index % RANK_COLUMNS));
+    icon.style.setProperty("--rank-row", String(Math.floor(index / RANK_COLUMNS)));
+    icon.title = "Rank " + (index + 1) + " · " + matches + (matches === 1 ? " match" : " matches");
+    return icon;
+  }
+
   function normalizePlayerProfile(value) {
     var source = value || {};
     var name = String(source.name || "").replace(/\s+/g, " ").trim();
@@ -589,7 +656,8 @@
     if (PLAYER_STYLES.indexOf(style) < 0) {
       throw new Error("Choose a valid player style.");
     }
-    return { name: name, style: style };
+    return validEmblem(source.emblem) ? { name: name, style: style, emblem: source.emblem } :
+      { name: name, style: style };
   }
 
   function selectedPlayerStyle() {
@@ -623,6 +691,7 @@
       name: elements.playerName ? elements.playerName.value :
         (session.profile && session.profile.name),
       style: selectedPlayerStyle(),
+      emblem: chosenEmblem(),
     });
   }
 
@@ -694,7 +763,10 @@
     if (value.profile !== null && value.profile !== undefined) {
       try { profile = normalizePlayerProfile(value.profile); } catch (error) { return null; }
     }
-    return { peerId: value.peerId, role: value.role, profile: profile };
+    return {
+      peerId: value.peerId, role: value.role, profile: profile,
+      matches: typeof value.matches === "number" && value.matches >= 0 ? value.matches : null,
+    };
   }
 
   function renderRoster() {
@@ -2392,7 +2464,7 @@
 
   function currentProfile() {
     if (session.profile) return session.profile;
-    try { return readPlayerProfile(); } catch (error) { return { name: generatedPlayerName(), style: "sage" }; }
+    try { return readPlayerProfile(); } catch (error) { return { name: generatedPlayerName(), style: "sage", emblem: chosenEmblem() }; }
   }
 
   function startQuickPlay() {
@@ -2427,6 +2499,7 @@
         buildId: buildId(),
         identifier: localIdentifier(),
         playlist: queue.playlist,
+        playerKey: playerKey(),
       };
       if (WALLET_ENABLED && wallet.token) request.walletToken = wallet.token;
       var result = await fetchJson("/v1/queue", { method: "POST", body: JSON.stringify(request) });
@@ -2447,6 +2520,7 @@
     queue.state = ticket.state;
     queue.queued = ticket.queued;
     queue.waited = ticket.waitedSeconds;
+    if (typeof ticket.matches === "number") lobby.matches = ticket.matches;
     queue.match = ticket.match || null;
     if (ticket.state === "ready" && ticket.match && ticket.match.inviteCode && !queue.joined && !session.active) {
       queue.joined = true;
@@ -2617,7 +2691,8 @@
         total + (slots ? " of " + (total + slots) : "") + (total + slots === 1 ? " player" : " players");
     }
     var signature = players.map(function(player) {
-      return player.peerId + ":" + (player.profile ? player.profile.name + "/" + player.profile.style : "");
+      return player.peerId + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
+        player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches);
     }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "");
     if (list.dataset.signature === signature) return;
     list.dataset.signature = signature;
@@ -2639,14 +2714,21 @@
       };
       var row = document.createElement("li");
       row.dataset.style = profile.style;
-      if (player.self || player.peerId === session.selfPeerId) row.className = "self";
+      var self = player.self || player.peerId === session.selfPeerId;
+      if (self) row.className = "self";
+      row.appendChild(emblemElement(validEmblem(profile.emblem) ? profile.emblem :
+        textHash(profile.name) % EMBLEM_COUNT));
       var name = document.createElement("span");
+      name.className = "name";
       name.textContent = profile.name;
       var role = document.createElement("span");
       role.className = "role";
       role.textContent = player.peerId === session.selfPeerId ? "You" : (player.role === "host" ? "Host" : "");
       row.appendChild(name);
       row.appendChild(role);
+      var matches = typeof player.matches === "number" ? player.matches :
+        (self && typeof lobby.matches === "number" ? lobby.matches : null);
+      if (matches !== null) row.appendChild(rankElement(matches));
       list.appendChild(row);
     });
     for (var slot = 0; slot < slots; slot++) {
@@ -2935,7 +3017,7 @@
         swatch.setAttribute("aria-label", name);
         swatch.addEventListener("click", function() {
           var profile = currentProfile();
-          savePlayerProfile({ name: profile.name, style: name });
+          savePlayerProfile({ name: profile.name, style: name, emblem: chosenEmblem() });
           sendProfileUpdate();
           renderLobbyColors();
         });
@@ -2945,6 +3027,36 @@
     Array.prototype.forEach.call(colors.children, function(swatch) {
       swatch.setAttribute("aria-pressed", swatch.dataset.style === style ? "true" : "false");
     });
+    renderLobbyEmblems();
+  }
+
+  function renderLobbyEmblems() {
+    var grid = lobbyElement("lobby-emblems");
+    if (!grid || typeof document.createElement !== "function") return;
+    var chosen = chosenEmblem();
+    if (!grid.firstChild) {
+      for (var index = 0; index < EMBLEM_COUNT; index++) {
+        (function(emblem) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.setAttribute("aria-label", "Emblem " + (emblem + 1));
+          button.appendChild(emblemElement(emblem));
+          button.addEventListener("click", function() {
+            try { global.localStorage.setItem(EMBLEM_STORAGE_KEY, String(emblem)); } catch (error) { /* this load only */ }
+            var profile = currentProfile();
+            savePlayerProfile({ name: profile.name, style: profile.style, emblem: emblem });
+            sendProfileUpdate();
+            renderLobbyEmblems();
+          });
+          grid.appendChild(button);
+        })(index);
+      }
+    }
+    Array.prototype.forEach.call(grid.children, function(button, index) {
+      button.setAttribute("aria-pressed", index === chosen ? "true" : "false");
+    });
+    /* the plates in the player's armor colour */
+    grid.dataset.style = currentProfile().style;
   }
 
   function sendProfileUpdate() {

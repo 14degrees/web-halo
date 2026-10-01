@@ -149,4 +149,27 @@ describe("matchmaker", () => {
     expect(back.body.ticket.id).not.toBe(first.body.ticket.id);
     expect(back.body.ticket.state).toBe("queued");
   });
+
+  it("counts a finished match for each player, by their lasting player ID", async () => {
+    const buildId = freshBuild();
+    const serverId = await registerServer(buildId);
+    const enqueueAs = (machine: number, playerKey: string) => call("POST", "/v1/queue",
+      { protocolVersion: 1, buildId, identifier: identifier(machine), playlist: "duel", playerKey });
+    await enqueueAs(0x801, "player-key-aaaaaaaaaaaa");
+    await enqueueAs(0x802, "player-key-bbbbbbbbbbbb");
+    const beat = await call("POST", `/v1/pool/servers/${serverId}/heartbeat`, {}, SERVER);
+    const matchId = beat.body.assignment.matchId as string;
+    const stub = env.MATCHMAKER.getByName("main");
+    expect(await stub.matchesFor(identifier(0x801))).toBe(0);
+    await call("POST", `/v1/pool/servers/${serverId}/matches/${matchId}/ready`,
+      { roomId: "ABCD-EFGH-JKMN-PQRS_" + "c".repeat(43), inviteCode: "invite" }, SERVER);
+    await call("POST", `/v1/pool/servers/${serverId}/matches/${matchId}/end`, { reason: "finished" }, SERVER);
+    expect(await stub.matchesFor(identifier(0x801))).toBe(1);
+    expect(await stub.matchesFor(identifier(0x802))).toBe(1);
+    /* the same player on a new page (a new machine) keeps their count */
+    await enqueueAs(0x803, "player-key-aaaaaaaaaaaa");
+    expect(await stub.matchesFor(identifier(0x803))).toBe(1);
+    /* a machine that never queued has no rank */
+    expect(await stub.matchesFor(identifier(0x8ff))).toBeNull();
+  });
 });

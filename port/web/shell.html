@@ -565,8 +565,11 @@
       background: linear-gradient(90deg, rgba(0,0,0,.35), transparent 45%, rgba(0,0,0,.25)),
         linear-gradient(0deg, rgba(0,0,0,.45), transparent 30%);
     }
+    /* a column that scrolls when the Spartan panel makes it tall, rather
+       than squeezing its items over one another */
+    .lobby-left > * { flex: none; }
     .lobby-left {
-      align-content: start; gap: .9rem; height: 100%; overflow-y: auto;
+      display: flex; flex-direction: column; gap: .9rem; height: 100%; overflow-y: auto;
       padding: clamp(1.5rem, 7vh, 4.5rem) 1.2rem 2rem;
       background: rgba(0, 0, 0, .2); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
     }
@@ -607,12 +610,41 @@
       color: #f2f5fa; font-size: 1.12rem; letter-spacing: .02em; text-shadow: 0 1px 1px rgba(0,0,0,.6);
       box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
     }
-    /* the player's emblem: a plate in their armor colour */
-    #lobby-players li::before {
-      content: ""; position: absolute; left: .35rem; top: .3rem; bottom: .3rem; width: 1.95rem;
-      background: linear-gradient(135deg, rgba(255,255,255,.35), transparent 55%), var(--player-color, #78986a);
+    /* the player's emblem: Halo 3's two-tone symbol on a plate in their
+       armor colour, cut from emblem_foregrounds_ui.png (12 x 7 symbols) */
+    .emblem {
+      --emblem-size: 1.95rem;
+      position: relative; display: block; width: var(--emblem-size); height: var(--emblem-size); flex: none;
+      background: linear-gradient(135deg, rgba(255,255,255,.3), transparent 55%), var(--player-color, #78986a);
       box-shadow: inset 0 0 0 1px rgba(0,0,0,.45);
     }
+    .emblem span {
+      --cell: calc(var(--emblem-size) * .84);
+      position: absolute; inset: 8%;
+      background: url("assets/ui/h3/emblem_foregrounds_ui.png") no-repeat;
+      background-size: calc(12 * var(--cell)) calc(7 * var(--cell));
+      background-position: calc(var(--emblem-column) * var(--cell) * -1) calc(var(--emblem-row) * var(--cell) * -1);
+      /* the sheet's two tones, brighter against the armor colour */
+      filter: brightness(1.35) contrast(1.1) drop-shadow(0 1px 1px rgba(0,0,0,.55));
+    }
+    #lobby-players li .emblem { position: absolute; left: .35rem; top: 50%; transform: translateY(-50%); }
+    /* the rank: Halo 3's insignia, cut from exp_med_ui.png (11 x 4, 38 x 53) */
+    .rank {
+      --rank-height: 2.05rem; --rank-width: calc(var(--rank-height) * 38 / 53);
+      flex: none; width: var(--rank-width); height: var(--rank-height); margin-left: auto;
+      background: url("assets/ui/h3/exp_med_ui.png") no-repeat;
+      background-size: calc(11 * var(--rank-width)) calc(4 * var(--rank-height));
+      background-position: calc(var(--rank-column) * var(--rank-width) * -1) calc(var(--rank-row) * var(--rank-height) * -1);
+      filter: drop-shadow(0 1px 1px rgba(0,0,0,.45));
+    }
+    #lobby-players li .role:empty { display: none; }
+    #lobby-players li .role + .rank { margin-left: .4rem; }
+    #lobby-players li .role:empty + .rank { margin-left: auto; }
+    #lobby-players li .rank { margin-right: .6rem; }
+    #lobby-emblems { display: grid; grid-template-columns: repeat(10, 1fr); gap: .25rem; max-height: 9.5rem; overflow-y: auto; }
+    #lobby-emblems button { padding: 0; border: 2px solid transparent; background: none; cursor: pointer; }
+    #lobby-emblems button[aria-pressed="true"] { border-color: #ffb069; }
+    #lobby-emblems .emblem { --emblem-size: 1.7rem; }
     /* you: the focused, light bar */
     #lobby-players li.self {
       background: linear-gradient(180deg, #eef2f2, #c2cccc); color: #1d2533; text-shadow: none;
@@ -623,7 +655,10 @@
       background: rgba(30, 42, 68, .45); color: #8094b4; font-style: normal; text-shadow: none;
       box-shadow: inset 0 0 0 1px rgba(128, 148, 180, .18);
     }
-    #lobby-players li.slot::before { background: rgba(128, 148, 180, .15); box-shadow: none; }
+    #lobby-players li.slot::before {
+      content: ""; position: absolute; left: .35rem; top: .3rem; bottom: .3rem; width: 1.95rem;
+      background: rgba(128, 148, 180, .15);
+    }
     #lobby-players li.slot.searching { animation: h3-slot 1.6s ease-in-out infinite; }
     @keyframes h3-slot { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
     @media (max-width: 900px) {
@@ -1752,6 +1787,8 @@
         <label for="lobby-name">Name</label>
         <input id="lobby-name" type="text" maxlength="11" autocomplete="nickname" spellcheck="false">
         <div id="lobby-colors" role="group" aria-label="Armor color"></div>
+        <label>Emblem</label>
+        <div id="lobby-emblems" role="group" aria-label="Emblem"></div>
       </div>
     </div>
     <section id="lobby-wallet" aria-label="Wallet">

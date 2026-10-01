@@ -58,6 +58,8 @@ export interface TicketView {
   state: TicketState;
   queued: number;
   waitedSeconds: number;
+  /* this player's finished matches (their rank) */
+  matches: number;
   match?: {
     id: string;
     inviteCode: string | null;
@@ -71,6 +73,9 @@ export interface TicketView {
 export interface EnqueueInput {
   buildId: string;
   identifier: string;
+  /* the browser's lasting player ID (its machine identifier changes on
+     every load) */
+  playerKey: string | null;
   playlist: Playlist;
   wallet: string | null;
   now: number;
@@ -98,6 +103,7 @@ interface TicketRow extends Record<string, SqlStorageValue> {
   build_id: string;
   identifier: string;
   wallet: string | null;
+  player_key: string | null;
   state: string;
   created_at: number;
   polled_at: number;
@@ -184,7 +190,17 @@ export class Matchmaker extends DurableObject<Env> {
         name TEXT PRIMARY KEY,
         value INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS players (
+        key TEXT PRIMARY KEY,
+        matches INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
+    const columns = this.ctx.storage.sql
+      .exec<{ name: string }>("PRAGMA table_info(tickets)").toArray().map(({ name }) => name);
+    if (!columns.includes("player_key")) {
+      this.ctx.storage.sql.exec("ALTER TABLE tickets ADD COLUMN player_key TEXT");
+    }
   }
 
   /* ---------- the event log */
@@ -217,8 +233,9 @@ export class Matchmaker extends DurableObject<Env> {
     this.sweep(input.now);
     const owner = input.wallet ?? `machine:${input.identifier}`;
     const existing = this.ctx.storage.sql.exec<TicketRow>(
-      `SELECT * FROM tickets WHERE (wallet = ? OR identifier = ?) AND state IN ('queued', 'assigning', 'ready')`,
-      input.wallet ?? owner, input.identifier,
+      `SELECT * FROM tickets WHERE (wallet = ? OR identifier = ? OR player_key = ?)
+         AND state IN ('queued', 'assigning', 'ready')`,
+      input.wallet ?? owner, input.identifier, input.playerKey ?? owner,
     ).toArray();
     for (const ticket of existing) {
       const match = ticket.match_id ? this.match(ticket.match_id) : null;
@@ -239,9 +256,9 @@ export class Matchmaker extends DurableObject<Env> {
     }
     const id = randomToken(24);
     this.ctx.storage.sql.exec(
-      `INSERT INTO tickets (id, playlist, build_id, identifier, wallet, state, created_at, polled_at)
-       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`,
-      id, input.playlist, input.buildId, input.identifier, input.wallet, input.now, input.now,
+      `INSERT INTO tickets (id, playlist, build_id, identifier, wallet, player_key, state, created_at, polled_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+      id, input.playlist, input.buildId, input.identifier, input.wallet, input.playerKey, input.now, input.now,
     );
     this.log(input.now, "ticket_queued", id, { playlist: input.playlist, wallet: input.wallet });
     this.formMatches(input.now);
@@ -284,10 +301,15 @@ export class Matchmaker extends DurableObject<Env> {
       "SELECT COUNT(*) AS count FROM tickets WHERE playlist = ? AND build_id = ? AND state = 'queued'",
       ticket.playlist, ticket.build_id,
     ).one().count;
+    const key = ticket.wallet ?? ticket.player_key;
+    const matches = key ? this.ctx.storage.sql.exec<{ matches: number }>(
+      "SELECT matches FROM players WHERE key = ?", key,
+    ).toArray()[0]?.matches ?? 0 : 0;
     const view: TicketView = {
       id: ticket.id,
       playlist: ticket.playlist as Playlist,
       state: ticket.state as TicketState,
+      matches,
       queued,
       waitedSeconds: Math.max(0, Math.round((now - ticket.created_at) / 1000)),
     };
@@ -378,7 +400,35 @@ export class Matchmaker extends DurableObject<Env> {
     return true;
   }
 
+  /* Matches a machine's player has finished (their rank), by the player
+     their latest ticket carried; null for a machine never queued. */
+  async matchesFor(identifier: string): Promise<number | null> {
+    const ticket = this.ctx.storage.sql.exec<TicketRow>(
+      "SELECT * FROM tickets WHERE identifier = ? ORDER BY created_at DESC LIMIT 1", identifier,
+    ).toArray()[0];
+    const key = ticket ? ticket.wallet ?? ticket.player_key : null;
+    if (!key) return null;
+    return this.ctx.storage.sql.exec<{ matches: number }>(
+      "SELECT matches FROM players WHERE key = ?", key,
+    ).toArray()[0]?.matches ?? 0;
+  }
+
   private endMatch(match: MatchRow, reason: string, now: number): void {
+    /* a finished match counts for everyone who was in it */
+    if (reason.startsWith("finished")) {
+      const players = this.ctx.storage.sql.exec<TicketRow>(
+        "SELECT * FROM tickets WHERE match_id = ?", match.id,
+      ).toArray();
+      for (const ticket of players) {
+        const key = ticket.wallet ?? ticket.player_key;
+        if (!key) continue;
+        this.ctx.storage.sql.exec(
+          `INSERT INTO players (key, matches, updated_at) VALUES (?, 1, ?)
+           ON CONFLICT(key) DO UPDATE SET matches = matches + 1, updated_at = excluded.updated_at`,
+          key, now,
+        );
+      }
+    }
     this.ctx.storage.sql.exec(
       "UPDATE matches SET state = 'ended', end_reason = ?, updated_at = ? WHERE id = ?", reason, now, match.id,
     );

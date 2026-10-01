@@ -36,9 +36,14 @@ export const PLAYER_STYLES = [
 
 export type PlayerStyle = (typeof PLAYER_STYLES)[number];
 
+/* Halo 3's emblem symbols the lobby offers (emblem_foregrounds_ui.png) */
+export const EMBLEM_COUNT = 70;
+export const PLAYER_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/u;
+
 export interface PlayerProfile {
   name: string;
   style: PlayerStyle;
+  emblem?: number;
 }
 
 export type PeerRole = "host" | "guest";
@@ -256,8 +261,13 @@ export function parsePlayerProfile(
   if (!isPlayerStyle(style)) {
     return { ok: false, message: "Player style is invalid." };
   }
+  const { emblem } = value;
+  if (emblem !== undefined && (typeof emblem !== "number" || !Number.isInteger(emblem) ||
+      emblem < 0 || emblem >= EMBLEM_COUNT)) {
+    return { ok: false, message: "Player emblem is invalid." };
+  }
 
-  return { ok: true, value: { name, style } };
+  return { ok: true, value: emblem === undefined ? { name, style } : { name, style, emblem } };
 }
 
 export function isBuildId(value: unknown): value is string {
