@@ -8,6 +8,8 @@ primary_region = "lax"
   HALO_SIGNALING_URL = "https://halo-signaling.lilchocobo2.workers.dev"
   HALO_GAME_ORIGIN = "https://halo.lilchocobo2.workers.dev"
   HALO_LOBBY_ROTATION = "hangemhigh:slayer"
+  # Halo starts a match only with two players: the countdown waits for them
+  HALO_LOBBY_MIN_PLAYERS = "2"
   HALO_LOBBY_COUNTDOWN_SECONDS = "15"
   HALO_LOBBY_POSTGAME_SECONDS = "8"
   # Fly answers UDP only from this address, on the same port outside and in

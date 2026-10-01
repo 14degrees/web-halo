@@ -2468,6 +2468,9 @@
       return { text: "Every server is in a match. You'll move to the first one that opens, or join this one's next match." };
     }
     if (state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) return { text: "Joining the match…" };
+    if (state === CLIENT_STATE.PREGAME && info && info.state === "lobby") {
+      return { text: "Waiting for another player. The countdown starts when someone joins." };
+    }
     if (state === CLIENT_STATE.PREGAME) return { text: "In the lobby. The match starts automatically." };
     if (state === CLIENT_STATE.POSTGAME) return { text: "Match over. The next one starts shortly." };
     return { text: "Joining the match…" };
