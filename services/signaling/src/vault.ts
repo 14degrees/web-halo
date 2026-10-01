@@ -12,7 +12,7 @@ import {
   vaultAddress,
   withdrawInstruction,
 } from "./escrow";
-import { LAMPORTS_PER_SOL, toBase64, walletPlayerName } from "./solana";
+import { LAMPORTS_PER_SOL, SolanaRpcError, base58Encode, toBase64, walletPlayerName } from "./solana";
 import { requireWallet } from "./wallet";
 import { escrowRpc, escrowSetup, sessionKeypair } from "./wager";
 
@@ -127,6 +127,40 @@ export async function handleEscrowRequest(
     const amount = body.lamports === "all" ? Number(vault.free) : lamports(body.lamports, Number(vault.free), "lamports");
     if (amount <= 0) throw new HttpError(400, "VALIDATION_FAILED", "Nothing to withdraw.");
     return { transaction: await unsignedTransaction(env, wallet, [await withdrawInstruction(wallet, BigInt(amount))]) };
+  }
+
+  /* Sends a transaction the player's wallet signed (and only signed) to this
+     server's cluster: a wallet set to another network (Phantom on mainnet)
+     would otherwise send it there, where it fails. Only the signed-in
+     wallet's own transactions (it pays the fee) are sent. */
+  if (request.method === "POST" && path === "/v1/escrow/submit") {
+    const wallet = await requireWallet(request, env);
+    const encoded = record(await readBody()).transaction;
+    if (typeof encoded !== "string" || encoded.length > 2_000) {
+      throw new HttpError(400, "VALIDATION_FAILED", "transaction must be a base64 transaction.");
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+    } catch {
+      throw new HttpError(400, "VALIDATION_FAILED", "transaction must be a base64 transaction.");
+    }
+    /* signatures (a one-byte count here), then the message: a 3-byte header,
+       the account count, and the fee payer first */
+    const signatures = bytes[0] ?? 0;
+    const payerOffset = 1 + 64 * signatures + 3 + 1;
+    if (signatures < 1 || signatures > 4 || bytes.length < payerOffset + 32 ||
+        base58Encode(bytes.slice(payerOffset, payerOffset + 32)) !== wallet) {
+      throw new HttpError(400, "VALIDATION_FAILED", "That is not your wallet's transaction.");
+    }
+    try {
+      return { signature: await escrowRpc(env).sendTransaction(bytes) };
+    } catch (error) {
+      if (error instanceof SolanaRpcError) {
+        throw new HttpError(409, "TRANSACTION_REJECTED", error.message.replace(/^Solana RPC sendTransaction: /u, ""));
+      }
+      throw error;
+    }
   }
 
   throw new HttpError(404, "NOT_FOUND", "Route not found.");

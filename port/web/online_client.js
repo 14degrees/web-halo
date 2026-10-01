@@ -3318,7 +3318,7 @@
     wallets.forEach(function(candidate) {
       var features = candidate && candidate.features;
       if (!features || !features["standard:connect"] || !features["solana:signMessage"] ||
-          !features["solana:signAndSendTransaction"]) return;
+          !(features["solana:signTransaction"] || features["solana:signAndSendTransaction"])) return;
       if (wallet.standard.indexOf(candidate) < 0) wallet.standard.push(candidate);
     });
     return function() {};
@@ -3496,9 +3496,26 @@
     return null;
   }
 
+  /* The wallet signs; the Worker sends it to the game's cluster, whatever
+     network the wallet itself is set to (Phantom on mainnet would send a
+     devnet transaction to mainnet, where it fails). */
   async function signAndSend(transaction) {
     var account = wallet.account || await connectProvider(true) || await connectProvider(false);
     if (!account) throw new Error("Reconnect your wallet.");
+    var signer = wallet.provider.features["solana:signTransaction"];
+    if (signer) {
+      var signed = await signer.signTransaction({ account: account, chain: WALLET_CHAIN, transaction: fromBase64(transaction) });
+      var signedOutput = Array.isArray(signed) ? signed[0] : signed;
+      var bytes = signedOutput.signedTransaction;
+      var binary = "";
+      for (var index = 0; index < bytes.length; index++) binary += String.fromCharCode(bytes[index]);
+      var submitted = await fetchJson("/v1/escrow/submit", {
+        method: "POST",
+        headers: walletHeaders(),
+        body: JSON.stringify({ transaction: global.btoa(binary) }),
+      });
+      return submitted.signature;
+    }
     var sent = await wallet.provider.features["solana:signAndSendTransaction"].signAndSendTransaction({
       account: account,
       chain: WALLET_CHAIN,
