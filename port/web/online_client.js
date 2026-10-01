@@ -3057,6 +3057,27 @@
     });
     /* the plates in the player's armor colour */
     grid.dataset.style = currentProfile().style;
+    renderSpartanShowcase();
+  }
+
+  function renderSpartanShowcase(typedName) {
+    var showcase = lobbyElement("spartan-showcase");
+    if (!showcase) return;
+    var profile = currentProfile();
+    var name = typedName !== undefined ? typedName : profile.name;
+    showcase.dataset.style = profile.style;
+    var image = lobbyElement("spartan-showcase-image");
+    if (image.dataset.style !== profile.style) {
+      image.src = "assets/ui/spartan/" + profile.style + ".png";
+      image.dataset.style = profile.style;
+    }
+    lobbyElement("spartan-showcase-name").textContent = name || " ";
+    var holder = lobbyElement("spartan-showcase-emblem");
+    var emblem = validEmblem(profile.emblem) ? profile.emblem : chosenEmblem();
+    if (holder.dataset.emblem !== String(emblem)) {
+      holder.dataset.emblem = String(emblem);
+      holder.replaceChildren(emblemElement(emblem));
+    }
   }
 
   function sendProfileUpdate() {
@@ -3578,15 +3599,23 @@
       lobby.error = null;
       lobby.started = false;
     });
-    var toggle = lobbyElement("lobby-spartan-toggle");
-    var panel = lobbyElement("lobby-spartan-panel");
-    toggle.addEventListener("click", function() {
-      panel.hidden = !panel.hidden;
-      toggle.setAttribute("aria-expanded", panel.hidden ? "false" : "true");
-      if (!panel.hidden) {
-        lobbyElement("lobby-name").value = currentProfile().name;
-        renderLobbyColors();
-      }
+    /* the Spartan modal: name, armor and emblem, with a preview */
+    var spartanDialog = lobbyElement("spartan-dialog");
+    var closeSpartan = function() { if (spartanDialog.open) spartanDialog.close(); };
+    lobbyElement("lobby-spartan-toggle").addEventListener("click", function() {
+      lobbyElement("lobby-name").value = currentProfile().name;
+      renderLobbyColors();
+      spartanDialog.showModal();
+    });
+    lobbyElement("spartan-dialog-close").addEventListener("click", closeSpartan);
+    lobbyElement("spartan-dialog-done").addEventListener("click", closeSpartan);
+    spartanDialog.addEventListener("click", function(event) {
+      /* a click on the backdrop closes it */
+      if (event.target === spartanDialog) closeSpartan();
+    });
+    spartanDialog.addEventListener("keydown", function(event) { event.stopPropagation(); });
+    lobbyElement("lobby-name").addEventListener("input", function(event) {
+      renderSpartanShowcase(event.target.value);
     });
     lobbyElement("lobby-name").addEventListener("change", function(event) {
       try {

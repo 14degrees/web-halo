@@ -666,9 +666,43 @@
       .lobby-left { height: auto; }
       .lobby-right { grid-column: 1; padding: 1rem 1.2rem 2rem; }
     }
-    #lobby-spartan-panel { display: grid; gap: .6rem; padding: .9rem; border: 1px solid rgba(101,194,255,.3); border-radius: .35rem; background: rgba(4, 12, 24, .85); }
-    #lobby-spartan-panel[hidden] { display: none; }
-    #lobby-spartan-panel input { padding: .45rem .6rem; border: 1px solid rgba(101,194,255,.4); border-radius: .25rem; background: #06101f; color: #fff; font: inherit; font-size: 1rem; }
+    /* ---------- the Spartan modal: a preview, then name, armor and emblem */
+    #spartan-dialog {
+      width: min(58rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); padding: 0; border: 1px solid rgba(128, 148, 180, .45);
+      background: linear-gradient(160deg, #0c1a30, #050b16); color: #e1e8f2;
+      font-family: "Conduit ITC", "Arial Narrow", "Avenir Next Condensed", "Segoe UI", sans-serif;
+      box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, .7);
+    }
+    /* (not the page's other dialogs' frame and fixed height) */
+    #spartan-dialog { position: fixed; inset: 0; margin: auto; height: fit-content; min-height: 0; overflow: hidden; }
+    #spartan-dialog::before, #spartan-dialog::after { display: none; }
+    #spartan-dialog::backdrop { background: rgba(0, 4, 12, .72); backdrop-filter: blur(4px); }
+    .spartan-card { position: relative; display: grid; grid-template-columns: minmax(14rem, 22rem) 1fr; }
+    .spartan-close { position: absolute; top: .6rem; right: .6rem; z-index: 1; width: 2.2rem; height: 2.2rem; border: 1px solid rgba(128, 148, 180, .45); background: rgba(0,0,0,.3); color: #e1e8f2; font-size: 1rem; cursor: pointer; }
+    .spartan-showcase {
+      display: grid; align-content: center; justify-items: center; gap: 1rem; margin: 0; padding: 2rem 1rem;
+      background: radial-gradient(ellipse at 50% 45%, rgba(80, 130, 200, .35), transparent 65%), rgba(0, 0, 0, .25);
+      border-right: 1px solid rgba(128, 148, 180, .25);
+    }
+    .spartan-showcase img { width: min(100%, 15rem); max-height: 22rem; object-fit: contain; filter: drop-shadow(0 1.2rem 1.4rem rgba(0,0,0,.6)); }
+    .spartan-showcase figcaption { display: flex; align-items: center; gap: .7rem; font-size: 1.6rem; }
+    .spartan-showcase .emblem { --emblem-size: 2.8rem; }
+    .spartan-settings { display: flex; flex-direction: column; gap: .55rem; padding: 1.6rem 1.6rem 1.4rem; overflow-y: auto; max-height: calc(100vh - 2rem); }
+    .spartan-settings h2 { margin: 0 0 .4rem; font-weight: 400; font-size: 1.7rem; text-transform: uppercase; color: #fff; }
+    .spartan-settings label { margin-top: .5rem; color: #8094b4; font-size: .95rem; letter-spacing: .08em; text-transform: uppercase; }
+    .spartan-settings label small { margin-left: .4rem; letter-spacing: 0; text-transform: none; opacity: .75; }
+    .spartan-settings input { padding: .55rem .7rem; border: 1px solid rgba(128, 148, 180, .5); background: #040a16; color: #fff; font: inherit; font-size: 1.15rem; }
+    .spartan-settings #lobby-emblems { max-height: 15rem; grid-template-columns: repeat(10, 1fr); }
+    #spartan-dialog-done {
+      align-self: flex-start; margin-top: .9rem; padding: .55rem 1.6rem; border: 0;
+      background: #54362e; color: #e4e4e4; font: inherit; font-size: 1.2rem; text-transform: uppercase; cursor: pointer;
+      animation: h3-pulse 2s infinite;
+    }
+    @media (max-width: 720px) {
+      .spartan-card { grid-template-columns: 1fr; }
+      .spartan-showcase { padding: 1.2rem; border-right: 0; }
+      .spartan-showcase img { max-height: 10rem; }
+    }
     #lobby-colors { display: flex; flex-wrap: wrap; gap: .35rem; }
     #lobby-colors button { width: 1.6rem; height: 1.6rem; padding: 0; border: 2px solid transparent; border-radius: 50%; background: var(--player-color); cursor: pointer; }
     #lobby-colors button[aria-pressed="true"] { border-color: #fff; }
@@ -1783,13 +1817,6 @@
         <button id="lobby-spartan-toggle" type="button" aria-expanded="false">Spartan</button>
         <button id="lobby-friends" type="button">Play with friends</button>
       </div>
-      <div id="lobby-spartan-panel" hidden>
-        <label for="lobby-name">Name</label>
-        <input id="lobby-name" type="text" maxlength="11" autocomplete="nickname" spellcheck="false">
-        <div id="lobby-colors" role="group" aria-label="Armor color"></div>
-        <label>Emblem</label>
-        <div id="lobby-emblems" role="group" aria-label="Emblem"></div>
-      </div>
     </div>
     <section id="lobby-wallet" aria-label="Wallet">
       <div id="lobby-wallet-out">
@@ -1827,6 +1854,28 @@
       <ul id="lobby-players"><li class="empty">Nobody here yet — press Play</li></ul>
     </div>
   </section>
+  <dialog id="spartan-dialog" aria-labelledby="spartan-dialog-title">
+    <div class="spartan-card">
+      <button id="spartan-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
+      <figure class="spartan-showcase" id="spartan-showcase" data-style="sage">
+        <img id="spartan-showcase-image" src="assets/ui/spartan/sage.png" alt="">
+        <figcaption>
+          <span id="spartan-showcase-emblem"></span>
+          <span id="spartan-showcase-name">Spartan</span>
+        </figcaption>
+      </figure>
+      <div class="spartan-settings">
+        <h2 id="spartan-dialog-title">Your Spartan</h2>
+        <label for="lobby-name">Name <small>11 characters</small></label>
+        <input id="lobby-name" type="text" maxlength="11" autocomplete="nickname" spellcheck="false">
+        <label>Armor</label>
+        <div id="lobby-colors" role="group" aria-label="Armor color"></div>
+        <label>Emblem</label>
+        <div id="lobby-emblems" role="group" aria-label="Emblem"></div>
+        <button id="spartan-dialog-done" type="button">Done</button>
+      </div>
+    </div>
+  </dialog>
   <div id="wallet-gate" role="dialog" aria-modal="true" aria-labelledby="wallet-gate-title" hidden>
     <div class="wallet-gate-card">
       <button id="wallet-gate-close" class="wallet-gate-close" type="button" aria-label="Close">✕</button>
