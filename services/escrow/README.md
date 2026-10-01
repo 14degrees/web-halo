@@ -31,6 +31,9 @@ reclaims return stakes, holds expire, and the fee is capped.
 
 Program ID: `3dPU7bDe3Bqfzx7z2g4hVr9cNQGeZqR1oHCkti5uD3bJ`.
 
+How the game uses it (the Worker's settlement, the lobby, the rules):
+[docs/wagers.md](../../docs/wagers.md).
+
 ## Devnet
 
 Deployed to devnet at exact size (upgrade authority: the deployer key). The

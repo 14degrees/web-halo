@@ -78,6 +78,10 @@ public rooms are only ever hosted by players' browsers:
 openssl rand -hex 32 | npx wrangler secret put HOST_SERVICE_TOKEN
 ```
 
+Bounty playlists (playing for SOL through the escrow program) need two more
+secrets, `ESCROW_AUTHORITY_SECRET_KEY` and `ESCROW_SESSION_SECRET`; without
+them those playlists are off. Refer to [docs/wagers.md](../../docs/wagers.md).
+
 The configured rate-limit bindings cap room creation at 20 per minute and
 session creation at 512 per minute for one connecting address in one Cloudflare
 location. They are an abuse backstop, not billing or quota accounting.
