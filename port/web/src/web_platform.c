@@ -113,6 +113,7 @@ void platform_web_initialize(void)
 	maps_url = (char *)EM_ASM_PTR({
 		return stringToNewUTF8(new URL("assets/maps", scriptDirectory).href);
 	});
+	platform_log("web: map source: %s", maps_url);
 	maps = wasmfs_create_fetch_backend(maps_url, 32 * 1024 * 1024);
 	free(maps_url);
 	if (wasmfs_create_directory("/assets/maps", 0555, maps) != 0 && errno != EEXIST)
