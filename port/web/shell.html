@@ -497,12 +497,16 @@
       background:
         radial-gradient(ellipse at 55% 40%, rgba(40, 110, 190, .35), transparent 60%),
         radial-gradient(ellipse at 50% 120%, rgba(10, 60, 120, .55), transparent 55%),
-        linear-gradient(160deg, rgba(6,16,31,.92) 0%, rgba(10,30,56,.78) 45%, rgba(4,10,20,.94) 100%),
-        url("assets/ui/shell/lobby-backdrop.png") center / cover no-repeat,
-        #06101f;
+        linear-gradient(160deg, rgba(6,16,31,.9) 0%, rgba(10,30,56,.62) 45%, rgba(4,10,20,.92) 100%);
       transition: opacity .35s ease;
     }
     #lobby[hidden] { display: none; }
+    #lobby::before {
+      content: ""; position: absolute; inset: -2rem; z-index: -1;
+      background: url("assets/ui/shell/lobby-backdrop.png") center / cover no-repeat, #06101f;
+      filter: blur(6px) saturate(1.1) brightness(.7);
+    }
+    #lobby { isolation: isolate; overflow: hidden; }
     #lobby.fading { opacity: 0; pointer-events: none; }
     .lobby-left { display: grid; gap: 1.1rem; align-content: center; }
     .lobby-title { margin: 0; font-size: clamp(1.6rem, 3.2vw, 2.6rem); letter-spacing: .04em; text-transform: uppercase; font-weight: 700; }
@@ -1417,6 +1421,35 @@
       .about-card { grid-template-columns: 3.2rem minmax(0, 1fr); gap: .7rem; padding: .9rem; }
       .about-jester { width: 2.9rem; }
     }
+
+    /* ---------- Full-window game. The game fills the window; everything else
+       (lobby, match prompt, controls) is an overlay on top of it. */
+    body { background: #000 !important; }
+    body::before, body::after, main::after, #game-frame::before { display: none !important; }
+    header, #player-sidebar, #duke-legend { display: none !important; }
+    #game-area {
+      position: fixed !important; inset: 0 !important; z-index: 1;
+      width: 100vw !important; height: 100dvh !important; background: #000;
+    }
+    #game-frame {
+      position: absolute !important; inset: 0 !important; left: 0 !important; top: 0 !important;
+      width: 100% !important; height: 100% !important; max-width: none !important; max-height: none !important;
+      transform: none !important; gap: 0 !important;
+    }
+    #game-frame canvas.emscripten, #game-frame canvas.emscripten.ready {
+      position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important;
+      max-width: none !important; border: 0 !important; box-shadow: none !important; clip-path: none !important;
+      background: #000 !important; object-fit: contain;
+    }
+    #game-frame footer {
+      position: fixed !important; right: .8rem; bottom: .8rem; left: auto !important; top: auto !important;
+      z-index: 5; display: flex !important; width: auto !important; padding: 0 !important;
+      border: 0 !important; background: none !important; opacity: .35; transition: opacity .2s ease;
+    }
+    #game-frame footer:hover, #game-frame footer:focus-within { opacity: 1; }
+    #game-frame footer > :not(.game-controls) { display: none !important; }
+    #game-frame footer .control-button { background: rgba(0, 0, 0, .55); }
+    body:has(canvas:focus) #game-frame footer { opacity: 0; }
   </style>
 </head>
 <body>

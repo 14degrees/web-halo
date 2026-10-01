@@ -2083,12 +2083,14 @@
       session.closing = true;
       var pendingWork = [session.messageChain].concat(Array.from(session.peerPromises.values()));
       if (session.role === "host" && session.room && session.roomTicket) {
-        fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id), {
+        /* Awaited with the rest, so a host that is shutting down closes its
+           room before it exits instead of stranding its players. */
+        pendingWork.push(fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id), {
           method: "DELETE",
           body: JSON.stringify({ ticket: session.roomTicket }),
         }).catch(function() {
           /* The room expires automatically if revocation cannot reach the service. */
-        });
+        }));
       }
       stopHeartbeat();
       stopGamePolling();

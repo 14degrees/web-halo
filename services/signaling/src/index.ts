@@ -774,8 +774,9 @@ async function listLobbies(
   }
   const entries = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).list(Date.now());
   const lobbies = entries
+    /* A room whose host is gone is dead even while stranded guests linger. */
     .filter((entry) => entry.buildId === buildId && entry.protocolVersion === SIGNALING_PROTOCOL_VERSION &&
-      (entry.hostConnected || entry.players > 0))
+      entry.hostConnected)
     .slice(0, 16)
     .map((entry) => ({
       capacity: entry.capacity,
