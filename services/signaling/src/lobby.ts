@@ -41,6 +41,11 @@ export interface LobbyEntry {
   hostConnected: boolean;
   /* when a dedicated host last pinged (0: never, or not dedicated) */
   hostSeenAt: number;
+  /* a dedicated host's match: lobby, countdown, ingame, postgame ("": not
+     reported), since when, and the Cloudflare data centre it is near */
+  matchState: string;
+  matchSince: number;
+  colo: string;
   mapIndex: number | null;
   modeIndex: number | null;
   names: LobbyPlayer[];
@@ -57,6 +62,9 @@ interface LobbyRow extends Record<string, SqlStorageValue> {
   expires_at: number;
   host_connected: number;
   host_seen_at: number | null;
+  match_state: string | null;
+  match_since: number | null;
+  colo: string | null;
   map_index: number | null;
   mode_index: number | null;
   names: string | null;
@@ -84,6 +92,9 @@ function entryFromRow(row: LobbyRow): LobbyEntry {
     expiresAt: row.expires_at,
     hostConnected: row.host_connected === 1,
     hostSeenAt: row.host_seen_at ?? 0,
+    matchState: row.match_state ?? "",
+    matchSince: row.match_since ?? 0,
+    colo: row.colo ?? "",
     mapIndex: row.map_index,
     modeIndex: row.mode_index,
     names: parseNames(row.names),
@@ -128,6 +139,11 @@ export class LobbyDirectory extends DurableObject<Env> {
     if (!columns.includes("host_seen_at")) {
       this.ctx.storage.sql.exec("ALTER TABLE lobbies ADD COLUMN host_seen_at INTEGER");
     }
+    if (!columns.includes("match_state")) {
+      this.ctx.storage.sql.exec("ALTER TABLE lobbies ADD COLUMN match_state TEXT");
+      this.ctx.storage.sql.exec("ALTER TABLE lobbies ADD COLUMN match_since INTEGER");
+      this.ctx.storage.sql.exec("ALTER TABLE lobbies ADD COLUMN colo TEXT");
+    }
   }
 
   async upsert(entry: LobbyEntry, now: number): Promise<void> {
@@ -135,8 +151,8 @@ export class LobbyDirectory extends DurableObject<Env> {
       `INSERT INTO lobbies (
          room_id, build_id, protocol_version, capacity, players, host_connected,
          dedicated, map_index, mode_index, created_at, expires_at, updated_at, names,
-         host_seen_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         host_seen_at, match_state, match_since, colo
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(room_id) DO UPDATE SET
          capacity = excluded.capacity,
          players = excluded.players,
@@ -147,7 +163,10 @@ export class LobbyDirectory extends DurableObject<Env> {
          expires_at = excluded.expires_at,
          updated_at = excluded.updated_at,
          names = excluded.names,
-         host_seen_at = excluded.host_seen_at`,
+         host_seen_at = excluded.host_seen_at,
+         match_state = excluded.match_state,
+         match_since = excluded.match_since,
+         colo = excluded.colo`,
       entry.roomId,
       entry.buildId,
       entry.protocolVersion,
@@ -162,6 +181,9 @@ export class LobbyDirectory extends DurableObject<Env> {
       now,
       JSON.stringify(entry.names.slice(0, LOBBY_NAMES_LIMIT)),
       entry.hostSeenAt,
+      entry.matchState,
+      entry.matchSince,
+      entry.colo,
     );
     await this.scheduleSweep(now);
   }
@@ -171,7 +193,8 @@ export class LobbyDirectory extends DurableObject<Env> {
   }
 
   /* Open rooms for this build, best first: a dedicated host before a player's
-     browser, then the fullest, then the oldest. */
+     browser, one not mid-match before one that is, then the fullest, then the
+     oldest. */
   async candidates(
     buildId: string,
     protocolVersion: number,
@@ -183,13 +206,17 @@ export class LobbyDirectory extends DurableObject<Env> {
       .exec<LobbyRow>(
         `SELECT room_id, build_id, protocol_version, capacity, players,
                 host_connected, dedicated, map_index, mode_index, created_at,
-                expires_at, names, host_seen_at
+                expires_at, names, host_seen_at, match_state, match_since, colo
            FROM lobbies
           WHERE build_id = ? AND protocol_version = ?
             AND players < capacity
             AND (host_connected = 1 OR created_at > ?)
             AND (dedicated = 0 OR host_seen_at > ?)
-          ORDER BY dedicated DESC, players DESC, created_at ASC
+          ORDER BY dedicated DESC,
+                   /* a server mid-match cannot take anyone until it ends:
+                      one in its lobby first */
+                   CASE WHEN match_state = 'ingame' THEN 1 ELSE 0 END ASC,
+                   players DESC, created_at ASC
           LIMIT ?`,
         buildId,
         protocolVersion,
@@ -207,7 +234,7 @@ export class LobbyDirectory extends DurableObject<Env> {
       .exec<LobbyRow>(
         `SELECT room_id, build_id, protocol_version, capacity, players,
                 host_connected, dedicated, map_index, mode_index, created_at,
-                expires_at, names, host_seen_at
+                expires_at, names, host_seen_at, match_state, match_since, colo
            FROM lobbies ORDER BY dedicated DESC, players DESC, created_at ASC`,
       )
       .toArray()

@@ -524,6 +524,8 @@ async function allocateRoom(
       sessionTtlMs,
       visibility: allocation.visibility,
       ...(allocation.wallet === undefined ? {} : { wallet: allocation.wallet }),
+      /* where the host is, as the Cloudflare data centre it reached (LAX) */
+      ...(typeof request.cf?.colo === "string" ? { colo: request.cf.colo } : {}),
     });
     if (result.ok) {
       break;
@@ -788,8 +790,40 @@ async function listLobbies(
       /* A dedicated host's own player is not a person. */
       names: entry.dedicated ? entry.names.filter((player) => !player.host) : entry.names,
       players: entry.players,
+      /* a dedicated server's match (lobby, countdown, ingame, postgame) */
+      matchState: entry.matchState || null,
     }));
   return withCors(jsonResponse({ lobbies, v: SIGNALING_PROTOCOL_VERSION }), origin);
+}
+
+/* The server dashboard (servers.html on the game site): every dedicated
+   server the directory knows, live or lapsed, with its match and players.
+   A room's short name is its ID's first two groups, which grant nothing. */
+const SERVER_HISTORY_MS = 10 * 60_000;
+
+async function listServers(env: RuntimeEnv, origin: string | null): Promise<Response> {
+  const now = Date.now();
+  const entries = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).list(now);
+  const servers = entries
+    /* a server gone more than ten minutes is history, not news */
+    .filter((entry) => entry.dedicated && entry.hostSeenAt > now - SERVER_HISTORY_MS)
+    .slice(0, 64)
+    .map((entry) => ({
+      name: entry.roomId.slice(0, 9),
+      buildId: entry.buildId,
+      colo: entry.colo || null,
+      live: entry.hostConnected && entry.hostSeenAt > now - DEDICATED_HOST_LEASE_MS,
+      lastSeenSeconds: entry.hostSeenAt ? Math.round((now - entry.hostSeenAt) / 1000) : null,
+      matchState: entry.matchState || null,
+      matchSeconds: entry.matchSince ? Math.round((now - entry.matchSince) / 1000) : null,
+      mapIndex: entry.mapIndex,
+      modeIndex: entry.modeIndex,
+      players: entry.players,
+      names: entry.names.filter((player) => !player.host).map((player) => player.name),
+      uptimeSeconds: Math.round((now - entry.createdAt) / 1000),
+    }));
+  const browserHosted = entries.filter((entry) => !entry.dedicated && entry.hostConnected).length;
+  return withCors(jsonResponse({ browserHosted, now, servers, v: SIGNALING_PROTOCOL_VERSION }), origin);
 }
 
 function readTicketBody(body: unknown): string {
@@ -890,6 +924,11 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
   const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
   if (walletResponse !== null) {
     return withCors(jsonResponse(walletResponse), origin);
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/servers") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
+    return listServers(env, origin);
   }
 
   if (request.method === "GET" && url.pathname === "/v1/lobbies") {

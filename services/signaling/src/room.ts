@@ -12,6 +12,11 @@ import { walletPlayerName } from "./solana";
 
 /* when the room's dedicated host last pinged (lobby.ts, DEDICATED_HOST_LEASE_MS) */
 const HOST_SEEN_KEY = "hostSeenAt";
+/* a dedicated host's match state (lobby, countdown, ingame, postgame) and
+   since when, and the data centre it connected through */
+const MATCH_STATE_KEY = "matchState";
+const MATCH_SINCE_KEY = "matchSince";
+const HOST_COLO_KEY = "hostColo";
 import {
   MAX_WEBSOCKET_MESSAGE_CHARACTERS,
   IDENTIFIER_PATTERN,
@@ -81,6 +86,7 @@ export interface CreateRoomCommand {
   sessionTtlMs: number;
   visibility: RoomVisibility;
   wallet?: string;
+  colo?: string;
 }
 
 export type CreateRoomResult =
@@ -285,6 +291,7 @@ export class SignalingRoom extends DurableObject<Env> {
       this.insertSession(hostSession);
       this.rememberWallet(hostSession.session.peerId, command.wallet);
     });
+    if (command.colo !== undefined) this.ctx.storage.kv.put(HOST_COLO_KEY, command.colo);
 
     await this.ctx.storage.setAlarm(expiresAt);
     await this.publishToDirectory(command.now);
@@ -675,6 +682,13 @@ export class SignalingRoom extends DurableObject<Env> {
         },
         "guest",
       );
+      /* The directory learns the state on a change: quick join skips a
+         server mid-match, and the server dashboard shows it. */
+      if (this.ctx.storage.kv.get(MATCH_STATE_KEY) !== message.state) {
+        this.ctx.storage.kv.put(MATCH_STATE_KEY, message.state);
+        this.ctx.storage.kv.put(MATCH_SINCE_KEY, now);
+        this.ctx.waitUntil(this.publishToDirectory(now));
+      }
       return;
     }
 
@@ -827,6 +841,9 @@ export class SignalingRoom extends DurableObject<Env> {
       expiresAt: room.expires_at,
       hostConnected,
       hostSeenAt: room.dedicated === 1 ? Number(this.ctx.storage.kv.get(HOST_SEEN_KEY) ?? 0) : 0,
+      matchState: String(this.ctx.storage.kv.get(MATCH_STATE_KEY) ?? ""),
+      matchSince: Number(this.ctx.storage.kv.get(MATCH_SINCE_KEY) ?? 0),
+      colo: String(this.ctx.storage.kv.get(HOST_COLO_KEY) ?? ""),
       mapIndex: room.map_index,
       modeIndex: room.mode_index,
       names: connections

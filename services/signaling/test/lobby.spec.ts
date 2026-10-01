@@ -283,6 +283,7 @@ describe("public lobby", () => {
         capacity: 128,
         dedicated: false,
         mapIndex: 9,
+        matchState: null,
         modeIndex: 0,
         names: [{ host: true, name: "Chief", style: "red" }],
         players: 1,
@@ -398,15 +399,42 @@ describe("public lobby", () => {
     const buildId = freshBuild();
     const directory = env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME);
     const now = Date.now();
-    const entry = (roomId: string, hostSeenAt: number): LobbyEntry => ({
-      buildId, capacity: 16, createdAt: now - 600_000, dedicated: true, expiresAt: now + 3_600_000,
-      hostConnected: true, hostSeenAt, mapIndex: 5, modeIndex: 0, names: [], players: 0,
-      protocolVersion: 1, roomId,
-    });
+    const entry = (roomId: string, hostSeenAt: number): LobbyEntry => dedicatedEntry(buildId, roomId, hostSeenAt, now);
     /* a crashed server: its socket still looks open, but it stopped pinging */
     await directory.upsert(entry("lapsed-room", now - DEDICATED_HOST_LEASE_MS - 1_000), now);
     await directory.upsert(entry("leased-room", now - 5_000), now);
     const offered = (await directory.candidates(buildId, 1, now)).map(({ roomId }) => roomId);
     expect(offered).toEqual(["leased-room"]);
   });
+
+  it("offers a server in its lobby before one mid-match, and lists both", async () => {
+    const buildId = freshBuild();
+    const directory = env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME);
+    const now = Date.now();
+    /* the busy server is fuller and older, which would otherwise rank it first */
+    await directory.upsert({ ...dedicatedEntry(buildId, "busy-room", now, now - 900_000),
+      matchState: "ingame", players: 4 }, now);
+    await directory.upsert({ ...dedicatedEntry(buildId, "idle-room", now, now),
+      matchState: "lobby", colo: "LAX" }, now);
+    const offered = (await directory.candidates(buildId, 1, now)).map(({ roomId }) => roomId);
+    expect(offered).toEqual(["idle-room", "busy-room"]);
+
+    const response = await exports.default.fetch(new Request(`${API_ORIGIN}/v1/servers`, {
+      headers: { Origin: GAME_ORIGIN, "CF-Connecting-IP": "203.0.113.77" },
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json<{ servers: Array<Record<string, unknown>> }>();
+    expect(body.servers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "idle-room", colo: "LAX", live: true, matchState: "lobby" }),
+      expect.objectContaining({ name: "busy-room", live: true, matchState: "ingame", players: 4 }),
+    ]));
+  });
 });
+
+function dedicatedEntry(buildId: string, roomId: string, hostSeenAt: number, now: number): LobbyEntry {
+  return {
+    buildId, capacity: 16, colo: "", createdAt: now - 600_000, dedicated: true, expiresAt: now + 3_600_000,
+    hostConnected: true, hostSeenAt, mapIndex: 5, matchSince: 0, matchState: "", modeIndex: 0, names: [],
+    players: 0, protocolVersion: 1, roomId,
+  };
+}

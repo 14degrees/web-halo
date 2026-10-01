@@ -78,6 +78,9 @@ def main() -> int:
     # invite links and the local development URL continue to work.
     total += checked_copy(web_build / "halo.html", output / "index.html")
 
+    # the dedicated server dashboard (/servers)
+    total += checked_copy(repository / "port" / "web" / "servers.html", output / "servers.html")
+
     for name in ("ui.map", *MULTIPLAYER_MAPS):
         total += checked_copy(maps / name, output / "assets" / "maps" / name)
 

@@ -14,6 +14,12 @@ primary_region = "lax"
   HALO_WEBRTC_UDP_HOST = "fly-global-services"
   HALO_WEBRTC_UDP_PORT = "40100"
   HALO_PUBLIC_IP = "37.16.2.146"
+  # three servers in this machine, on UDP 40100-40102 (Fly routes a shared
+  # IP's UDP to any machine of the app, so servers differ by port, not
+  # machine)
+  HALO_SERVERS = "3"
+  # matches run to their end; a newcomer goes to a server in its lobby
+  HALO_RESTART_FOR_WAITING = "false"
 
 [[services]]
   protocol = "udp"
@@ -21,9 +27,21 @@ primary_region = "lax"
   [[services.ports]]
     port = 40100
 
+[[services]]
+  protocol = "udp"
+  internal_port = 40101
+  [[services.ports]]
+    port = 40101
+
+[[services]]
+  protocol = "udp"
+  internal_port = 40102
+  [[services.ports]]
+    port = 40102
+
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = "shared-cpu-2x"
+  memory = "1gb"
 
 [[restart]]
   policy = "always"

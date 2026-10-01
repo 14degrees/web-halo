@@ -2465,7 +2465,7 @@
     if ((state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) &&
         ((info && info.state === "ingame") ||
         (lobby.searchingSince && Date.now() - lobby.searchingSince > 4000))) {
-      return { text: "A match is in progress. The server is wrapping it up so you can join…" };
+      return { text: "Every server is in a match. You'll move to the first one that opens, or join this one's next match." };
     }
     if (state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) return { text: "Joining the match…" };
     if (state === CLIENT_STATE.PREGAME) return { text: "In the lobby. The match starts automatically." };
@@ -2666,7 +2666,33 @@
     return Math.max(0, Math.ceil(info.startsIn - (Date.now() - info.receivedAt) / 1000));
   }
 
+  /* A guest seated on a server mid-match (quick join found none in its
+     lobby) moves when another server opens: the running match is never
+     cut short for it. */
+  function moveToOpenServer(state) {
+    var info = session.matchInfo;
+    var waiting = session.active && session.role === "guest" && session.publicLobby &&
+      (state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) &&
+      info && info.state === "ingame";
+    if (!waiting) {
+      lobby.busySince = 0;
+      return;
+    }
+    if (!lobby.busySince) lobby.busySince = Date.now();
+    if (Date.now() - lobby.busySince < 8000) return;
+    refreshListing();
+    var open = (lobby.listing || []).some(function(room) {
+      return room.dedicated && (room.matchState === "lobby" || room.matchState === "countdown") &&
+        room.players < room.capacity;
+    });
+    if (!open || Date.now() - (lobby.movedAt || 0) < 20000) return;
+    lobby.movedAt = Date.now();
+    lobby.busySince = 0;
+    leave(false).then(function() { scheduleRejoin("Could not reach an open server."); });
+  }
+
   function tickLobby() {
+    moveToOpenServer(clientState());
     restartForWaitingPlayers();
     broadcastMatch();
     reportHostKills();

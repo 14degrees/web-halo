@@ -31,8 +31,9 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-in
     && rm -rf /var/lib/apt/lists/*
 COPY --from=game /src/build/server/halo-server /opt/halo/halo-server
 COPY --from=gateway /halo-gateway /opt/halo/halo-gateway
+COPY services/game-server/start-servers.sh /opt/halo/start-servers
 RUN useradd --system --home /var/lib/halo --create-home halo && mkdir -p /data && chown halo:halo /data
 USER halo
 ENV HALO_SERVER_BINARY=/opt/halo/halo-server HALO_DATA_ROOT=/data HALO_SAVE_ROOT=/var/lib/halo/save
 EXPOSE 8790 40100/udp
-ENTRYPOINT ["/opt/halo/halo-gateway"]
+ENTRYPOINT ["/opt/halo/start-servers"]
