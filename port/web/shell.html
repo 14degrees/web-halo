@@ -596,6 +596,8 @@
     .wallet-gate-card p { margin: 0; color: #a9c6e0; line-height: 1.4; }
     #wallet-gate-status { text-align: center; }
     .wallet-gate-close { position: absolute; top: .6rem; right: .7rem; border: 0; background: none; color: #8fa6bd; font-size: 1.1rem; cursor: pointer; }
+    /* the wallet is off (online_client.js, WALLET_ENABLED) */
+    body[data-wallet=off] #lobby-wallet, body[data-wallet=off] #wallet-gate, body[data-wallet=off] #hud-balance { display: none !important; }
     .wallet-gate-skip { justify-self: center; padding: 0; border: 0; background: none; color: #7fb6e0; text-decoration: underline; font: inherit; font-size: .85rem; cursor: pointer; }
     #hud-balance {
       position: fixed; top: .7rem; left: 50%; z-index: 6; transform: translateX(-50%); pointer-events: none;

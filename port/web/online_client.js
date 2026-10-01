@@ -10,6 +10,9 @@
   if (!global || global.HaloOnline) return;
 
   var PROTOCOL_VERSION = 1;
+  /* The wager experiment's wallet: sign-in, the Play prompt, the balance
+     panel and the in-match balance. Off for now; true brings it all back. */
+  var WALLET_ENABLED = false;
   var ROOM_CAPACITY = 128;
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
@@ -2423,7 +2426,7 @@
         identifier: localIdentifier(),
         playlist: queue.playlist,
       };
-      if (wallet.token) request.walletToken = wallet.token;
+      if (WALLET_ENABLED && wallet.token) request.walletToken = wallet.token;
       var result = await fetchJson("/v1/queue", { method: "POST", body: JSON.stringify(request) });
       if (lobby.queue !== queue) return;
       applyTicket(result.ticket);
@@ -3229,6 +3232,7 @@
   }
 
   function renderWallet(inMatch) {
+    if (!WALLET_ENABLED) return;
     var out = lobbyElement("lobby-wallet-out");
     var signedIn = lobbyElement("lobby-wallet-in");
     if (out) out.hidden = !!wallet.token;
@@ -3419,7 +3423,7 @@
     root.addEventListener("keydown", function(event) { event.stopPropagation(); });
     lobbyElement("lobby-play").addEventListener("click", function() {
       /* Play is wagered: without a wallet, the modal asks for one first. */
-      if (!session.active && !lobby.wantsPlay && !wallet.token && !lobby.skipWallet) {
+      if (WALLET_ENABLED && !session.active && !lobby.wantsPlay && !wallet.token && !lobby.skipWallet) {
         lobbyElement("wallet-gate").hidden = false;
         setWalletStatus("");
         return;
@@ -3457,9 +3461,9 @@
       }
     });
     discoverWallets();
-    restoreWallet();
+    if (WALLET_ENABLED) restoreWallet();
     global.setInterval(function() {
-      if (document.body.dataset.lobby === "open") refreshWallet();
+      if (WALLET_ENABLED && document.body.dataset.lobby === "open") refreshWallet();
     }, 15000);
     lobbyElement("lobby-wallet-connect").addEventListener("click", function() { signInWithWallet(); });
     var startPlay = function() {
@@ -3501,6 +3505,7 @@
   }
 
   function initialize() {
+    if (!WALLET_ENABLED) document.body.dataset.wallet = "off";
     collectElements();
     restoreHostSettings();
     restorePlayerProfile();
