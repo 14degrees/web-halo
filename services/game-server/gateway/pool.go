@@ -43,6 +43,8 @@ type assignment struct {
 	MapIndex  int      `json:"mapIndex"`
 	ModeIndex int      `json:"modeIndex"`
 	Roster    []string `json:"roster"`
+	// a team match's plan: each machine's team (0 red, 1 blue)
+	Teams map[string]int `json:"teams,omitempty"`
 }
 
 type poolMatch struct {
@@ -116,6 +118,7 @@ func (s *server) hostAssignment(ctx context.Context, serverID, identifier string
 		roster[toLower(machine)] = true
 	}
 	s.peers.setAllowed(func(machine string) bool { return roster[toLower(machine)] })
+	s.peers.setTeams(match.Teams)
 	if err := s.link.hostDedicated(match.MapIndex, match.ModeIndex, len(match.Roster),
 		s.config.MatchCountdownSeconds, s.config.PostgameSeconds); err != nil {
 		return err

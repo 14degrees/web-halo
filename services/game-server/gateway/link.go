@@ -230,6 +230,15 @@ func (link *gameLink) setMinimumPlayers(minimum int) error {
 	return link.write([]byte{'m', byte(minimum)})
 }
 
+// setTeam tells the game which team a peer's players join.
+func (link *gameLink) setTeam(address uint32, team int) error {
+	packet := make([]byte, 6)
+	packet[0] = 'T'
+	binary.LittleEndian.PutUint32(packet[1:], address)
+	packet[5] = byte(team)
+	return link.write(packet)
+}
+
 func (link *gameLink) requestRestart() error {
 	return link.write([]byte{'X'})
 }

@@ -1,6 +1,8 @@
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { partyProblem, planTeams } from "../src/matchmaker";
+
 const API = "http://signaling.test";
 const ORIGIN = "http://127.0.0.1:8765";
 const SERVER = { Authorization: "Bearer test-only-host-service-token-32-bytes-min" };
@@ -114,5 +116,55 @@ describe("parties", () => {
     await call("POST", `/v1/parties/${code}/join`, player("Two"));
     await call("POST", `/v1/parties/${code}/join`, player("Three"));
     expect((await call("POST", `/v1/parties/${code}/start`, leader)).status).toBe(409);
+  });
+});
+
+describe("parties in team and free-for-all playlists", () => {
+  it("plan each party onto one team, with solo players filling in", () => {
+    const plan = planTeams([["a", "b"], ["c"], ["d"]], 4)!;
+    expect(plan.a).toBe(plan.b);
+    expect(plan.c).toBe(plan.d);
+    expect(plan.a).not.toBe(plan.c);
+    const parties = planTeams([["a", "b"], ["c", "d"]], 4)!;
+    expect(parties.a).toBe(parties.b);
+    expect(parties.c).not.toBe(parties.a);
+    /* three of four on one side cannot be even */
+    expect(planTeams([["a", "b", "c"], ["d"]], 4)).toBeNull();
+  });
+
+  it("split a party that fills the whole match, and wait when a party has nobody else", () => {
+    const scrim = planTeams([["a", "b", "c", "d"]], 4)!;
+    expect(Object.values(scrim).filter((team) => team === 0)).toHaveLength(2);
+    expect(planTeams([["a", "b"]], 4)).toBeNull();
+  });
+
+  it("keep parties out of solo playlists and off uneven teams", () => {
+    expect(partyProblem("bounty", 2)).toMatch(/solo only/u);
+    expect(partyProblem("bounty", 1)).toBeNull();
+    expect(partyProblem("team", 2)).toBeNull();
+    expect(partyProblem("team", 3)).toMatch(/one Team Doubles team/u);
+    expect(partyProblem("team", 4)).toBeNull();
+    expect(partyProblem("bountyduel", 2)).toBeNull();
+    expect(partyProblem("duel", 3)).toMatch(/at most 2/u);
+    expect(partyProblem("ffa", 5)).toBeNull();
+  });
+
+  it("put a party of two on one team in Team Doubles", async () => {
+    const buildId = freshBuild();
+    const leader = player("Leader");
+    const friend = player("Friend");
+    const code = (await call("POST", "/v1/parties", { buildId, ...leader, playlist: "team" })).body.party.code;
+    await call("POST", `/v1/parties/${code}/join`, friend);
+    const server = await call("POST", "/v1/pool/servers", { buildId }, SERVER);
+    await call("POST", `/v1/parties/${code}/start`, leader);
+    const solos = [player("Solo1"), player("Solo2")];
+    for (const solo of solos) {
+      await call("POST", "/v1/queue", { protocolVersion: 1, buildId, identifier: solo.identifier, playlist: "team", playerKey: solo.playerKey });
+    }
+    const beat = await call("POST", `/v1/pool/servers/${server.body.serverId}/heartbeat`, {}, SERVER);
+    const teams = beat.body.assignment.teams as Record<string, number>;
+    expect(teams[leader.identifier]).toBe(teams[friend.identifier]);
+    expect(teams[solos[0]!.identifier]).toBe(teams[solos[1]!.identifier]);
+    expect(teams[leader.identifier]).not.toBe(teams[solos[0]!.identifier]);
   });
 });

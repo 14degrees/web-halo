@@ -1709,6 +1709,11 @@ void network_game_server_handle_client_update_packet(
 	return;
 }
 
+#ifdef HALO_SERVER
+/* port/server/src/server_link.c */
+int server_link_team_for_address(unsigned long address);
+#endif
+
 boolean network_game_server_add_player_to_game(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *machine,
@@ -1747,6 +1752,18 @@ boolean network_game_server_add_player_to_game(
 			{
 				if (count[index] < count[player->team_index])
 					player->team_index = (char)index;
+			}
+			/* the matchmaker's plan for this machine's team, when it has
+			one (a party together; port/server/src/server_link.c) */
+			if (machine->connection)
+			{
+				struct transport_address address;
+				long planned;
+
+				network_connection_get_address(machine->connection, &address, FALSE);
+				planned = server_link_team_for_address(address.address.long_words[0]);
+				if (planned >= 0 && planned < NUMBER_OF_MULTIPLAYER_TEAMS)
+					player->team_index = (char)planned;
 			}
 		}
 #else

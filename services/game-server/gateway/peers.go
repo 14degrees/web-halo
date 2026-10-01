@@ -71,11 +71,23 @@ type peerSet struct {
 	changed   func()
 	// which machines may connect (a matchmade match's roster); nil: any
 	allowed func(identifier string) bool
+	// the team the matchmaker planned for a machine (a party together)
+	teams map[string]int
 }
 
 func (set *peerSet) setAllowed(allowed func(string) bool) {
 	set.mu.Lock()
 	set.allowed = allowed
+	set.mu.Unlock()
+}
+
+// setTeams sets a team match's plan: the team each machine joins.
+func (set *peerSet) setTeams(teams map[string]int) {
+	set.mu.Lock()
+	set.teams = map[string]int{}
+	for identifier, team := range teams {
+		set.teams[toLower(identifier)] = team
+	}
 	set.mu.Unlock()
 }
 
@@ -188,7 +200,13 @@ func (set *peerSet) ensure(id, identifier string) {
 	}
 	p.address = address
 	set.byAddress[address] = p
+	team, planned := set.teams[identifier]
 	set.mu.Unlock()
+	if planned {
+		if err := set.link.setTeam(address, team); err != nil {
+			log.Printf("peer %s: team not sent: %v", id, err)
+		}
+	}
 
 	pc, err := set.api.NewPeerConnection(webrtc.Configuration{
 		ICEServers:   ice,

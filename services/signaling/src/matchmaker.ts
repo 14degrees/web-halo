@@ -63,11 +63,13 @@ export const PLAYLISTS = {
     rotation: [[4, 0], [6, 0], [10, 0]],
     stake: 50_000_000, perKill: 10_000_000,
   },
+  /* solo only: friends in a free-for-all for SOL could gang up on the
+     others' stakes */
   bounty: {
     label: "Bounty Rumble", minimum: 2, maximum: 4, fillMs: 10_000, teams: false,
     description: "Free-for-all Slayer for SOL. 0.05 buy-in, 0.01 a kill.",
     rotation: [[4, 0], [6, 0], [3, 0]],
-    stake: 50_000_000, perKill: 10_000_000,
+    stake: 50_000_000, perKill: 10_000_000, soloOnly: true,
   },
   /* pot against pot: the team Halo scores the winner takes every stake.
      It waits for a full two on two: an uneven match at equal stakes is not
@@ -81,7 +83,7 @@ export const PLAYLISTS = {
 } as const satisfies Record<string, {
   label: string; minimum: number; maximum: number; fillMs: number; teams: boolean; description: string;
   rotation: ReadonlyArray<readonly [number, number]>;
-  stake?: number; perKill?: number; mode?: WagerMode;
+  stake?: number; perKill?: number; mode?: WagerMode; soloOnly?: boolean;
 }>;
 export type Playlist = keyof typeof PLAYLISTS;
 export function isPlaylist(value: unknown): value is Playlist {
@@ -161,6 +163,8 @@ export interface Assignment {
   modeIndex: number;
   /* the players' machine identifiers: the only machines the server admits */
   roster: string[];
+  /* a team match's plan: each machine's team (0 red, 1 blue) */
+  teams?: Record<string, number>;
 }
 
 export interface HeartbeatInput {
@@ -191,6 +195,50 @@ export interface PartyMemberTicket {
   wallet: string | null;
 }
 
+/* Why a party of `size` cannot queue for a playlist, or null if it can: a
+   solo-only playlist takes no party; a team playlist takes a party that
+   fits on one team, or one that fills the whole match (it plays itself,
+   split in two). */
+export function partyProblem(playlist: Playlist, size: number): string | null {
+  const rules = PLAYLISTS[playlist];
+  if (size <= 1) return null;
+  if ("soloOnly" in rules && rules.soloOnly) return `${rules.label} is solo only. Leave the party to play it.`;
+  if (size > rules.maximum) return `${rules.label} takes at most ${rules.maximum} players.`;
+  if (rules.teams && size > Math.floor(rules.maximum / 2) && size !== rules.maximum) {
+    return `A party of ${size} doesn't fit on one ${rules.label} team (${Math.floor(rules.maximum / 2)} a side).`;
+  }
+  return null;
+}
+
+/* A team match's plan: each machine's team (0 red, 1 blue), every party on
+   one team, the teams even. `groups` are the match's machines, a party's
+   together. A single party that fills the match plays itself, split in
+   two. Null when no plan keeps every party together. */
+export function planTeams(groups: string[][], maximum: number): Record<string, number> | null {
+  const total = groups.reduce((sum, group) => sum + group.length, 0);
+  const plan: Record<string, number> = {};
+  if (groups.length === 1 && total > 1) {
+    if (total !== maximum) return null;
+    groups[0]!.forEach((machine, index) => { plan[machine] = index % 2; });
+    return plan;
+  }
+  const capacity = Math.ceil(total / 2);
+  const sizes: [number, number] = [0, 0];
+  for (const group of [...groups].sort((left, right) => right.length - left.length)) {
+    const team: 0 | 1 = sizes[0] <= sizes[1] ? 0 : 1;
+    if (sizes[team] + group.length > capacity) {
+      const other: 0 | 1 = team === 0 ? 1 : 0;
+      if (sizes[other] + group.length > capacity) return null;
+      for (const machine of group) plan[machine] = other;
+      sizes[other] += group.length;
+    } else {
+      for (const machine of group) plan[machine] = team;
+      sizes[team] += group.length;
+    }
+  }
+  return plan;
+}
+
 /* the playlist name a party's custom game is recorded under */
 export const CUSTOM_PLAYLIST = "custom";
 
@@ -212,6 +260,7 @@ interface MatchRow extends Record<string, SqlStorageValue> {
   players: number;
   stake: number | null;
   escrow: string | null;
+  teams: string | null;
 }
 
 interface ServerRow extends Record<string, SqlStorageValue> {
@@ -303,6 +352,10 @@ export class Matchmaker extends DurableObject<Env> {
       /* a wagered match's buy-in, and its stakes: locking, locked or failed */
       this.ctx.storage.sql.exec("ALTER TABLE matches ADD COLUMN stake INTEGER");
       this.ctx.storage.sql.exec("ALTER TABLE matches ADD COLUMN escrow TEXT");
+    }
+    if (!matchColumns.includes("teams")) {
+      /* a team match's plan: each machine's team, a party together */
+      this.ctx.storage.sql.exec("ALTER TABLE matches ADD COLUMN teams TEXT");
     }
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS machines (
@@ -503,6 +556,7 @@ export class Matchmaker extends DurableObject<Env> {
         mapIndex: match.map_index,
         modeIndex: match.mode_index,
         roster: JSON.parse(match.roster) as string[],
+        ...(match.teams ? { teams: JSON.parse(match.teams) as Record<string, number> } : {}),
       },
     };
   }
@@ -769,15 +823,27 @@ export class Matchmaker extends DurableObject<Env> {
           if (!server) continue;
           const tickets = this.chooseTickets(playlist, build.build_id, rules.maximum);
           if (tickets.length < rules.minimum) continue;
+          /* a team match keeps each party on one team; one that cannot yet
+             (a party with nobody else) waits for more players */
+          let teams: Record<string, number> | null = null;
+          if (rules.teams && tickets.some((ticket) => ticket.party_id !== null)) {
+            const groups = new Map<string, string[]>();
+            for (const ticket of tickets) {
+              const key = ticket.party_id ?? `solo:${ticket.id}`;
+              groups.set(key, [...(groups.get(key) ?? []), ticket.identifier]);
+            }
+            teams = planTeams([...groups.values()], rules.maximum);
+            if (!teams) continue;
+          }
           const [mapIndex, modeIndex] = this.nextRotation(playlist);
           const matchId = randomToken(12);
           const roster = tickets.map((ticket) => ticket.identifier);
           const wager = playlistWager(playlist);
           this.ctx.storage.sql.exec(
             `INSERT INTO matches (id, playlist, build_id, server_id, state, created_at, updated_at,
-               map_index, mode_index, roster, stake, escrow) VALUES (?, ?, ?, ?, 'assigning', ?, ?, ?, ?, ?, ?, ?)`,
+               map_index, mode_index, roster, stake, escrow, teams) VALUES (?, ?, ?, ?, 'assigning', ?, ?, ?, ?, ?, ?, ?, ?)`,
             matchId, playlist, build.build_id, server.id, now, now, mapIndex, modeIndex, JSON.stringify(roster),
-            wager?.stake ?? null, wager ? "locking" : null,
+            wager?.stake ?? null, wager ? "locking" : null, teams ? JSON.stringify(teams) : null,
           );
           if (wager) {
             /* the stakes lock while the server opens its room */

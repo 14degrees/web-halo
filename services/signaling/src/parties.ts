@@ -1,6 +1,6 @@
 import type { RuntimeEnv } from "./env";
 import { HttpError } from "./errors";
-import { MATCHMAKER_NAME, PLAYLISTS, isPlaylist, playlistWager } from "./matchmaker";
+import { MATCHMAKER_NAME, isPlaylist, partyProblem, playlistWager } from "./matchmaker";
 import { type PartyJoin, type PartyResult, type PartySettings, type PartyView } from "./party";
 import {
   IDENTIFIER_PATTERN,
@@ -163,10 +163,8 @@ export async function handlePartyRequest(
   }
 
   if (!isPlaylist(record.playlist)) throw new HttpError(409, "VALIDATION_FAILED", "Pick a playlist first.");
-  const rules = PLAYLISTS[record.playlist];
-  if (members.length > rules.maximum) {
-    throw new HttpError(409, "PARTY_TOO_BIG", `${rules.label} takes at most ${rules.maximum} players.`);
-  }
+  const problem = partyProblem(record.playlist, members.length);
+  if (problem) throw new HttpError(409, "PARTY_DOESNT_FIT", problem);
   /* a wagered playlist: every member must be able to stake */
   const wager = playlistWager(record.playlist);
   if (wager) {

@@ -21,6 +21,8 @@ gateway to game
                                  host the dedicated lobby
   'G' map:u8 mode:u8             the next game's map and mode
   'm' minimum:u8                 the players the lobby waits for from now on
+  'T' address:u32 team:u8        the team this peer's players join (a
+                                 matchmade team match keeps a party together)
   'X'                            end the match for players waiting to join
   'Q'                            stop the server
 
@@ -81,6 +83,10 @@ int platform_web_online_get_client_state(void);
 int platform_web_online_get_state(void);
 int platform_web_host_kill_sequence(void);
 void const *platform_web_host_kills(void);
+/* the match's team plan, below */
+static void clear_teams(void);
+static void set_team(uint32_t address, int team);
+
 /* port/linux/game/network_lobby.c */
 long network_lobby_result_sequence(void);
 void const *network_lobby_result(long *size);
@@ -379,6 +385,8 @@ static void *link_reader(void *unused)
 			receive_frame(packet, length);
 			break;
 		case 'H':
+			/* a new match: no team plan until the gateway sends one */
+			clear_teams();
 			if (length == 6 &&
 				!platform_web_online_host_dedicated(packet[1], packet[2], packet[3], packet[4], packet[5]))
 			{
@@ -396,6 +404,15 @@ static void *link_reader(void *unused)
 			if (length == 2)
 				platform_web_online_set_minimum_players(packet[1]);
 			break;
+		case 'T':
+			if (length == 6)
+			{
+				uint32_t address;
+
+				memcpy(&address, packet + 1, 4);
+				set_team(address, packet[5]);
+			}
+			break;
 		case 'Q':
 			fprintf(stderr, "halo-server: stopping at the gateway's request\n");
 			_exit(0);
@@ -404,6 +421,75 @@ static void *link_reader(void *unused)
 		}
 	}
 	return NULL;
+}
+
+/* ---------- the match's team plan
+
+The matchmaker places a team match's players on teams before it forms (a
+party together); the gateway sends each peer's team as it connects, and
+the server's team choice (network_server_manager.c,
+network_game_server_add_player_to_game) asks here first. */
+
+#define LINK_TEAM_ENTRIES 64
+
+static struct
+{
+	uint32_t address;
+	int team;
+} link_teams[LINK_TEAM_ENTRIES];
+static int link_team_count;
+static pthread_mutex_t link_team_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void clear_teams(void)
+{
+	pthread_mutex_lock(&link_team_mutex);
+	link_team_count = 0;
+	pthread_mutex_unlock(&link_team_mutex);
+}
+
+static void set_team(uint32_t address, int team)
+{
+	int index;
+
+	pthread_mutex_lock(&link_team_mutex);
+	for (index = 0; index < link_team_count; index++)
+	{
+		if (link_teams[index].address == address)
+			break;
+	}
+	if (index < LINK_TEAM_ENTRIES)
+	{
+		link_teams[index].address = address;
+		link_teams[index].team = team;
+		if (index == link_team_count)
+			link_team_count++;
+	}
+	pthread_mutex_unlock(&link_team_mutex);
+	fprintf(stderr, "server link: the peer at %08x plays on team %d\n", (unsigned)address, team);
+}
+
+/* the team planned for a machine by its address (either byte order, as the
+game may hold it), or -1 */
+int server_link_team_for_address(unsigned long address)
+{
+	uint32_t value = (uint32_t)address;
+	uint32_t swapped = (value >> 24) | ((value >> 8) & 0xFF00u) | ((value << 8) & 0xFF0000u) | (value << 24);
+	int team = -1;
+	int index;
+
+	pthread_mutex_lock(&link_team_mutex);
+	for (index = 0; index < link_team_count; index++)
+	{
+		if (link_teams[index].address == value || link_teams[index].address == swapped)
+		{
+			team = link_teams[index].team;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&link_team_mutex);
+	if (team >= 0)
+		fprintf(stderr, "server link: a player from %08lx joins team %d, as planned\n", address, team);
+	return team;
 }
 
 /* the lobby's state and the host's kills, as the page's lobby tick read
