@@ -6,7 +6,6 @@ import {
   randomToken,
   hashToken,
 } from "./crypto";
-import { BANK_NAME } from "./bank";
 import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
 import { MATCHMAKER_NAME } from "./matchmaker";
 import { walletPlayerName } from "./solana";
@@ -703,7 +702,7 @@ export class SignalingRoom extends DurableObject<Env> {
     }
 
     if (message.type === "kill") {
-      this.ctx.waitUntil(this.settleKill(socket, sender, message.killer, message.victim, now));
+      this.ctx.waitUntil(this.settleKill(socket, sender, message.killer, message.victim));
       return;
     }
 
@@ -1117,14 +1116,14 @@ export class SignalingRoom extends DurableObject<Env> {
     return wallet;
   }
 
-  /* A dedicated host reports a kill by names; the wager moves between the
-     two players' wallets and everyone in the room hears of it. */
+  /* A dedicated host reports a kill by names. In a wagered match the bounty
+     moves between the two players' match balances (src/wager.ts), and
+     everyone in the room hears the new balances. */
   private async settleKill(
     socket: WebSocket,
     sender: SocketAttachment,
     killerName: string,
     victimName: string,
-    now: number,
   ): Promise<void> {
     const room = this.getRoom();
     if (room === null || room.dedicated !== 1 || sender.role !== "host") {
@@ -1145,36 +1144,7 @@ export class SignalingRoom extends DurableObject<Env> {
       }));
       return;
     }
-    const byName = (name: string): string | undefined =>
-      this.connections().find(({ attachment }) => attachment.profile?.name === name)?.attachment.wallet;
-    const killer = byName(killerName);
-    const victim = byName(victimName);
-    if (killer === undefined || victim === undefined || killer === victim) return;
-    const wager = Number(this.env.WAGER_LAMPORTS);
-    const result = await this.env.BANK.getByName(BANK_NAME).transferForKill(
-      victim,
-      killer,
-      Number.isSafeInteger(wager) && wager > 0 ? wager : 100_000_000,
-      room.room_id,
-      now,
-    );
-    if (result.lamports <= 0) return;
-    const encoded = jsonMessage({
-      killer: killerName,
-      killerLamports: result.killerLamports,
-      lamports: result.lamports,
-      type: "reward",
-      v: SIGNALING_PROTOCOL_VERSION,
-      victim: victimName,
-      victimLamports: result.victimLamports,
-    });
-    for (const { socket: target } of this.connections()) {
-      try {
-        target.send(encoded);
-      } catch {
-        /* A closing socket misses one notice; its balance is kept. */
-      }
-    }
+    /* a free match's kills move nothing */
   }
 
   private broadcastAll(encoded: string): void {
