@@ -1852,6 +1852,7 @@
         <button id="lobby-playlist-open" class="lobby-menu-item" type="button">Playlist: <span id="lobby-playlist">Team Doubles</span></button>
         <button id="lobby-play" type="button">Start matchmaking</button>
         <button id="lobby-spartan-toggle" class="lobby-menu-item" type="button">Spartan</button>
+        <button id="lobby-sound" class="lobby-menu-item" type="button">Sound: <span id="lobby-sound-state">On</span></button>
         <button id="lobby-friends" class="lobby-menu-item" type="button">Play with friends</button>
       </nav>
       <p id="lobby-countdown" aria-live="off" hidden><span>Match starts in</span><strong id="lobby-countdown-seconds">10</strong></p>
@@ -2150,7 +2151,13 @@
     const aboutDialog = document.getElementById("about-dialog");
     const aboutCloseButton = document.getElementById("about-close");
     const onlineDialog = document.getElementById("online-dialog");
-    let audioMuted = true;
+    /* Sound is on unless the player muted it (remembered); the browser
+       starts it on the first click or key, since pages may not play audio
+       before one. */
+    const MUTED_STORAGE_KEY = "halo-muted";
+    let audioMuted = (() => {
+      try { return localStorage.getItem(MUTED_STORAGE_KEY) === "1"; } catch (error) { return false; }
+    })();
     let performancePrevious = null;
     let secretClickCount = 0;
     let secretClickTimer = 0;
@@ -2571,6 +2578,9 @@
 
     function applyMute() {
       if (audioMuted) audioResumeAttempt++;
+      try { localStorage.setItem(MUTED_STORAGE_KEY, audioMuted ? "1" : "0"); } catch (error) { /* this load only */ }
+      const lobbySound = document.getElementById("lobby-sound-state");
+      if (lobbySound) lobbySound.textContent = audioMuted ? "Off" : "On";
       muteLabel.textContent = audioMuted ? "Muted" : "Sound on";
       muteButton.setAttribute("aria-pressed", String(audioMuted));
       muteButton.setAttribute("aria-label", audioMuted ? "Unmute game" : "Mute game");
@@ -2865,7 +2875,7 @@
         setDiagnosticsOpen(false);
       }
     });
-    muteButton.addEventListener("click", () => {
+    function toggleSound() {
       const context = browserAudioContext();
       if (!audioMuted && context && context.state !== "running") {
         resumeBrowserAudio();
@@ -2874,6 +2884,17 @@
       audioMuted = !audioMuted;
       applyMute();
       if (!audioMuted) resumeBrowserAudio();
+    }
+    muteButton.addEventListener("click", toggleSound);
+    document.getElementById("lobby-sound").addEventListener("click", () => {
+      audioMuted = !audioMuted;
+      applyMute();
+      if (!audioMuted) resumeBrowserAudio();
+    });
+    /* any click or key (Start matchmaking, the game itself) lets the
+       browser start the sound */
+    ["pointerdown", "keydown"].forEach((type) => {
+      document.addEventListener(type, () => { if (!audioMuted) resumeBrowserAudio(); }, true);
     });
 
     async function lockFullscreenMovementKeys() {
