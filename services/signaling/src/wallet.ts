@@ -48,8 +48,12 @@ export function wagerLamports(env: RuntimeEnv): number {
   return Number.isSafeInteger(value) && value > 0 ? value : 100_000_000;
 }
 
+/* A private RPC endpoint (a secret: it carries an API key) first, then the
+   public ones, which may refuse requests from Cloudflare. */
 function rpc(env: RuntimeEnv): SolanaRpc {
-  return new SolanaRpc(env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com");
+  return new SolanaRpc([env.SOLANA_RPC_PRIVATE_URL, env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com"]
+    .filter((url) => typeof url === "string" && url.length > 0)
+    .join(","));
 }
 
 function cluster(env: RuntimeEnv): string {
