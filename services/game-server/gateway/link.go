@@ -33,6 +33,7 @@ type gameEvents interface {
 	gameFrame(address uint32, reliable bool, frame []byte)
 	gameStatus(status gameStatus)
 	gameKill(killer, victim string)
+	gameDrop(address uint32)
 }
 
 type gameLink struct {
@@ -95,6 +96,10 @@ func (link *gameLink) run() error {
 					Client:    int(int8(packet[6])),
 					Online:    int(packet[7]),
 				})
+			}
+		case 'D':
+			if length == 5 {
+				link.events.gameDrop(binary.LittleEndian.Uint32(packet[1:]))
 			}
 		case 'K':
 			if length == 1+24 {

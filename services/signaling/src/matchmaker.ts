@@ -221,9 +221,18 @@ export class Matchmaker extends DurableObject<Env> {
       input.wallet ?? owner, input.identifier,
     ).toArray();
     for (const ticket of existing) {
-      if (ticket.state === "ready" || ticket.state === "assigning") {
+      const match = ticket.match_id ? this.match(ticket.match_id) : null;
+      /* Halo admits nobody once a match is live: a player back from a
+         refresh then queues for the next match instead */
+      const live = match !== null && (match.match_state === "ingame" || match.match_state === "postgame");
+      if ((ticket.state === "ready" || ticket.state === "assigning") && !live) {
         this.ctx.storage.sql.exec("UPDATE tickets SET polled_at = ? WHERE id = ?", input.now, ticket.id);
         return this.view(ticket.id, input.now)!;
+      }
+      if (live) {
+        this.ctx.storage.sql.exec("UPDATE tickets SET state = 'ended' WHERE id = ?", ticket.id);
+        this.log(input.now, "ticket_left_match", ticket.id, { match: ticket.match_id });
+        continue;
       }
       this.ctx.storage.sql.exec("UPDATE tickets SET state = 'cancelled' WHERE id = ?", ticket.id);
       this.log(input.now, "ticket_replaced", ticket.id);

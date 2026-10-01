@@ -203,6 +203,10 @@ func (s *server) gameHello(identifier string) {
 	}
 }
 
+func (s *server) gameDrop(address uint32) {
+	s.peers.removeAddress(address, "the game stopped taking its traffic")
+}
+
 func (s *server) gameFrame(address uint32, reliable bool, frame []byte) {
 	s.peers.send(address, reliable, frame)
 }

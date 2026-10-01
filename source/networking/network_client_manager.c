@@ -1922,7 +1922,14 @@ boolean network_game_client_remove_player(
 				}
 			}
 
+			/* the dedicated server's machine never has a player of its own:
+			a player leaving must not end its game for everyone
+			(port/server/README.md) */
+#ifdef HALO_SERVER
+			if (FALSE)
+#else
 			if (network_player_index == MAXIMUM_NUMBER_OF_PLAYERS)
+#endif
 			{
 				network_game_client_all_local_players_have_quit();
 				network_event("no local players remain in the game, exiting the game now");

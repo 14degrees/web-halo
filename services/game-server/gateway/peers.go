@@ -45,7 +45,18 @@ type peer struct {
 	pending    []webrtc.ICECandidateInit
 	since      time.Time
 	wallet     string
+	// the game's frames for this peer, sent by its own goroutine: a send to
+	// a dying connection can block, and must never hold up the game link
+	out chan outFrame
 }
+
+type outFrame struct {
+	reliable bool
+	data     []byte
+}
+
+// a peer this far behind on frames the game sent it is dropped
+const outQueueFrames = 1024
 
 type peerSet struct {
 	mu        sync.Mutex
@@ -154,7 +165,8 @@ func (set *peerSet) ensure(id, identifier string) {
 		}
 		set.removeLocked(otherID, "replaced by the same machine")
 	}
-	p := &peer{id: id, identifier: identifier, since: time.Now()}
+	p := &peer{id: id, identifier: identifier, since: time.Now(), out: make(chan outFrame, outQueueFrames)}
+	go set.sender(p)
 	set.byID[id] = p
 	set.aliases[id] = id
 	set.targets[id] = id
@@ -426,6 +438,7 @@ func (set *peerSet) removeLocked(id, why string) bool {
 		return false
 	}
 	p.removed = true
+	close(p.out)
 	delete(set.byID, id)
 	for alias, transport := range set.aliases {
 		if transport == id {
@@ -446,32 +459,60 @@ func (set *peerSet) removeLocked(id, why string) bool {
 	return true
 }
 
-// send carries one of the game's frames to its peer.
+// send queues one of the game's frames for its peer; it never blocks.
 func (set *peerSet) send(address uint32, reliable bool, frame []byte) {
+	/* (under the lock: removal closes the queue) */
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	p := set.byAddress[address]
+	if p == nil || !p.connected || p.removed {
+		return
+	}
+	select {
+	case p.out <- outFrame{reliable: reliable, data: frame}:
+	default:
+		if reliable {
+			go set.remove(p.id, "cannot keep up with the game")
+		}
+		/* a datagram is dropped, as the network would */
+	}
+}
+
+// removeAddress drops the peer at a virtual address (the game could not
+// take its traffic).
+func (set *peerSet) removeAddress(address uint32, why string) {
 	set.mu.Lock()
 	p := set.byAddress[address]
-	var channel *webrtc.DataChannel
-	if p != nil && p.connected {
-		if reliable {
-			channel = p.reliable
-		} else {
-			channel = p.unreliable
-		}
-	}
 	set.mu.Unlock()
-	if channel == nil {
-		return
+	if p != nil {
+		set.remove(p.id, why)
 	}
-	buffered := channel.BufferedAmount()
-	if !reliable && buffered > unreliableHighWater {
-		return
-	}
-	if reliable && buffered > reliableLimit {
-		set.remove(p.id, "cannot keep up with the game")
-		return
-	}
-	if err := channel.Send(frame); err != nil && reliable {
-		set.remove(p.id, "send failed: "+err.Error())
+}
+
+// sender writes a peer's frames to its DataChannels until it is removed.
+func (set *peerSet) sender(p *peer) {
+	for frame := range p.out {
+		set.mu.Lock()
+		channel := p.unreliable
+		if frame.reliable {
+			channel = p.reliable
+		}
+		removed := p.removed
+		set.mu.Unlock()
+		if removed || channel == nil {
+			continue
+		}
+		buffered := channel.BufferedAmount()
+		if !frame.reliable && buffered > unreliableHighWater {
+			continue
+		}
+		if frame.reliable && buffered > reliableLimit {
+			set.remove(p.id, "cannot keep up with the game")
+			continue
+		}
+		if err := channel.Send(frame.data); err != nil && frame.reliable {
+			set.remove(p.id, "send failed: "+err.Error())
+		}
 	}
 }
 

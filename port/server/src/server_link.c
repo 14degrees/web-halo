@@ -31,10 +31,17 @@ game to gateway
   'M' match:u8 countdown:i16 players:u16 client:i8 online:u8
                                  the lobby's state, on a change and each second
   'K' killer:12 victim:12        a kill on the server, by player name
+  'D' address:u32                the game cannot take this peer's traffic: drop it
+
+Frames the game cannot take yet (a stream's buffer is full) wait in a
+backlog of their own peer, so one peer the game has stopped reading (a
+player who refreshed) never holds up the others' traffic. A backlog that
+grows past its limit drops that peer.
 
 If the gateway goes away the match cannot go on: the server exits. */
 
 #include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -83,7 +90,27 @@ enum
 	LINK_KILL_NAME = 12,
 	LINK_STATUS_MILLISECONDS = 100,
 	LINK_STATUS_REPEAT_TICKS = 10,
+	/* frames waiting for a peer the game is not reading */
+	LINK_BACKLOG_PEERS = 128,
+	LINK_BACKLOG_LIMIT = 2 << 20,
 };
+
+struct link_frame
+{
+	struct link_frame *next;
+	int length;
+	unsigned char data[];
+};
+
+/* one peer's frames the game could not take yet, oldest first */
+static struct link_backlog
+{
+	unsigned long address;
+	struct link_frame *first;
+	struct link_frame *last;
+	size_t bytes;
+} link_backlogs[LINK_BACKLOG_PEERS];
+static int link_backlog_frames;
 
 static int link_socket = -1;
 static pthread_mutex_t link_send_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -164,21 +191,134 @@ static void add_peer(const unsigned char *packet, ssize_t length)
 	link_send(answer, sizeof(answer));
 }
 
+static struct link_backlog *backlog_for(unsigned long address, int create)
+{
+	struct link_backlog *free_slot = NULL;
+	int index;
+
+	for (index = 0; index < LINK_BACKLOG_PEERS; index++)
+	{
+		if (link_backlogs[index].first && link_backlogs[index].address == address)
+			return &link_backlogs[index];
+		if (!link_backlogs[index].first && !free_slot)
+			free_slot = &link_backlogs[index];
+	}
+	if (create && free_slot)
+		free_slot->address = address;
+	return create ? free_slot : NULL;
+}
+
+static void backlog_clear(struct link_backlog *backlog)
+{
+	while (backlog->first)
+	{
+		struct link_frame *frame = backlog->first;
+
+		backlog->first = frame->next;
+		free(frame);
+		link_backlog_frames--;
+	}
+	backlog->last = NULL;
+	backlog->bytes = 0;
+}
+
+static void drop_peer(unsigned long address, const char *why)
+{
+	unsigned char notice[5];
+	struct link_backlog *backlog = backlog_for(address, 0);
+
+	if (backlog)
+		backlog_clear(backlog);
+	fprintf(stderr, "halo-server: dropping peer %08lx: %s\n", address, why);
+	notice[0] = 'D';
+	put_u32(notice + 1, (uint32_t)address);
+	link_send(notice, sizeof(notice));
+}
+
+/* 1: the game took the frame (or refused it for good), 0: not yet */
+static int deliver(unsigned long address, const unsigned char *frame, int length)
+{
+	int attempt;
+
+	memcpy(web_net_remote_ingress_buffer(), frame, (size_t)length);
+	/* zero can be the socket lock, busy for a moment: try a few times */
+	for (attempt = 0; attempt < 3; attempt++)
+	{
+		int result = web_net_remote_receive(address, length);
+
+		if (result != 0)
+			return 1;
+		pause_briefly();
+	}
+	return 0;
+}
+
+/* each peer's waiting frames, oldest first, until one is still refused */
+static void retry_backlogs(void)
+{
+	int index;
+
+	for (index = 0; index < LINK_BACKLOG_PEERS; index++)
+	{
+		struct link_backlog *backlog = &link_backlogs[index];
+
+		while (backlog->first)
+		{
+			struct link_frame *frame = backlog->first;
+
+			if (!deliver(backlog->address, frame->data, frame->length))
+				break;
+			backlog->first = frame->next;
+			if (!backlog->first)
+				backlog->last = NULL;
+			backlog->bytes -= (size_t)frame->length;
+			link_backlog_frames--;
+			free(frame);
+		}
+	}
+}
+
 static void receive_frame(const unsigned char *packet, ssize_t length)
 {
 	unsigned long address;
 	int frame_length = (int)length - 6;
-	int result;
+	struct link_backlog *backlog;
+	struct link_frame *frame;
 
 	if (length < 6 || frame_length < 12 || frame_length > web_net_remote_ingress_capacity())
 		return;
 	address = get_u32(packet + 1);
-	memcpy(web_net_remote_ingress_buffer(), packet + 6, (size_t)frame_length);
-	/* zero: the game is not keeping up, or the sockets are busy */
-	while ((result = web_net_remote_receive(address, frame_length)) == 0)
-		pause_briefly();
-	if (result < 0)
-		fprintf(stderr, "halo-server: a malformed frame from %08lx\n", address);
+	backlog = backlog_for(address, 0);
+	/* behind a waiting frame of the same peer: in order, after it */
+	if (!backlog && deliver(address, packet + 6, frame_length))
+		return;
+	backlog = backlog ? backlog : backlog_for(address, 1);
+	if (!backlog)
+	{
+		drop_peer(address, "no room to wait");
+		return;
+	}
+	if (backlog->bytes + (size_t)frame_length > LINK_BACKLOG_LIMIT)
+	{
+		drop_peer(address, "the game stopped taking its traffic");
+		return;
+	}
+	frame = malloc(sizeof(*frame) + (size_t)frame_length);
+	if (!frame)
+	{
+		drop_peer(address, "out of memory");
+		return;
+	}
+	frame->next = NULL;
+	frame->length = frame_length;
+	memcpy(frame->data, packet + 6, (size_t)frame_length);
+	if (backlog->last)
+		backlog->last->next = frame;
+	else
+		backlog->first = frame;
+	backlog->last = frame;
+	backlog->bytes += (size_t)frame_length;
+	link_backlog_frames++;
 }
 
 static void *link_reader(void *unused)
@@ -188,8 +328,18 @@ static void *link_reader(void *unused)
 	(void)unused;
 	for (;;)
 	{
-		ssize_t length = recv(link_socket, packet, sizeof(packet), 0);
+		ssize_t length;
 
+		/* while frames wait, look for new ones only briefly, and retry */
+		if (link_backlog_frames > 0)
+		{
+			struct pollfd ready = { link_socket, POLLIN, 0 };
+
+			retry_backlogs();
+			if (poll(&ready, 1, 2) == 0)
+				continue;
+		}
+		length = recv(link_socket, packet, sizeof(packet), 0);
 		if (length < 0 && errno == EINTR)
 			continue;
 		if (length <= 0)
@@ -202,6 +352,10 @@ static void *link_reader(void *unused)
 		case 'R':
 			if (length == 5)
 			{
+				struct link_backlog *backlog = backlog_for(get_u32(packet + 1), 0);
+
+				if (backlog)
+					backlog_clear(backlog);
 				while (!web_net_remote_remove_peer(get_u32(packet + 1)))
 					pause_briefly();
 			}

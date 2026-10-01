@@ -21,7 +21,10 @@ It is the Linux build with three differences, all under `HALO_SERVER`:
   player. The server lets its own machine have no player
   (`server_has_a_player_on_each_machine` in
   `source/networking/network_server_manager.c`): it is the machine that
-  reaches the server on the loopback.
+  reaches the server on the loopback. Nor does it leave the game when a
+  player leaves and it has no player of its own
+  (`source/networking/network_client_manager.c`), which would end the match
+  for everyone.
 
 The main loop sleeps to 60 frames a second (`server_link_frame`), since no
 display paces it. The game still ticks at 30 Hz.

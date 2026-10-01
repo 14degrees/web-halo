@@ -134,4 +134,19 @@ describe("matchmaker", () => {
     const view = await env.MATCHMAKER.getByName("main").poll(first.body.ticket.id as string, Date.now() + 11_000);
     expect(view?.state).toBe("assigning");
   });
+
+  it("queues a player who left a live match for the next one", async () => {
+    const buildId = freshBuild();
+    const serverId = await registerServer(buildId);
+    const first = await enqueue(buildId, 0x701);
+    await enqueue(buildId, 0x702);
+    const beat = await call("POST", `/v1/pool/servers/${serverId}/heartbeat`, {}, SERVER);
+    const matchId = beat.body.assignment.matchId as string;
+    await call("POST", `/v1/pool/servers/${serverId}/matches/${matchId}/ready`,
+      { roomId: "ABCD-EFGH-JKMN-PQRS_" + "b".repeat(43), inviteCode: "invite" }, SERVER);
+    await call("POST", `/v1/pool/servers/${serverId}/heartbeat`, { matchState: "ingame", players: 2 }, SERVER);
+    const back = await enqueue(buildId, 0x701);
+    expect(back.body.ticket.id).not.toBe(first.body.ticket.id);
+    expect(back.body.ticket.state).toBe("queued");
+  });
 });
