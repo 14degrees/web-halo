@@ -322,6 +322,15 @@ describe("public lobby", () => {
     });
     guest.send(JSON.stringify({ state: "ingame", type: "match", v: 1 }));
     expect(await refused).toMatchObject({ code: "MATCH_FORBIDDEN" });
+
+    const waiting = new Promise<Record<string, unknown>>((resolve) => {
+      host.addEventListener("message", (event) => {
+        const value = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (value.type === "waiting") resolve(value);
+      });
+    });
+    guest.send(JSON.stringify({ type: "waiting", v: 1 }));
+    expect(await waiting).toEqual({ from: joined.session.peerId, type: "waiting", v: 1 });
     guest.close(1000, "test complete");
     host.close(1000, "test complete");
   });

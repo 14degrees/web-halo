@@ -28,6 +28,21 @@ static const char *const map_files[] =
 	"putput.map", "ratrace.map", "sidewinder.map", "ui.map", "wizard.map"
 };
 
+/* The page's shape, which it reports before the game starts: the game then
+draws as many columns of its 480-line picture as the window's shape gives
+(d3d8_gl.c, screen_mode_choose), a wider view rather than a stretched one. */
+static int web_display_width;
+static int web_display_height;
+
+EMSCRIPTEN_KEEPALIVE void platform_web_set_display_size(int width, int height)
+{
+	if (width > 0 && height > 0)
+	{
+		web_display_width = width;
+		web_display_height = height;
+	}
+}
+
 EMSCRIPTEN_KEEPALIVE void platform_web_set_muted(int muted)
 {
 	platform_audio_set_muted(muted ? TRUE : FALSE);
@@ -131,6 +146,14 @@ void platform_web_initialize(void)
 	setenv("HALO_NET_JOIN_FROM_CLIPBOARD", "false", 1);
 	setenv("HALO_FULLSCREEN", "false", 1);
 	setenv("HALO_WINDOW_SCALE", "1", 1);
+	if (web_display_width > 0 && web_display_height > 0)
+	{
+		char columns[16];
+
+		snprintf(columns, sizeof(columns), "%ld",
+			(480L * web_display_width + web_display_height / 2) / web_display_height);
+		setenv("HALO_DISPLAY_WIDTH", columns, 1);
+	}
 	/* A dedicated host (web_online_ui.h) runs on a server with no screen:
 	the page says so before the game starts. */
 	if (platform_web_online_is_headless())

@@ -626,6 +626,18 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
+    if (message.type === "waiting") {
+      if (sender.role !== "guest") {
+        this.sendError(socket, "WAITING_FORBIDDEN", "Only a guest waits to join.");
+        return;
+      }
+      this.broadcastToRole(
+        { from: sender.peerId, type: "waiting", v: SIGNALING_PROTOCOL_VERSION },
+        "host",
+      );
+      return;
+    }
+
     if (message.type === "match") {
       if (sender.role !== "host") {
         this.sendError(socket, "MATCH_FORBIDDEN", "Only the host reports the match.");

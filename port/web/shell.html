@@ -2730,6 +2730,10 @@
         /* A dedicated host (services/dedicated-host) sets window.HALO_DEDICATED
            before the page loads. The game thread has not started yet, so this
            is in time for the platform layer to run without a renderer. */
+        /* The window's shape, so the game renders that wide (not 4:3). */
+        if (typeof Module._platform_web_set_display_size === "function") {
+          Module._platform_web_set_display_size(window.innerWidth, window.innerHeight);
+        }
         if (window.HALO_DEDICATED && window.HALO_DEDICATED.headless !== false &&
             typeof Module._platform_web_online_set_headless === "function") {
           Module._platform_web_online_set_headless(1);

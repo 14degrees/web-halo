@@ -179,6 +179,12 @@ export type ClientMessage =
       v: typeof SIGNALING_PROTOCOL_VERSION;
     }
   | {
+      /* A guest trying to join a running match, relayed to the host, which
+         wraps the match up so the next one includes them. */
+      type: "waiting";
+      v: typeof SIGNALING_PROTOCOL_VERSION;
+    }
+  | {
       /* The host's match status, relayed to its guests (the lobby's
          countdown). startsIn is set while counting down. */
       startsIn?: number;
@@ -506,6 +512,10 @@ export function parseClientMessage(value: unknown): ValidationResult<ClientMessa
         v: SIGNALING_PROTOCOL_VERSION,
       },
     };
+  }
+
+  if (value.type === "waiting") {
+    return { ok: true, value: { type: "waiting", v: SIGNALING_PROTOCOL_VERSION } };
   }
 
   if (value.type === "match") {

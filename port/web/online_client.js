@@ -118,8 +118,11 @@
     listing: null,
     listingAt: 0,
     listingBusy: false,
-    /* The connections there were when the host last restarted a match. */
-    restartPeers: 0,
+    /* Host: guests that said they are waiting, by peer ID, with when. */
+    waitingPeers: new Map(),
+    /* Guest: since when this tab has been trying to join, and its last note. */
+    joiningSince: 0,
+    waitingSentAt: 0,
     /* What this host last told its guests about the match. */
     sentMatch: "",
     sentMatchAt: 0,
@@ -127,7 +130,7 @@
   var LOBBY_LISTING_MILLISECONDS = 5000;
   /* How long a connected player may wait for a running match before the
      host restarts it to let them in. */
-  var WAITING_RESTART_MILLISECONDS = 8000;
+  var WAITING_NOTE_EXPIRY_MILLISECONDS = 10000;
   /* A match runs at least this long before a newcomer may restart it. */
   var MINIMUM_MATCH_MILLISECONDS = 60000;
 
@@ -1319,6 +1322,10 @@
       }
       return;
     }
+    if (message.type === "waiting") {
+      if (session.role === "host" && typeof message.from === "string") lobby.waitingPeers.set(message.from, Date.now());
+      return;
+    }
     if (message.type === "match") {
       /* The host's match status: the lobby's countdown. */
       session.matchInfo = {
@@ -2443,7 +2450,8 @@
     if (state === CLIENT_STATE.PREGAME && info && info.state === "countdown") {
       return { text: "Get ready." };
     }
-    if (state === CLIENT_STATE.SEARCHING && ((info && info.state === "ingame") ||
+    if ((state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) &&
+        ((info && info.state === "ingame") ||
         (lobby.searchingSince && Date.now() - lobby.searchingSince > 4000))) {
       return { text: "A match is in progress. The server is wrapping it up so you can join…" };
     }
@@ -2568,36 +2576,43 @@
     return document.pointerLockElement === byId("canvas");
   }
 
-  /* The host's side: a guest connected over WebRTC but not in the match is
-     waiting for it to end. Restart it so they are in the next one. */
+  /* The host's side: guests trying to join a running match say so (a
+     "waiting" note every few seconds). Once the match has run a minute,
+     wrap it up so the next one includes them. Connections that never say
+     so (an old tab, a stuck client) cannot cut matches short. */
   function restartForWaitingPlayers() {
     if (!session.active || session.role !== "host" || !session.publicLobby) return;
     if (!(session.dedicated || session.lobbyDriver)) return;
-    var players;
-    try { players = global.Module._platform_web_online_get_player_count(); } catch (error) { return; }
-    var peers = session.connectedPeerCount;
-    var waiting = peers - Math.max(0, players - 1);
-    /* Connections that stayed out of the last restarted match are not trying
-       to join (an old tab, a stuck client); only a new arrival counts. */
-    if (peers < lobby.restartPeers) lobby.restartPeers = peers;
-    var match = hostMatchState();
-    if (match !== MATCH_STATE.INGAME) {
-      lobby.waitingSince = 0;
+    var now = Date.now();
+    var waiting = 0;
+    lobby.waitingPeers.forEach(function(at, peerId) {
+      if (now - at > WAITING_NOTE_EXPIRY_MILLISECONDS) lobby.waitingPeers.delete(peerId);
+      else waiting++;
+    });
+    if (hostMatchState() !== MATCH_STATE.INGAME) {
       lobby.matchSince = 0;
       return;
     }
-    if (!lobby.matchSince) lobby.matchSince = Date.now();
-    if (waiting <= 0 || peers <= lobby.restartPeers) {
-      lobby.waitingSince = 0;
-      return;
-    }
-    if (!lobby.waitingSince) lobby.waitingSince = Date.now();
-    if (Date.now() - lobby.waitingSince >= WAITING_RESTART_MILLISECONDS &&
-        Date.now() - lobby.matchSince >= MINIMUM_MATCH_MILLISECONDS) {
-      lobby.waitingSince = 0;
-      lobby.restartPeers = peers;
+    if (!lobby.matchSince) lobby.matchSince = now;
+    if (waiting > 0 && now - lobby.matchSince >= MINIMUM_MATCH_MILLISECONDS) {
+      lobby.waitingPeers.clear();
+      lobby.matchSince = now;
       try { global.Module._platform_web_online_request_restart(); } catch (error) { /* older build */ }
     }
+  }
+
+  /* The guest's side: say so while trying to get into a running match. */
+  function announceWaiting(state) {
+    if (!session.active || session.role !== "guest" || !session.publicLobby || !session.transportConnected) return;
+    if (state !== CLIENT_STATE.SEARCHING && state !== CLIENT_STATE.JOINING) {
+      lobby.joiningSince = 0;
+      return;
+    }
+    var now = Date.now();
+    if (!lobby.joiningSince) lobby.joiningSince = now;
+    if (now - lobby.joiningSince < 3000 || now - lobby.waitingSentAt < 3000) return;
+    lobby.waitingSentAt = now;
+    try { sendSocket({ v: PROTOCOL_VERSION, type: "waiting" }); } catch (error) { /* next tick */ }
   }
 
   var MATCH_STATE_WIRE = Object.freeze({ 1: "lobby", 2: "countdown", 3: "ingame", 4: "postgame" });
@@ -2643,6 +2658,7 @@
     restartForWaitingPlayers();
     broadcastMatch();
     var state = clientState();
+    announceWaiting(state);
     if (session.active && session.transportConnected && state === CLIENT_STATE.SEARCHING) {
       if (!lobby.searchingSince) lobby.searchingSince = Date.now();
     } else {
