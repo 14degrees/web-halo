@@ -2,7 +2,12 @@
 
 #include "web_online_ui.h"
 
+#ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+#else
+/* the native dedicated server (port/server) */
+#define EMSCRIPTEN_KEEPALIVE
+#endif
 #include <stdatomic.h>
 #include <string.h>
 
@@ -823,8 +828,11 @@ static void update_host(float seconds)
 		return;
 	}
 	web_online.seconds += seconds;
+#ifndef HALO_SERVER
+	/* (the native dedicated server hosts with no player of its own) */
 	if (web_online.seconds >= 0.5f)
 		add_primary_player_when_ready(client, seconds);
+#endif
 	publish_state(_web_online_state_hosting);
 	if (web_online.dedicated)
 		update_dedicated(seconds);

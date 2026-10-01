@@ -12,7 +12,7 @@ import {
 import { roomIdSignatureMatches, signedRoomId } from "./crypto";
 import { HttpError } from "./errors";
 import type { RuntimeEnv } from "./env";
-import { LOBBY_DIRECTORY_NAME } from "./lobby";
+import { DEDICATED_HOST_LEASE_MS, LOBBY_DIRECTORY_NAME } from "./lobby";
 import {
   LOBBY_MAP_COUNT,
   LOBBY_MODE_COUNT,
@@ -773,11 +773,12 @@ async function listLobbies(
   if (!/^[A-Za-z0-9._:+-]{1,96}$/u.test(buildId)) {
     throw new HttpError(400, "VALIDATION_FAILED", "buildId must be 1-96 URL-safe characters.");
   }
-  const entries = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).list(Date.now());
+  const now = Date.now();
+  const entries = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).list(now);
   const lobbies = entries
     /* A room whose host is gone is dead even while stranded guests linger. */
     .filter((entry) => entry.buildId === buildId && entry.protocolVersion === SIGNALING_PROTOCOL_VERSION &&
-      entry.hostConnected)
+      entry.hostConnected && (!entry.dedicated || entry.hostSeenAt > now - DEDICATED_HOST_LEASE_MS))
     .slice(0, 16)
     .map((entry) => ({
       capacity: entry.capacity,

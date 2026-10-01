@@ -9,6 +9,9 @@ import {
 import { BANK_NAME } from "./bank";
 import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
 import { walletPlayerName } from "./solana";
+
+/* when the room's dedicated host last pinged (lobby.ts, DEDICATED_HOST_LEASE_MS) */
+const HOST_SEEN_KEY = "hostSeenAt";
 import {
   MAX_WEBSOCKET_MESSAGE_CHARACTERS,
   IDENTIFIER_PATTERN,
@@ -542,6 +545,9 @@ export class SignalingRoom extends DurableObject<Env> {
       server,
     );
     this.broadcastRoster();
+    if (attachment.role === "host") {
+      this.ctx.storage.kv.put(HOST_SEEN_KEY, now);
+    }
     this.ctx.waitUntil(this.publishToDirectory(now));
 
     return new Response(null, { status: 101, webSocket: client });
@@ -613,6 +619,13 @@ export class SignalingRoom extends DurableObject<Env> {
 
     const message = parsed.value;
     if (message.type === "ping") {
+      /* A dedicated host's ping renews its lease in the directory. */
+      const pinger = safeAttachment(socket);
+      if (pinger?.role === "host" && this.getRoom()?.dedicated === 1) {
+        const now = Date.now();
+        this.ctx.storage.kv.put(HOST_SEEN_KEY, now);
+        this.ctx.waitUntil(this.publishToDirectory(now));
+      }
       try {
         socket.send(
           jsonMessage({
@@ -813,6 +826,7 @@ export class SignalingRoom extends DurableObject<Env> {
       dedicated: room.dedicated === 1,
       expiresAt: room.expires_at,
       hostConnected,
+      hostSeenAt: room.dedicated === 1 ? Number(this.ctx.storage.kv.get(HOST_SEEN_KEY) ?? 0) : 0,
       mapIndex: room.map_index,
       modeIndex: room.mode_index,
       names: connections

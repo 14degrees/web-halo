@@ -26,7 +26,9 @@ with the host ABI.
 #include <unistd.h>
 
 #include "posix.h"
-#ifdef HALO_WEB
+#if defined(HALO_WEB) || defined(HALO_SERVER)
+/* the browser's sockets, which the dedicated server shares (port/server) */
+#define HALO_VIRTUAL_SOCKETS 1
 #include "../../web/src/web_loopback_net.h"
 #endif
 
@@ -126,7 +128,7 @@ int posix_socket_last_error(void)
 
 int posix_socket(int family, int type, int protocol)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_socket(family, type, protocol));
 #else
 	return succeed(socket(family, type | SOCK_CLOEXEC, protocol));
@@ -135,7 +137,7 @@ int posix_socket(int family, int type, int protocol)
 
 int posix_socket_close(int socket)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_close(socket));
 #else
 	return succeed(close(socket));
@@ -144,7 +146,7 @@ int posix_socket_close(int socket)
 
 int posix_socket_bind(int socket, const void *address, int address_length)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_bind(socket, address, address_length));
 #else
 	return succeed(bind(socket, address, (socklen_t)address_length));
@@ -153,7 +155,7 @@ int posix_socket_bind(int socket, const void *address, int address_length)
 
 int posix_socket_connect(int socket, const void *address, int address_length)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_connect(socket, address, address_length));
 #else
 	/* A non-blocking connect that is under way is EINPROGRESS here but
@@ -175,7 +177,7 @@ int posix_socket_connect(int socket, const void *address, int address_length)
 
 int posix_socket_listen(int socket, int backlog)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_listen(socket, backlog));
 #else
 	return succeed(listen(socket, backlog));
@@ -184,7 +186,7 @@ int posix_socket_listen(int socket, int backlog)
 
 int posix_socket_accept(int socket, void *address, int *address_length)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_accept(socket, address, address_length));
 #else
 	socklen_t length = address_length ? (socklen_t)*address_length : 0;
@@ -198,7 +200,7 @@ int posix_socket_accept(int socket, void *address, int *address_length)
 
 int posix_socket_send(int socket, const void *buffer, int length, int flags)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_send(socket, buffer, length, flags));
 #else
 	return succeed((int)send(socket, buffer, (size_t)length, flags | MSG_NOSIGNAL));
@@ -208,7 +210,7 @@ int posix_socket_send(int socket, const void *buffer, int length, int flags)
 int posix_socket_sendto(int socket, const void *buffer, int length, int flags,
 	const void *address, int address_length)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_sendto(socket, buffer, length, flags, address, address_length));
 #else
 	return succeed((int)sendto(socket, buffer, (size_t)length, flags | MSG_NOSIGNAL,
@@ -218,7 +220,7 @@ int posix_socket_sendto(int socket, const void *buffer, int length, int flags,
 
 int posix_socket_recv(int socket, void *buffer, int length, int flags)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_recv(socket, buffer, length, flags));
 #else
 	return succeed((int)recv(socket, buffer, (size_t)length, flags));
@@ -228,7 +230,7 @@ int posix_socket_recv(int socket, void *buffer, int length, int flags)
 int posix_socket_recvfrom(int socket, void *buffer, int length, int flags,
 	void *address, int *address_length)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_recvfrom(socket, buffer, length, flags, address, address_length));
 #else
 	socklen_t socket_length = address_length ? (socklen_t)*address_length : 0;
@@ -243,7 +245,7 @@ int posix_socket_recvfrom(int socket, void *buffer, int length, int flags,
 
 int posix_socket_shutdown(int socket, int how)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_shutdown(socket, how));
 #else
 	return succeed(shutdown(socket, how));
@@ -252,7 +254,7 @@ int posix_socket_shutdown(int socket, int how)
 
 int posix_socket_set_nonblocking(int socket, int nonblocking)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_set_nonblocking(socket, nonblocking));
 #else
 	int flags = fcntl(socket, F_GETFL);
@@ -266,7 +268,7 @@ int posix_socket_set_nonblocking(int socket, int nonblocking)
 
 int posix_socket_bytes_available(int socket, posix_ulong *count)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_bytes_available(socket, count));
 #else
 	int available = 0;
@@ -312,7 +314,7 @@ int posix_socket_setsockopt(int socket, int level, int name, const void *value, 
 		last_error = 0;
 		return 0;
 	}
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_setsockopt(socket, host_level, host_name, value, length));
 #else
 	return succeed(setsockopt(socket, host_level, host_name, value, (socklen_t)length));
@@ -330,7 +332,7 @@ int posix_socket_getsockopt(int socket, int level, int name, void *value, int *l
 		last_error = WSAENOPROTOOPT;
 		return -1;
 	}
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	result = web_net_getsockopt(socket, host_level, host_name, value, length);
 #else
 	result = getsockopt(socket, host_level, host_name, value, &socket_length);
@@ -341,7 +343,7 @@ int posix_socket_getsockopt(int socket, int level, int name, void *value, int *l
 
 int posix_socket_getsockname(int socket, void *address, int *address_length)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_getsockname(socket, address, address_length));
 #else
 	socklen_t length = (socklen_t)*address_length;
@@ -354,7 +356,7 @@ int posix_socket_getsockname(int socket, void *address, int *address_length)
 
 int posix_socket_getpeername(int socket, void *address, int *address_length)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return succeed(web_net_getpeername(socket, address, address_length));
 #else
 	socklen_t length = (socklen_t)*address_length;
@@ -397,7 +399,7 @@ static void keep_ready(fd_set *set, int *descriptors, int *count)
 int posix_socket_select(int *read, int *read_count, int *write, int *write_count,
 	int *error, int *error_count, posix_long timeout_seconds, posix_long timeout_microseconds, int infinite)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	int result;
 
 	result = web_net_select(read, read_count, write, write_count, error, error_count,
@@ -463,7 +465,7 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 
 posix_ulong posix_local_ipv4_address(void)
 {
-#ifdef HALO_WEB
+#ifdef HALO_VIRTUAL_SOCKETS
 	return htonl(INADDR_LOOPBACK);
 #else
 	struct ifaddrs *addresses, *entry;

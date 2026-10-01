@@ -39,6 +39,10 @@ symbols in this file:
 #ifdef HALO_WEB
 void platform_web_initialize(void);
 #endif
+#ifdef HALO_SERVER
+/* the dedicated server's gateway link (port/server/src/server_link.c) */
+void server_link_start(void);
+#endif
 
 /* ---------- prototypes */
 
@@ -120,6 +124,9 @@ int main(
 	(void)argc;
 	(void)argv;
 	platform_web_initialize();
+#endif
+#ifdef HALO_SERVER
+	server_link_start();
 #endif
 	fuck_code_in_the_eye();
 	rasterizer_preinitialize__fill_you_up_with_the_devils_cock();

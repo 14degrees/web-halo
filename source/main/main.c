@@ -390,6 +390,10 @@ symbols in this file:
 #include "text/font_group.h"
 #include "tag_files/files.h"
 
+#ifdef HALO_SERVER
+#include "../../port/web/src/web_online_ui.h"
+void server_link_frame(void);
+#endif
 #ifdef HALO_WEB
 #include <emscripten/emscripten.h>
 #include "../../port/web/src/web_online_ui.h"
@@ -3217,10 +3221,15 @@ static boolean main_loop_iteration(
 			/* automated system link tests (port/linux/game/network_test.c) */
 			network_test_update(main_globals.main_menu_scenario_loaded, main_globals.seconds_elapsed);
 #endif
-#ifdef HALO_WEB
+#if defined(HALO_WEB) || defined(HALO_SERVER)
 			/* Invite links request menu changes from the browser thread through an
 			atomic mailbox; all game state is changed here on Halo's thread. */
 			web_online_ui_update(main_globals.main_menu_scenario_loaded, main_globals.seconds_elapsed);
+#endif
+#ifdef HALO_SERVER
+			/* nothing to draw: one frame per 60th of a second, not as many as
+			the processor runs (port/server/src/server_link.c) */
+			server_link_frame();
 #endif
 			connection = main_globals.connection;
 			if (connection==_game_connection_network_client)

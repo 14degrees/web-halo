@@ -27,6 +27,11 @@ extern int web_transport_send(unsigned long address, int reliable,
 #include <emscripten/emscripten.h>
 extern int web_transport_send(unsigned long address, int reliable,
 	const void *buffer, int length);
+#elif defined(HALO_SERVER)
+/* the dedicated server's gateway link (port/server/src/server_link.c) */
+#define EMSCRIPTEN_KEEPALIVE
+extern int web_transport_send(unsigned long address, int reliable,
+	const void *buffer, int length);
 #else
 #define EMSCRIPTEN_KEEPALIVE
 static int web_transport_send(unsigned long address, int reliable,

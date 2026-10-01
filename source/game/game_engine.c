@@ -4072,7 +4072,7 @@ void game_engine_player_killed(
 	network_distributed_player_killed(&killing_player_index, &killing_object_index, dead_player_index,
 		&friendly_fire);
 #endif
-#ifdef HALO_WEB
+#if defined(HALO_WEB) || defined(HALO_SERVER)
 	/* the browser's reward popup (port/linux/game/network_lobby.c) */
 	network_lobby_note_kill(killing_player_index, dead_player_index, friendly_fire);
 #endif

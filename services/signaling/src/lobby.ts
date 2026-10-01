@@ -17,6 +17,10 @@ const HOST_CONNECT_GRACE_MS = 60_000;
 /* Entries that stop being refreshed (a room object lost without its alarm)
    drop out after this long without an update. */
 const STALE_ENTRY_MS = 3 * 60 * 60 * 1_000;
+/* A dedicated server holds its place in the directory as a lease: its
+   gateway pings the room every 15 seconds, and a server not heard from in
+   this long is gone (a crashed machine never closes its WebSocket). */
+export const DEDICATED_HOST_LEASE_MS = 60_000;
 
 /* Who is in a room, for the public lobby's player list: display names and
    armor styles only, at most LOBBY_NAMES_LIMIT of them. */
@@ -35,6 +39,8 @@ export interface LobbyEntry {
   dedicated: boolean;
   expiresAt: number;
   hostConnected: boolean;
+  /* when a dedicated host last pinged (0: never, or not dedicated) */
+  hostSeenAt: number;
   mapIndex: number | null;
   modeIndex: number | null;
   names: LobbyPlayer[];
@@ -50,6 +56,7 @@ interface LobbyRow extends Record<string, SqlStorageValue> {
   dedicated: number;
   expires_at: number;
   host_connected: number;
+  host_seen_at: number | null;
   map_index: number | null;
   mode_index: number | null;
   names: string | null;
@@ -76,6 +83,7 @@ function entryFromRow(row: LobbyRow): LobbyEntry {
     dedicated: row.dedicated === 1,
     expiresAt: row.expires_at,
     hostConnected: row.host_connected === 1,
+    hostSeenAt: row.host_seen_at ?? 0,
     mapIndex: row.map_index,
     modeIndex: row.mode_index,
     names: parseNames(row.names),
@@ -117,14 +125,18 @@ export class LobbyDirectory extends DurableObject<Env> {
     if (!columns.includes("names")) {
       this.ctx.storage.sql.exec("ALTER TABLE lobbies ADD COLUMN names TEXT");
     }
+    if (!columns.includes("host_seen_at")) {
+      this.ctx.storage.sql.exec("ALTER TABLE lobbies ADD COLUMN host_seen_at INTEGER");
+    }
   }
 
   async upsert(entry: LobbyEntry, now: number): Promise<void> {
     this.ctx.storage.sql.exec(
       `INSERT INTO lobbies (
          room_id, build_id, protocol_version, capacity, players, host_connected,
-         dedicated, map_index, mode_index, created_at, expires_at, updated_at, names
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         dedicated, map_index, mode_index, created_at, expires_at, updated_at, names,
+         host_seen_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(room_id) DO UPDATE SET
          capacity = excluded.capacity,
          players = excluded.players,
@@ -134,7 +146,8 @@ export class LobbyDirectory extends DurableObject<Env> {
          mode_index = excluded.mode_index,
          expires_at = excluded.expires_at,
          updated_at = excluded.updated_at,
-         names = excluded.names`,
+         names = excluded.names,
+         host_seen_at = excluded.host_seen_at`,
       entry.roomId,
       entry.buildId,
       entry.protocolVersion,
@@ -148,6 +161,7 @@ export class LobbyDirectory extends DurableObject<Env> {
       entry.expiresAt,
       now,
       JSON.stringify(entry.names.slice(0, LOBBY_NAMES_LIMIT)),
+      entry.hostSeenAt,
     );
     await this.scheduleSweep(now);
   }
@@ -169,16 +183,18 @@ export class LobbyDirectory extends DurableObject<Env> {
       .exec<LobbyRow>(
         `SELECT room_id, build_id, protocol_version, capacity, players,
                 host_connected, dedicated, map_index, mode_index, created_at,
-                expires_at, names
+                expires_at, names, host_seen_at
            FROM lobbies
           WHERE build_id = ? AND protocol_version = ?
             AND players < capacity
             AND (host_connected = 1 OR created_at > ?)
+            AND (dedicated = 0 OR host_seen_at > ?)
           ORDER BY dedicated DESC, players DESC, created_at ASC
           LIMIT ?`,
         buildId,
         protocolVersion,
         now - HOST_CONNECT_GRACE_MS,
+        now - DEDICATED_HOST_LEASE_MS,
         Math.max(1, Math.min(limit, 32)),
       )
       .toArray()
@@ -191,7 +207,7 @@ export class LobbyDirectory extends DurableObject<Env> {
       .exec<LobbyRow>(
         `SELECT room_id, build_id, protocol_version, capacity, players,
                 host_connected, dedicated, map_index, mode_index, created_at,
-                expires_at, names
+                expires_at, names, host_seen_at
            FROM lobbies ORDER BY dedicated DESC, players DESC, created_at ASC`,
       )
       .toArray()

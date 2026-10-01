@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { LOBBY_DIRECTORY_NAME } from "../src/lobby";
+import { DEDICATED_HOST_LEASE_MS, LOBBY_DIRECTORY_NAME, type LobbyEntry } from "../src/lobby";
 import type {
   CreateRoomResponse,
   CreateSessionResponse,
@@ -393,5 +393,20 @@ describe("public lobby", () => {
     const entry = entries.find((candidate) => candidate.roomId === room.room.id);
     expect(entry).toMatchObject({ mapIndex: 5, modeIndex: 1 });
     hostSocket.close(1000, "test complete");
+  });
+  it("stops offering a dedicated server whose lease has lapsed", async () => {
+    const buildId = freshBuild();
+    const directory = env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME);
+    const now = Date.now();
+    const entry = (roomId: string, hostSeenAt: number): LobbyEntry => ({
+      buildId, capacity: 16, createdAt: now - 600_000, dedicated: true, expiresAt: now + 3_600_000,
+      hostConnected: true, hostSeenAt, mapIndex: 5, modeIndex: 0, names: [], players: 0,
+      protocolVersion: 1, roomId,
+    });
+    /* a crashed server: its socket still looks open, but it stopped pinging */
+    await directory.upsert(entry("lapsed-room", now - DEDICATED_HOST_LEASE_MS - 1_000), now);
+    await directory.upsert(entry("leased-room", now - 5_000), now);
+    const offered = (await directory.candidates(buildId, 1, now)).map(({ roomId }) => roomId);
+    expect(offered).toEqual(["leased-room"]);
   });
 });

@@ -2016,6 +2016,24 @@ boolean server_needs_more_teams(
 	return needs_more_teams;
 }
 
+#ifdef HALO_SERVER
+/* the dedicated server's own machine: its local client, which reaches the
+server on the loopback and has no player (port/server/README.md) */
+static boolean server_client_machine_is_local(
+	struct network_game_server_client_machine *client_machine)
+{
+	struct transport_address address;
+	unsigned long ip;
+
+	if (!client_machine->connection)
+		return FALSE;
+	network_connection_get_address(client_machine->connection, &address, FALSE);
+	ip = address.address.long_words[0];
+	return ip == IPV4_LOOPBACK_ADDRESS ||
+		ip == ((IPV4_LOOPBACK_ADDRESS >> 24) | (IPV4_LOOPBACK_ADDRESS << 24));
+}
+#endif
+
 boolean server_has_a_player_on_each_machine(
 	struct network_game_server *server)
 {
@@ -2046,6 +2064,10 @@ boolean server_has_a_player_on_each_machine(
 				}
 			}
 
+#ifdef HALO_SERVER
+			if (!has_a_player && server_client_machine_is_local(client_machine))
+				has_a_player = TRUE;
+#endif
 			if (!has_a_player)
 				return FALSE;
 		}
