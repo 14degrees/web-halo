@@ -175,6 +175,10 @@ export function toBase64(bytes: Uint8Array): string {
    own devnet endpoint answers Cloudflare with 403), so the Worker takes a
    comma-separated list and moves to the next endpoint when one refuses or
    cannot be reached. An answer that is an RPC error is final. */
+/* The network answered and refused: a transaction that failed its checks
+   (a program error), not a network that could not be reached. */
+export class SolanaRpcError extends Error {}
+
 export class SolanaRpc {
   private readonly urls: string[];
 
@@ -202,7 +206,7 @@ export class SolanaRpc {
         continue;
       }
       const body = await response.json<{ error?: { message?: string }; result?: T }>();
-      if (body.error) throw new Error(`Solana RPC ${method}: ${body.error.message ?? "error"}`);
+      if (body.error) throw new SolanaRpcError(`Solana RPC ${method}: ${body.error.message ?? "error"}`);
       return body.result as T;
     }
     throw new Error(`Solana RPC ${method} failed: ${failure}.`);
@@ -218,6 +222,33 @@ export class SolanaRpc {
   async balance(address: string): Promise<number> {
     const result = await this.call<{ value: number }>("getBalance", [address, { commitment: "confirmed" }]);
     return result.value;
+  }
+
+  /* An account's data, or null if it does not exist. */
+  async accountData(address: string): Promise<Uint8Array | null> {
+    const result = await this.call<{ value: { data: [string, string] } | null }>("getAccountInfo", [
+      address,
+      { commitment: "confirmed", encoding: "base64" },
+    ]);
+    if (!result.value) return null;
+    const binary = atob(result.value.data[0]);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+
+  /* A transaction's fate: "confirmed", "failed", or "unknown" (not seen, or
+     not yet confirmed). */
+  async signatureStatus(signature: string): Promise<"confirmed" | "failed" | "unknown"> {
+    const result = await this.call<{ value: Array<{ confirmationStatus?: string; err: unknown } | null> }>(
+      "getSignatureStatuses",
+      [[signature], { searchTransactionHistory: true }],
+    );
+    const status = result.value[0];
+    if (!status) return "unknown";
+    if (status.err) return "failed";
+    return status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized" ?
+      "confirmed" : "unknown";
   }
 
   async sendTransaction(bytes: Uint8Array): Promise<string> {

@@ -54,13 +54,34 @@ export const PLAYLISTS = {
     description: "One on one Slayer. No excuses.",
     rotation: [[4, 0], [6, 0], [10, 0]],
   },
+  /* Wagered (src/wager.ts): everyone stakes the buy-in, and each kill takes
+     the bounty from the victim's stake */
+  bountyduel: {
+    label: "Bounty Duel", minimum: 2, maximum: 2, fillMs: 0, teams: false,
+    description: "One on one Slayer for SOL. 0.05 buy-in, 0.01 a kill.",
+    rotation: [[4, 0], [6, 0], [10, 0]],
+    stake: 50_000_000, perKill: 10_000_000,
+  },
+  bounty: {
+    label: "Bounty Rumble", minimum: 2, maximum: 4, fillMs: 10_000, teams: false,
+    description: "Free-for-all Slayer for SOL. 0.05 buy-in, 0.01 a kill.",
+    rotation: [[4, 0], [6, 0], [3, 0]],
+    stake: 50_000_000, perKill: 10_000_000,
+  },
 } as const satisfies Record<string, {
   label: string; minimum: number; maximum: number; fillMs: number; teams: boolean; description: string;
   rotation: ReadonlyArray<readonly [number, number]>;
+  stake?: number; perKill?: number;
 }>;
 export type Playlist = keyof typeof PLAYLISTS;
 export function isPlaylist(value: unknown): value is Playlist {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(PLAYLISTS, value);
+}
+
+/* A wagered playlist's buy-in and bounty, in lamports; null for a free one. */
+export function playlistWager(playlist: Playlist): { stake: number; perKill: number } | null {
+  const rules = PLAYLISTS[playlist];
+  return "stake" in rules ? { stake: rules.stake, perKill: rules.perKill } : null;
 }
 
 /* a ticket not polled in this long is abandoned */
@@ -102,6 +123,9 @@ export interface TicketView {
     modeIndex: number;
     players: number;
     endReason: string | null;
+    /* a wagered match: its buy-in and bounty, and whether the stakes are
+       locked yet (the invite waits for them) */
+    wager?: { stake: number; perKill: number; escrow: string | null };
   };
 }
 
@@ -161,6 +185,8 @@ interface MatchRow extends Record<string, SqlStorageValue> {
   end_reason: string | null;
   match_state: string | null;
   players: number;
+  stake: number | null;
+  escrow: string | null;
 }
 
 interface ServerRow extends Record<string, SqlStorageValue> {
@@ -241,6 +267,13 @@ export class Matchmaker extends DurableObject<Env> {
       .exec<{ name: string }>("PRAGMA table_info(servers)").toArray().map(({ name }) => name);
     if (!serverColumns.includes("machine_id")) {
       this.ctx.storage.sql.exec("ALTER TABLE servers ADD COLUMN machine_id TEXT");
+    }
+    const matchColumns = this.ctx.storage.sql
+      .exec<{ name: string }>("PRAGMA table_info(matches)").toArray().map(({ name }) => name);
+    if (!matchColumns.includes("stake")) {
+      /* a wagered match's buy-in, and its stakes: locking, locked or failed */
+      this.ctx.storage.sql.exec("ALTER TABLE matches ADD COLUMN stake INTEGER");
+      this.ctx.storage.sql.exec("ALTER TABLE matches ADD COLUMN escrow TEXT");
     }
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS machines (
@@ -379,13 +412,17 @@ export class Matchmaker extends DurableObject<Env> {
     };
     const match = ticket.match_id ? this.match(ticket.match_id) : null;
     if (match) {
+      const wager = playlistWager(match.playlist as Playlist);
+      /* nobody joins a wagered match before its stakes are locked */
+      const open = match.state === "ready" && (match.stake === null || match.escrow === "locked");
       view.match = {
         id: match.id,
-        inviteCode: match.state === "ready" ? match.invite_code : null,
+        inviteCode: open ? match.invite_code : null,
         mapIndex: match.map_index,
         modeIndex: match.mode_index,
         players: (JSON.parse(match.roster) as string[]).length,
         endReason: match.end_reason,
+        ...(wager && match.stake !== null ? { wager: { ...wager, escrow: match.escrow } } : {}),
       };
     }
     return view;
@@ -451,7 +488,22 @@ export class Matchmaker extends DurableObject<Env> {
     this.ctx.storage.sql.exec("UPDATE tickets SET state = 'ready' WHERE match_id = ? AND state = 'assigning'", matchId);
     this.ctx.storage.sql.exec("UPDATE servers SET state = 'hosting' WHERE id = ?", serverId);
     this.log(now, "match_ready", matchId, { roomId: roomId.slice(0, 9) });
+    /* the room passes the match's kills to its wager */
+    if (match.stake !== null) this.ctx.waitUntil(this.env.ROOMS.getByName(roomId).attachWager(matchId));
     return true;
+  }
+
+  /* The wager's report on the stakes: locked (the players may join) or not
+     (the match is void, and its players told why). */
+  async escrowLocked(matchId: string, locked: boolean, reason: string | null): Promise<void> {
+    const now = Date.now();
+    const match = this.match(matchId);
+    if (!match || match.stake === null || match.escrow !== "locking") return;
+    this.ctx.storage.sql.exec(
+      "UPDATE matches SET escrow = ?, updated_at = ? WHERE id = ?", locked ? "locked" : "failed", now, matchId,
+    );
+    this.log(now, locked ? "stakes_locked" : "stakes_failed", matchId, reason === null ? undefined : { reason });
+    if (!locked && match.state !== "ended") this.endMatch(this.match(matchId)!, `void: ${reason ?? "stakes not locked"}`, now);
   }
 
   /* The server's report that its match is over: finished (played to its
@@ -501,6 +553,13 @@ export class Matchmaker extends DurableObject<Env> {
       "UPDATE tickets SET state = 'ended' WHERE match_id = ? AND state IN ('assigning', 'ready')", match.id,
     );
     this.log(now, "match_ended", match.id, { reason });
+    this.endWager(match, reason.startsWith("finished"));
+  }
+
+  /* A wagered match's end: finished pays it out, anything else voids it. */
+  private endWager(match: MatchRow, finished: boolean): void {
+    if (match.stake === null) return;
+    this.ctx.waitUntil(this.env.WAGERS.getByName(match.id).end(finished));
   }
 
   /* A match that never got its room: its players go back to the front of
@@ -514,6 +573,7 @@ export class Matchmaker extends DurableObject<Env> {
     );
     this.ctx.storage.sql.exec("DELETE FROM servers WHERE id = ?", match.server_id);
     this.log(now, "match_requeued", match.id, { why });
+    this.endWager(match, false);
   }
 
   /* ---------- forming matches */
@@ -545,11 +605,20 @@ export class Matchmaker extends DurableObject<Env> {
           const [mapIndex, modeIndex] = this.nextRotation(playlist);
           const matchId = randomToken(12);
           const roster = tickets.map((ticket) => ticket.identifier);
+          const wager = playlistWager(playlist);
           this.ctx.storage.sql.exec(
             `INSERT INTO matches (id, playlist, build_id, server_id, state, created_at, updated_at,
-               map_index, mode_index, roster) VALUES (?, ?, ?, ?, 'assigning', ?, ?, ?, ?, ?)`,
+               map_index, mode_index, roster, stake, escrow) VALUES (?, ?, ?, ?, 'assigning', ?, ?, ?, ?, ?, ?, ?)`,
             matchId, playlist, build.build_id, server.id, now, now, mapIndex, modeIndex, JSON.stringify(roster),
+            wager?.stake ?? null, wager ? "locking" : null,
           );
+          if (wager) {
+            /* the stakes lock while the server opens its room */
+            this.ctx.waitUntil(this.env.WAGERS.getByName(matchId).start({
+              matchId, stake: wager.stake, perKill: wager.perKill,
+              wallets: tickets.map((ticket) => ticket.wallet!),
+            }));
+          }
           for (const ticket of tickets) {
             this.ctx.storage.sql.exec(
               "UPDATE tickets SET state = 'assigning', match_id = ? WHERE id = ?", matchId, ticket.id,
@@ -716,6 +785,7 @@ export class Matchmaker extends DurableObject<Env> {
   async playlists(now: number): Promise<Array<{
     id: Playlist; label: string; description: string; minimum: number; maximum: number; teams: boolean;
     maps: number[]; modes: number[]; searching: number; playing: number;
+    wager: { stake: number; perKill: number } | null;
   }>> {
     this.sweep(now);
     return (Object.keys(PLAYLISTS) as Playlist[]).map((id) => {
@@ -730,7 +800,7 @@ export class Matchmaker extends DurableObject<Env> {
         id, label: rules.label, description: rules.description, minimum: rules.minimum,
         maximum: rules.maximum, teams: rules.teams,
         maps: rules.rotation.map(([map]) => map), modes: rules.rotation.map(([, mode]) => mode),
-        searching, playing,
+        searching, playing, wager: playlistWager(id),
       };
     });
   }

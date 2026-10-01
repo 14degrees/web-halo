@@ -85,7 +85,7 @@ export async function walletForToken(env: RuntimeEnv, token: unknown): Promise<s
   return env.HALO_ABUSE.get(`wallet-session:${token}`);
 }
 
-async function requireWallet(request: Request, env: RuntimeEnv): Promise<string> {
+export async function requireWallet(request: Request, env: RuntimeEnv): Promise<string> {
   const token = request.headers.get("Authorization")?.replace(/^Bearer\s+/iu, "");
   const wallet = await walletForToken(env, token);
   if (wallet === null) throw new HttpError(401, "WALLET_SIGN_IN_REQUIRED", "Sign in with your wallet again.");

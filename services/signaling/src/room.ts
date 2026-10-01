@@ -18,6 +18,8 @@ const HOST_SEEN_KEY = "hostSeenAt";
 const MATCH_STATE_KEY = "matchState";
 const MATCH_SINCE_KEY = "matchSince";
 const HOST_COLO_KEY = "hostColo";
+/* a wagered match's ID: its kills go to that match's wager (src/wager.ts) */
+const WAGER_KEY = "wagerMatch";
 import {
   MAX_WEBSOCKET_MESSAGE_CHARACTERS,
   IDENTIFIER_PATTERN,
@@ -423,6 +425,11 @@ export class SignalingRoom extends DurableObject<Env> {
       return { code: "ROOM_NOT_FOUND", ok: false };
     }
     return { ok: true, room: roomDescriptor(renewed) };
+  }
+
+  /* The matchmaker's word that this room's match is wagered. */
+  async attachWager(matchId: string): Promise<void> {
+    this.ctx.storage.kv.put(WAGER_KEY, matchId);
   }
 
   async closeRoom(ticket: string): Promise<CloseRoomResult> {
@@ -1124,6 +1131,20 @@ export class SignalingRoom extends DurableObject<Env> {
       this.sendError(socket, "KILL_FORBIDDEN", "Only a dedicated host reports kills.");
       return;
     }
+    const wagerMatch = this.ctx.storage.kv.get(WAGER_KEY) as string | undefined;
+    if (wagerMatch !== undefined) {
+      const result = await this.env.WAGERS.getByName(wagerMatch).kill(killerName, victimName);
+      if (result === null) return;
+      this.broadcastAll(jsonMessage({
+        killer: killerName,
+        lamports: result.moved,
+        type: "wager",
+        v: SIGNALING_PROTOCOL_VERSION,
+        victim: victimName,
+        wager: result.view,
+      }));
+      return;
+    }
     const byName = (name: string): string | undefined =>
       this.connections().find(({ attachment }) => attachment.profile?.name === name)?.attachment.wallet;
     const killer = byName(killerName);
@@ -1152,6 +1173,16 @@ export class SignalingRoom extends DurableObject<Env> {
         target.send(encoded);
       } catch {
         /* A closing socket misses one notice; its balance is kept. */
+      }
+    }
+  }
+
+  private broadcastAll(encoded: string): void {
+    for (const { socket: target } of this.connections()) {
+      try {
+        target.send(encoded);
+      } catch {
+        /* A closing socket misses one notice. */
       }
     }
   }

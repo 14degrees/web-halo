@@ -13,7 +13,7 @@ import { roomIdSignatureMatches, signedRoomId } from "./crypto";
 import { HttpError } from "./errors";
 import type { RuntimeEnv } from "./env";
 import { DEDICATED_HOST_LEASE_MS, LOBBY_DIRECTORY_NAME } from "./lobby";
-import { MATCHMAKER_NAME, isPlaylist } from "./matchmaker";
+import { MATCHMAKER_NAME, isPlaylist, playlistWager } from "./matchmaker";
 import {
   LOBBY_MAP_COUNT,
   LOBBY_MODE_COUNT,
@@ -45,12 +45,15 @@ import {
 import { generateIceServersWithFallback, revokeTurnCredential } from "./turn";
 import { enforceTurnBandwidthCaps, turnIsDisabled, turnUsageSummary } from "./turn_cap";
 import { requireHumanVerification } from "./turnstile";
+import { handleEscrowRequest } from "./vault";
+import { stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
 
 export { Bank } from "./bank";
 export { LobbyDirectory } from "./lobby";
 export { Matchmaker } from "./matchmaker";
 export { SignalingRoom } from "./room";
+export { Wager } from "./wager";
 export type {
   ClientMessage,
   CreateRoomResponse,
@@ -75,6 +78,7 @@ const RENEW_ROUTE = /^\/v1\/rooms\/([^/]+)\/renew$/u;
 const WEBSOCKET_ROUTE = /^\/v1\/rooms\/([^/]+)\/ws$/u;
 const ADMIN_BAN_ROUTE = /^\/v1\/admin\/bans\/([0-9a-f]{32})$/u;
 const QUEUE_TICKET_ROUTE = /^\/v1\/queue\/([A-Za-z0-9_-]{16,64})$/u;
+const WAGER_ROUTE = /^\/v1\/wagers\/([A-Za-z0-9_-]{8,64})$/u;
 const POOL_HEARTBEAT_ROUTE = /^\/v1\/pool\/servers\/([A-Za-z0-9_-]{16,64})\/heartbeat$/u;
 const POOL_MATCH_ROUTE =
   /^\/v1\/pool\/servers\/([A-Za-z0-9_-]{16,64})\/matches\/([A-Za-z0-9_-]{8,64})\/(ready|end)$/u;
@@ -863,6 +867,13 @@ async function enqueue(request: Request, env: RuntimeEnv, origin: string | null)
   await requireAllowedActor(request, env);
   const walletToken = typeof body.walletToken === "string" ? body.walletToken : undefined;
   const wallet = await walletForToken(env, walletToken);
+  /* a wagered playlist needs a wallet whose vault and session can stake */
+  const wager = playlistWager(playlist);
+  if (wager) {
+    if (wallet === null) throw new HttpError(401, "WALLET_SIGN_IN_REQUIRED", "Sign in with your wallet to play for SOL.");
+    const problem = await stakeProblem(env, wallet, wager.stake);
+    if (problem !== null) throw new HttpError(409, "STAKE_NOT_READY", problem);
+  }
   const playerKey = typeof body.playerKey === "string" && PLAYER_KEY_PATTERN.test(body.playerKey) ?
     body.playerKey : null;
   const ticket = await matchmaker(env).enqueue({
@@ -1062,6 +1073,19 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
     await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
     return createRoom(request, env, origin);
+  }
+
+  const escrowResponse = await handleEscrowRequest(request, env, url, () => readJsonBody(request));
+  if (escrowResponse !== null) {
+    return withCors(jsonResponse(escrowResponse), origin);
+  }
+
+  /* A wagered match's balances and payouts, for the lobby and scoreboard. */
+  const wagerMatch = WAGER_ROUTE.exec(url.pathname);
+  if (request.method === "GET" && wagerMatch) {
+    const view = await env.WAGERS.getByName(wagerMatch[1]!).snapshot();
+    if (view === null) throw new HttpError(404, "NOT_FOUND", "No wager for that match.");
+    return withCors(jsonResponse({ wager: view }), origin);
   }
 
   const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
