@@ -671,7 +671,7 @@
     if (elements.profilePreviewName) elements.profilePreviewName.textContent = profile.name;
     if (elements.spartanImage) {
       if (elements.spartanImage.dataset.style !== profile.style) {
-        elements.spartanImage.src = "assets/ui/spartan/" + profile.style + ".png";
+        elements.spartanImage.src = "assets/ui/spartan/" + profile.style + ".png?art=2";
         elements.spartanImage.dataset.style = profile.style;
       }
       elements.spartanImage.alt = profile.name + " in " + profile.style + " armor";
@@ -3068,7 +3068,7 @@
     showcase.dataset.style = profile.style;
     var image = lobbyElement("spartan-showcase-image");
     if (image.dataset.style !== profile.style) {
-      image.src = "assets/ui/spartan/" + profile.style + ".png";
+      image.src = "assets/ui/spartan/" + profile.style + ".png?art=2";
       image.dataset.style = profile.style;
     }
     lobbyElement("spartan-showcase-name").textContent = name || " ";
