@@ -22,14 +22,20 @@ function freshBuild(): string {
   return `lobby-test-build-${nextBuild}`;
 }
 
+let nextAddress = 0;
+
 function jsonRequest(
   path: string,
   body: unknown,
   headers: Record<string, string> = {},
 ): Request {
+  /* Each request from its own address, so the per-address room-creation
+     rate limit never trips across this suite. */
+  nextAddress += 1;
   return new Request(`${API_ORIGIN}${path}`, {
     body: JSON.stringify(body),
     headers: {
+      "CF-Connecting-IP": `198.51.100.${nextAddress % 250}`,
       "Content-Type": "application/json",
       Origin: GAME_ORIGIN,
       ...headers,
@@ -289,6 +295,35 @@ describe("public lobby", () => {
     }));
     expect(bad.status).toBe(400);
     hostSocket.close(1000, "test complete");
+  });
+
+  it("relays the host's match countdown to guests and refuses it from guests", async () => {
+    const buildId = freshBuild();
+    const room = await (await quickJoin(buildId, "5a5a5a5a5a5a")).json<QuickJoinResponse>();
+    if (room.role !== "host") throw new Error("expected host");
+    const host = await connect(room.host.session.websocketUrl);
+    const joined = await (await quickJoin(buildId, "5b5b5b5b5b5b")).json<QuickJoinResponse>();
+    if (joined.role !== "guest") throw new Error("expected guest");
+    const guest = await connect(joined.session.websocketUrl);
+    const received = new Promise<Record<string, unknown>>((resolve) => {
+      guest.addEventListener("message", (event) => {
+        const value = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (value.type === "match") resolve(value);
+      });
+    });
+    host.send(JSON.stringify({ startsIn: 12, state: "countdown", type: "match", v: 1 }));
+    expect(await received).toEqual({ startsIn: 12, state: "countdown", type: "match", v: 1 });
+
+    const refused = new Promise<Record<string, unknown>>((resolve) => {
+      guest.addEventListener("message", (event) => {
+        const value = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (value.type === "error") resolve(value);
+      });
+    });
+    guest.send(JSON.stringify({ state: "ingame", type: "match", v: 1 }));
+    expect(await refused).toMatchObject({ code: "MATCH_FORBIDDEN" });
+    guest.close(1000, "test complete");
+    host.close(1000, "test complete");
   });
 
   it("lets the host renew a room and refuses a wrong ticket", async () => {

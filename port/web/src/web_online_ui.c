@@ -131,6 +131,10 @@ static atomic_int web_online_next_game = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_match_state = ATOMIC_VAR_INIT(_web_online_match_none);
 static atomic_int web_online_player_count = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_headless = ATOMIC_VAR_INIT(0);
+/* a player is waiting to join: end the match so the next one includes them */
+static atomic_int web_online_restart_requested = ATOMIC_VAR_INIT(0);
+/* seconds until the match starts while counting down, else -1 */
+static atomic_int web_online_countdown_remaining = ATOMIC_VAR_INIT(-1);
 
 static struct
 {
@@ -258,6 +262,16 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_set_next_game(
 		WEB_ONLINE_NEXT_GAME_VALID_BIT | pack_request(0, map_index, mode_index),
 		memory_order_release);
 	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE void platform_web_online_request_restart(void)
+{
+	atomic_store_explicit(&web_online_restart_requested, 1, memory_order_release);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_get_countdown_remaining(void)
+{
+	return atomic_load_explicit(&web_online_countdown_remaining, memory_order_acquire);
 }
 
 EMSCRIPTEN_KEEPALIVE int platform_web_online_get_match_state(void)
@@ -453,6 +467,8 @@ static void fail_session(int error)
 static void publish_match(int state)
 {
 	atomic_store_explicit(&web_online_match_state, state, memory_order_release);
+	if (state != _web_online_match_countdown)
+		atomic_store_explicit(&web_online_countdown_remaining, -1, memory_order_release);
 }
 
 static void begin_request(int command, int map_index, int mode_index)
@@ -545,6 +561,7 @@ static void update_dedicated(float seconds)
 	switch (client_state)
 	{
 	case _network_client_pregame:
+		atomic_store_explicit(&web_online_restart_requested, 0, memory_order_release);
 		web_online.empty_seconds = 0.0f;
 		web_online.postgame_shown_seconds = 0.0f;
 		if (web_online.last_client_state == _network_client_postgame)
@@ -581,6 +598,11 @@ static void update_dedicated(float seconds)
 		{
 			web_online.lobby_seconds += seconds;
 			publish_match(_web_online_match_countdown);
+			{
+				float left = web_online.countdown_seconds - web_online.lobby_seconds;
+				atomic_store_explicit(&web_online_countdown_remaining,
+					left > 0.0f ? (int)(left + 0.999f) : 0, memory_order_release);
+			}
 			if (web_online.lobby_seconds >= web_online.countdown_seconds)
 			{
 				web_online.start_retry_seconds -= seconds;
@@ -605,6 +627,12 @@ static void update_dedicated(float seconds)
 		if (web_online.game_seconds >= (float)WEB_ONLINE_DEDICATED_MAXIMUM_GAME_SECONDS)
 		{
 			platform_log("web online: ending the game at its time limit");
+			network_lobby_end_game();
+			web_online.game_seconds = 0.0f;
+		}
+		else if (atomic_exchange_explicit(&web_online_restart_requested, 0, memory_order_acq_rel))
+		{
+			platform_log("web online: ending the game so a waiting player can join");
 			network_lobby_end_game();
 			web_online.game_seconds = 0.0f;
 		}

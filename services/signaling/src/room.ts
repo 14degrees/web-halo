@@ -626,6 +626,23 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
+    if (message.type === "match") {
+      if (sender.role !== "host") {
+        this.sendError(socket, "MATCH_FORBIDDEN", "Only the host reports the match.");
+        return;
+      }
+      this.broadcastToRole(
+        {
+          ...(message.startsIn === undefined ? {} : { startsIn: message.startsIn }),
+          state: message.state,
+          type: "match",
+          v: SIGNALING_PROTOCOL_VERSION,
+        },
+        "guest",
+      );
+      return;
+    }
+
     if (message.type === "profile") {
       sender.profile = message.profile;
       try {

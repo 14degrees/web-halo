@@ -118,8 +118,18 @@
     listing: null,
     listingAt: 0,
     listingBusy: false,
+    /* The connections there were when the host last restarted a match. */
+    restartPeers: 0,
+    /* What this host last told its guests about the match. */
+    sentMatch: "",
+    sentMatchAt: 0,
   };
   var LOBBY_LISTING_MILLISECONDS = 5000;
+  /* How long a connected player may wait for a running match before the
+     host restarts it to let them in. */
+  var WAITING_RESTART_MILLISECONDS = 8000;
+  /* A match runs at least this long before a newcomer may restart it. */
+  var MINIMUM_MATCH_MILLISECONDS = 60000;
 
   var elements = {};
   var humanVerification = {
@@ -1309,6 +1319,15 @@
       }
       return;
     }
+    if (message.type === "match") {
+      /* The host's match status: the lobby's countdown. */
+      session.matchInfo = {
+        state: message.state,
+        startsIn: typeof message.startsIn === "number" ? message.startsIn : null,
+        receivedAt: Date.now(),
+      };
+      return;
+    }
     if (message.type === "roster") {
       replaceRoster(message.players);
       return;
@@ -2070,6 +2089,7 @@
     session.publicLobby = false;
     session.dedicated = null;
     session.lobbyDriver = null;
+    session.matchInfo = null;
     session.matchState = MATCH_STATE.NONE;
     session.wizardStep = "map";
     syncTelemetryContext();
@@ -2419,9 +2439,13 @@
       return { text: "Opening the game…" };
     }
     if (!session.transportConnected) return { text: "Connecting to the game…" };
-    if (state === CLIENT_STATE.SEARCHING && lobby.searchingSince &&
-        Date.now() - lobby.searchingSince > 4000) {
-      return { text: "A match is in progress. You'll join the next one as soon as it ends." };
+    var info = session.matchInfo;
+    if (state === CLIENT_STATE.PREGAME && info && info.state === "countdown") {
+      return { text: "Get ready." };
+    }
+    if (state === CLIENT_STATE.SEARCHING && ((info && info.state === "ingame") ||
+        (lobby.searchingSince && Date.now() - lobby.searchingSince > 4000))) {
+      return { text: "A match is in progress. The server is wrapping it up so you can join…" };
     }
     if (state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) return { text: "Joining the match…" };
     if (state === CLIENT_STATE.PREGAME) return { text: "In the lobby. The match starts automatically." };
@@ -2544,7 +2568,80 @@
     return document.pointerLockElement === byId("canvas");
   }
 
+  /* The host's side: a guest connected over WebRTC but not in the match is
+     waiting for it to end. Restart it so they are in the next one. */
+  function restartForWaitingPlayers() {
+    if (!session.active || session.role !== "host" || !session.publicLobby) return;
+    if (!(session.dedicated || session.lobbyDriver)) return;
+    var players;
+    try { players = global.Module._platform_web_online_get_player_count(); } catch (error) { return; }
+    var peers = session.connectedPeerCount;
+    var waiting = peers - Math.max(0, players - 1);
+    /* Connections that stayed out of the last restarted match are not trying
+       to join (an old tab, a stuck client); only a new arrival counts. */
+    if (peers < lobby.restartPeers) lobby.restartPeers = peers;
+    var match = hostMatchState();
+    if (match !== MATCH_STATE.INGAME) {
+      lobby.waitingSince = 0;
+      lobby.matchSince = 0;
+      return;
+    }
+    if (!lobby.matchSince) lobby.matchSince = Date.now();
+    if (waiting <= 0 || peers <= lobby.restartPeers) {
+      lobby.waitingSince = 0;
+      return;
+    }
+    if (!lobby.waitingSince) lobby.waitingSince = Date.now();
+    if (Date.now() - lobby.waitingSince >= WAITING_RESTART_MILLISECONDS &&
+        Date.now() - lobby.matchSince >= MINIMUM_MATCH_MILLISECONDS) {
+      lobby.waitingSince = 0;
+      lobby.restartPeers = peers;
+      try { global.Module._platform_web_online_request_restart(); } catch (error) { /* older build */ }
+    }
+  }
+
+  var MATCH_STATE_WIRE = Object.freeze({ 1: "lobby", 2: "countdown", 3: "ingame", 4: "postgame" });
+
+  /* The host tells its guests where the match is: on a change, and every few
+     seconds so a newcomer learns it promptly. */
+  function broadcastMatch() {
+    if (!session.active || session.role !== "host" || !(session.dedicated || session.lobbyDriver)) return;
+    var state = MATCH_STATE_WIRE[hostMatchState()];
+    if (!state) return;
+    var startsIn = null;
+    if (state === "countdown") {
+      try { startsIn = global.Module._platform_web_online_get_countdown_remaining(); } catch (error) { startsIn = null; }
+      if (startsIn < 0) startsIn = null;
+    }
+    var key = state + ":" + startsIn;
+    if (key === lobby.sentMatch && Date.now() - lobby.sentMatchAt < 3000) return;
+    lobby.sentMatch = key;
+    lobby.sentMatchAt = Date.now();
+    var message = { v: PROTOCOL_VERSION, type: "match", state: state };
+    if (startsIn !== null) message.startsIn = startsIn;
+    try { sendSocket(message); } catch (error) { /* The next tick retries. */ }
+  }
+
+  /* Seconds until the match starts, as this browser knows it, or null. */
+  function countdownSeconds() {
+    if (!session.active) return null;
+    if (session.role === "host") {
+      if (hostMatchState() !== MATCH_STATE.COUNTDOWN) return null;
+      try {
+        var left = global.Module._platform_web_online_get_countdown_remaining();
+        return left >= 0 ? left : null;
+      } catch (error) {
+        return null;
+      }
+    }
+    var info = session.matchInfo;
+    if (!info || info.state !== "countdown" || info.startsIn === null) return null;
+    return Math.max(0, Math.ceil(info.startsIn - (Date.now() - info.receivedAt) / 1000));
+  }
+
   function tickLobby() {
+    restartForWaitingPlayers();
+    broadcastMatch();
     var state = clientState();
     if (session.active && session.transportConnected && state === CLIENT_STATE.SEARCHING) {
       if (!lobby.searchingSince) lobby.searchingSince = Date.now();
@@ -2601,6 +2698,13 @@
     setLobbyVisible(true);
     if (!session.active) refreshListing();
 
+    var countdown = lobbyElement("lobby-countdown");
+    var seconds = countdownSeconds();
+    if (countdown) {
+      countdown.hidden = seconds === null;
+      var number = lobbyElement("lobby-countdown-seconds");
+      if (seconds !== null && number && number.textContent !== String(seconds)) number.textContent = String(seconds);
+    }
     var status = lobbyStatus(state);
     var statusElement = lobbyElement("lobby-status");
     if (statusElement && statusElement.textContent !== status.text) statusElement.textContent = status.text;

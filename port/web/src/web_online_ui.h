@@ -136,6 +136,11 @@ int platform_web_online_host_dedicated(
 	int postgame_seconds);
 /* The next game's map and mode: applied when the lobby is next open. */
 int platform_web_online_set_next_game(int map_index, int mode_index);
+/* A player is waiting to join: end the running match so the next one
+includes them (system link admits nobody mid-match). */
+void platform_web_online_request_restart(void);
+/* Seconds until the match starts while counting down, else -1. */
+int platform_web_online_get_countdown_remaining(void);
 int platform_web_online_get_match_state(void);
 /* The players in the network game, the host's own among them. */
 int platform_web_online_get_player_count(void);

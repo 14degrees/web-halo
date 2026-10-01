@@ -515,6 +515,9 @@
     .lobby-map { position: relative; overflow: hidden; border: 1px solid rgba(101, 194, 255, .35); border-radius: .35rem; aspect-ratio: 16 / 9; background: #0b1a2c; }
     .lobby-map img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .lobby-map figcaption { position: absolute; left: 0; right: 0; bottom: 0; padding: .45rem .7rem; background: linear-gradient(transparent, rgba(0,0,0,.75)); font-size: .95rem; letter-spacing: .05em; }
+    #lobby-countdown { display: flex; align-items: baseline; gap: .8rem; margin: 0; text-transform: uppercase; letter-spacing: .12em; color: #9fd4ff; }
+    #lobby-countdown[hidden] { display: none; }
+    #lobby-countdown strong { font-size: clamp(2.6rem, 6vw, 4.2rem); line-height: 1; color: #fff; letter-spacing: 0; text-shadow: 0 0 1.5rem rgba(60, 170, 255, .6); }
     #lobby-status { min-height: 2.6em; margin: 0; font-size: 1.05rem; color: #9fd4ff; letter-spacing: .03em; }
     #lobby-status[data-tone="error"] { color: #ffb3a8; }
     #lobby-play {
@@ -1581,6 +1584,7 @@
         <img id="lobby-map-image" src="assets/ui/maps/blood-gulch.png" alt="">
         <figcaption id="lobby-map-caption">Slayer on Blood Gulch</figcaption>
       </figure>
+      <p id="lobby-countdown" aria-live="off" hidden><span>Match starts in</span><strong id="lobby-countdown-seconds">10</strong></p>
       <p id="lobby-status" role="status" aria-live="polite">Loading Halo…</p>
       <button id="lobby-play" type="button">Play</button>
       <div class="lobby-links">

@@ -43,6 +43,9 @@ export interface PlayerProfile {
 
 export type PeerRole = "host" | "guest";
 
+export const MATCH_STATES = ["lobby", "countdown", "ingame", "postgame"] as const;
+export type MatchState = (typeof MATCH_STATES)[number];
+
 /* A private room is reachable only through its invite capability. A public
    room is additionally listed in the lobby directory, and anyone on the same
    build may join it through quick join or a ticket-less session request. */
@@ -173,6 +176,14 @@ export type ClientMessage =
   | {
       profile: PlayerProfile;
       type: "profile";
+      v: typeof SIGNALING_PROTOCOL_VERSION;
+    }
+  | {
+      /* The host's match status, relayed to its guests (the lobby's
+         countdown). startsIn is set while counting down. */
+      startsIn?: number;
+      state: MatchState;
+      type: "match";
       v: typeof SIGNALING_PROTOCOL_VERSION;
     }
   | {
@@ -492,6 +503,28 @@ export function parseClientMessage(value: unknown): ValidationResult<ClientMessa
       value: {
         ...(value.nonce === undefined ? {} : { nonce: value.nonce }),
         type: "ping",
+        v: SIGNALING_PROTOCOL_VERSION,
+      },
+    };
+  }
+
+  if (value.type === "match") {
+    if (typeof value.state !== "string" || !(MATCH_STATES as readonly string[]).includes(value.state)) {
+      return { ok: false, message: "Match state is invalid." };
+    }
+    if (
+      value.startsIn !== undefined &&
+      (typeof value.startsIn !== "number" || !Number.isInteger(value.startsIn) ||
+        value.startsIn < 0 || value.startsIn > 255)
+    ) {
+      return { ok: false, message: "startsIn must be an integer from 0 to 255." };
+    }
+    return {
+      ok: true,
+      value: {
+        ...(value.startsIn === undefined ? {} : { startsIn: value.startsIn }),
+        state: value.state as MatchState,
+        type: "match",
         v: SIGNALING_PROTOCOL_VERSION,
       },
     };
