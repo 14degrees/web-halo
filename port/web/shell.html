@@ -566,21 +566,26 @@
     /* The wallet: top right of the lobby, and a modal before an unwagered Play. */
     #lobby-wallet { position: absolute; top: clamp(.9rem, 3vh, 1.6rem); right: clamp(.9rem, 3vw, 2rem); z-index: 2; display: grid; justify-items: end; gap: .4rem; max-width: min(22rem, 90vw); }
     #lobby-wallet-out[hidden], #lobby-wallet-in[hidden], #lobby-wallet-menu[hidden] { display: none; }
-    #lobby-wallet-in { display: grid; justify-items: end; gap: .4rem; }
+    #lobby-wallet-in {
+      display: grid; gap: .55rem; width: min(19rem, 88vw); padding: .85rem 1rem;
+      border: 1px solid rgba(255, 210, 90, .45); border-radius: .5rem; background: rgba(10, 8, 2, .82);
+    }
     #lobby-wallet-connect, #wallet-gate-connect {
       padding: .65rem 1.2rem; border: 1px solid #ffd65a; border-radius: .3rem;
       background: linear-gradient(180deg, rgba(255, 214, 90, .28), rgba(160, 110, 10, .35)); color: #fff4cf;
       font: 700 1rem/1 inherit; letter-spacing: .08em; text-transform: uppercase; cursor: pointer;
     }
-    #lobby-wallet-chip {
-      display: flex; align-items: center; gap: .7rem; padding: .5rem .9rem; border: 1px solid rgba(255, 210, 90, .55);
-      border-radius: 2rem; background: rgba(10, 8, 2, .7); color: #ffe7a3; font: inherit; cursor: pointer;
-    }
-    #lobby-wallet-name { font-family: ui-monospace, Menlo, monospace; font-size: .9rem; }
-    #lobby-wallet-balance { font-size: 1.05rem; color: #ffd65a; }
-    #lobby-wallet-menu { display: grid; gap: .35rem; min-width: 12rem; padding: .6rem; border: 1px solid rgba(255, 210, 90, .35); border-radius: .4rem; background: rgba(10, 8, 2, .92); }
-    #lobby-wallet-menu button { padding: .45rem .7rem; border: 1px solid rgba(255, 210, 90, .4); border-radius: .25rem; background: rgba(255, 200, 60, .1); color: #ffe7a3; font: inherit; font-size: .9rem; text-align: left; cursor: pointer; }
-    #lobby-wallet-menu button:disabled { opacity: .45; cursor: default; }
+    .lobby-wallet-head { display: flex; align-items: center; justify-content: space-between; }
+    #lobby-wallet-name { font-family: ui-monospace, Menlo, monospace; font-size: .95rem; color: #ffe7a3; }
+    #lobby-wallet-signout { padding: 0; border: 0; background: none; color: #c8b27a; font: inherit; font-size: .8rem; text-decoration: underline; cursor: pointer; }
+    .lobby-wallet-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; color: #e8d7a4; }
+    .lobby-wallet-row span { display: grid; font-size: .85rem; letter-spacing: .05em; text-transform: uppercase; }
+    .lobby-wallet-row small { font-size: .72rem; letter-spacing: 0; text-transform: none; color: #a8956a; }
+    .lobby-wallet-row strong { font-size: 1.05rem; color: #f2e3b5; white-space: nowrap; }
+    .lobby-wallet-game strong { font-size: 1.5rem; color: #ffd65a; }
+    .lobby-wallet-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .35rem; }
+    .lobby-wallet-actions button { padding: .45rem .3rem; border: 1px solid rgba(255, 210, 90, .45); border-radius: .25rem; background: rgba(255, 200, 60, .1); color: #ffe7a3; font: inherit; font-size: .85rem; cursor: pointer; }
+    .lobby-wallet-actions button:disabled { opacity: .4; cursor: default; }
     .lobby-wallet-hint { font-size: .75rem; color: #c8b27a; }
     #lobby-wallet-status, #wallet-gate-status { min-height: 1.2em; margin: 0; font-size: .85rem; color: #e8d7a4; text-align: right; }
     #lobby-wallet-status[data-tone="error"], #wallet-gate-status[data-tone="error"] { color: #ffb3a8; }
@@ -1668,15 +1673,22 @@
         <button id="lobby-wallet-connect" type="button">Connect wallet</button>
       </div>
       <div id="lobby-wallet-in" hidden>
-        <button id="lobby-wallet-chip" type="button" aria-expanded="false" aria-controls="lobby-wallet-menu">
-          <span id="lobby-wallet-name"></span><strong id="lobby-wallet-balance">0.00 SOL</strong>
-        </button>
-        <div id="lobby-wallet-menu" hidden>
-          <button id="lobby-wallet-faucet" type="button">Get 1 test SOL</button>
-          <button id="lobby-wallet-deposit" type="button">Deposit 0.5 SOL</button>
-          <button id="lobby-wallet-withdraw" type="button">Withdraw all</button>
+        <div class="lobby-wallet-head">
+          <span id="lobby-wallet-name"></span>
           <button id="lobby-wallet-signout" type="button">Sign out</button>
-          <span class="lobby-wallet-hint">Solana devnet · 0.1 SOL a kill</span>
+        </div>
+        <div class="lobby-wallet-row lobby-wallet-game">
+          <span>Game balance<small>what you play with</small></span>
+          <strong id="lobby-wallet-balance">0.00 SOL</strong>
+        </div>
+        <div class="lobby-wallet-row">
+          <span>Wallet<small>devnet SOL in your wallet</small></span>
+          <strong id="lobby-wallet-onchain">…</strong>
+        </div>
+        <div class="lobby-wallet-actions">
+          <button id="lobby-wallet-faucet" type="button">+1 test SOL</button>
+          <button id="lobby-wallet-deposit" type="button">Deposit 0.5</button>
+          <button id="lobby-wallet-withdraw" type="button">Withdraw</button>
         </div>
       </div>
       <p id="lobby-wallet-status" role="status" aria-live="polite"></p>

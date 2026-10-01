@@ -2809,6 +2809,7 @@
     token: null,
     name: null,
     lamports: 0,
+    onchainLamports: null,
     enabled: false,
     busy: false,
     status: "",
@@ -2911,6 +2912,9 @@
     wallet.name = summary.name || wallet.name;
     wallet.enabled = summary.wagersEnabled === true;
     if (typeof summary.lamports === "number") wallet.lamports = summary.lamports;
+    if (summary.onchainLamports === null || typeof summary.onchainLamports === "number") {
+      wallet.onchainLamports = summary.onchainLamports;
+    }
     if (wallet.name) {
       /* A wallet plays under its own short name. */
       var profile = currentProfile();
@@ -2929,6 +2933,15 @@
       }
     } catch (error) {
       /* Sign-in lasts the visit. */
+    }
+  }
+
+  async function refreshWallet() {
+    if (!wallet.token || wallet.busy) return;
+    try {
+      applyWalletSummary(await fetchJson("/v1/wallet", { method: "GET", headers: walletHeaders() }));
+    } catch (error) {
+      /* The next refresh tries again. */
     }
   }
 
@@ -3083,13 +3096,28 @@
     var balance = formatSol(wallet.lamports) + " SOL";
     var balanceElement = lobbyElement("lobby-wallet-balance");
     if (balanceElement && balanceElement.textContent !== balance) balanceElement.textContent = balance;
-    ["lobby-wallet-connect", "lobby-wallet-faucet", "lobby-wallet-deposit", "lobby-wallet-withdraw"].forEach(function(id) {
+    var onchain = lobbyElement("lobby-wallet-onchain");
+    var onchainText = wallet.onchainLamports === null ? "unknown" : formatSol(wallet.onchainLamports) + " SOL";
+    if (onchain && onchain.textContent !== onchainText) onchain.textContent = onchainText;
+    /* Deposit needs devnet SOL in the wallet (and a little for the fee);
+       withdraw needs something in the game balance. */
+    var canDeposit = wallet.enabled && wallet.onchainLamports !== null &&
+      wallet.onchainLamports >= DEPOSIT_LAMPORTS + 10000;
+    var states = {
+      "lobby-wallet-connect": false,
+      "lobby-wallet-faucet": false,
+      "lobby-wallet-deposit": !canDeposit,
+      "lobby-wallet-withdraw": !wallet.enabled || wallet.lamports <= 5000,
+    };
+    Object.keys(states).forEach(function(id) {
       var button = lobbyElement(id);
-      if (button) {
-        button.disabled = wallet.busy ||
-          ((id === "lobby-wallet-deposit" || id === "lobby-wallet-withdraw") && !wallet.enabled);
-      }
+      if (button) button.disabled = wallet.busy || states[id];
     });
+    var deposit = lobbyElement("lobby-wallet-deposit");
+    if (deposit) {
+      deposit.title = canDeposit ? "Move 0.5 devnet SOL from your wallet into your game balance" :
+        "Your wallet needs at least 0.5 devnet SOL (faucet.solana.com); use +1 test SOL instead";
+    }
     var gate = lobbyElement("wallet-gate");
     var gateOpen = gate && !gate.hidden;
     ["lobby-wallet-status", "wallet-gate-status"].forEach(function(id) {
@@ -3287,6 +3315,9 @@
     });
     discoverWallets();
     restoreWallet();
+    global.setInterval(function() {
+      if (document.body.dataset.lobby === "open") refreshWallet();
+    }, 15000);
     lobbyElement("lobby-wallet-connect").addEventListener("click", function() { signInWithWallet(); });
     var startPlay = function() {
       lobbyElement("wallet-gate").hidden = true;
@@ -3305,11 +3336,6 @@
     });
     lobbyElement("wallet-gate-close").addEventListener("click", function() {
       lobbyElement("wallet-gate").hidden = true;
-    });
-    lobbyElement("lobby-wallet-chip").addEventListener("click", function() {
-      var menu = lobbyElement("lobby-wallet-menu");
-      menu.hidden = !menu.hidden;
-      lobbyElement("lobby-wallet-chip").setAttribute("aria-expanded", menu.hidden ? "false" : "true");
     });
     lobbyElement("lobby-wallet-faucet").addEventListener("click", function() { claimTestSol(); });
     lobbyElement("lobby-wallet-deposit").addEventListener("click", function() { depositToHouse(); });

@@ -94,10 +94,19 @@ async function requireWallet(request: Request, env: RuntimeEnv): Promise<string>
 
 async function walletSummary(env: RuntimeEnv, wallet: string): Promise<Record<string, unknown>> {
   const house = wagersEnabled(env) ? (await keypairFromSecret(env.HOUSE_SECRET_KEY ?? "")).address : null;
+  /* The wallet's own SOL on chain, beside its game balance; null when the
+     network cannot be reached. */
+  let onchainLamports: number | null = null;
+  try {
+    onchainLamports = await rpc(env).balance(wallet);
+  } catch {
+    onchainLamports = null;
+  }
   return {
     cluster: cluster(env),
     house,
     lamports: await bank(env).balance(wallet),
+    onchainLamports,
     name: walletPlayerName(wallet),
     wager: wagerLamports(env),
     wagersEnabled: wagersEnabled(env),
