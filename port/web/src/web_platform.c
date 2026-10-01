@@ -90,6 +90,7 @@ void platform_web_initialize(void)
 	backend_t root = wasmfs_get_backend_by_path("/");
 	backend_t maps;
 	backend_t storage;
+	char *maps_url;
 	unsigned long index;
 
 	/* FetchFS performs HTTP range requests, so opening a map does not first
@@ -105,10 +106,15 @@ void platform_web_initialize(void)
 	 * 32 MiB, so it remains entirely in chunk zero even when a CDN does not
 	 * advertise ranges. Campaign maps are over 64 MiB and stay on the ranged
 	 * path when served by the local range-capable development server. */
-	/* Keep the fetch URL relative to the page so the same build can be hosted
-	 * at the origin root or beneath a path such as /halo/. The virtual mount
-	 * remains /assets/maps inside Halo. */
-	maps = wasmfs_create_fetch_backend("assets/maps", 32 * 1024 * 1024);
+	/* FetchFS resolves relative URLs against location.origin, which discards a
+	 * hosting prefix such as /halo/. Resolve the map directory from the loaded
+	 * script instead; scriptDirectory is correct in both the window and the
+	 * pthread worker that initializes this backend. */
+	maps_url = (char *)EM_ASM_PTR({
+		return stringToNewUTF8(new URL("assets/maps", scriptDirectory).href);
+	});
+	maps = wasmfs_create_fetch_backend(maps_url, 32 * 1024 * 1024);
+	free(maps_url);
 	if (wasmfs_create_directory("/assets/maps", 0555, maps) != 0 && errno != EEXIST)
 		platform_log("web: cannot mount the maps backend");
 	for (index = 0; index < sizeof(map_files) / sizeof(map_files[0]); index++)
