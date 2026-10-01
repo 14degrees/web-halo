@@ -27,6 +27,9 @@ export const MATCHMAKER_NAME = "main";
    more than the minimum before it forms */
 export const PLAYLISTS = {
   ffa: { label: "Free-for-all", minimum: 2, maximum: 8, fillMs: 10_000, rotation: [[5, 0]] },
+  /* Halo puts joining players on red and blue in turn, and each match has
+     a fresh server, so four players make two teams of two */
+  team: { label: "2v2 Team Slayer", minimum: 2, maximum: 4, fillMs: 10_000, rotation: [[0, 1]] },
   duel: { label: "1v1", minimum: 2, maximum: 2, fillMs: 0, rotation: [[4, 0], [6, 0], [10, 0]] },
 } as const satisfies Record<string, {
   label: string; minimum: number; maximum: number; fillMs: number; rotation: ReadonlyArray<readonly [number, number]>;

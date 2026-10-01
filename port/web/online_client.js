@@ -2414,10 +2414,12 @@
      open. Matches are accepted automatically. */
 
   var QUEUE_POLL_MILLISECONDS = 1000;
+  /* what Play queues for (services/signaling/src/matchmaker.ts, PLAYLISTS) */
+  var DEFAULT_PLAYLIST = "team";
 
   async function enqueueForMatch() {
     if (lobby.queue) return;
-    var queue = { id: null, state: "joining", queued: 0, playlist: lobby.playlist || "ffa", polledAt: 0 };
+    var queue = { id: null, state: "joining", queued: 0, playlist: lobby.playlist || DEFAULT_PLAYLIST, polledAt: 0 };
     lobby.queue = queue;
     try {
       var request = {
@@ -2484,7 +2486,7 @@
     }
   }
 
-  var PLAYLIST_LABELS = { ffa: "Free-for-all", duel: "1v1" };
+  var PLAYLIST_LABELS = { ffa: "Free-for-all", team: "2v2 Team Slayer", duel: "1v1" };
 
   function queueStatus() {
     var queue = lobby.queue;
