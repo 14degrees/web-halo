@@ -67,6 +67,8 @@ export interface CreateRoomInput {
   protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
   turnstileToken?: string;
   visibility?: RoomVisibility;
+  /* A wallet sign-in session (POST /v1/auth/verify): the player wagers. */
+  walletToken?: string;
 }
 
 export interface CreateSessionInput {
@@ -76,6 +78,7 @@ export interface CreateSessionInput {
   /* Absent for a guest of a public room. */
   ticket?: string;
   turnstileToken?: string;
+  walletToken?: string;
 }
 
 export interface QuickJoinInput {
@@ -83,6 +86,7 @@ export interface QuickJoinInput {
   identifier: string;
   protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
   turnstileToken?: string;
+  walletToken?: string;
 }
 
 export interface SessionDescriptor {
@@ -179,6 +183,14 @@ export type ClientMessage =
       v: typeof SIGNALING_PROTOCOL_VERSION;
     }
   | {
+      /* A dedicated host's report of a kill, by the players' names; the room
+         moves the wager between their wallets. */
+      killer: string;
+      type: "kill";
+      v: typeof SIGNALING_PROTOCOL_VERSION;
+      victim: string;
+    }
+  | {
       /* A guest trying to join a running match, relayed to the host, which
          wraps the match up so the next one includes them. */
       type: "waiting";
@@ -255,6 +267,11 @@ function isBuildId(value: unknown): value is string {
 function turnstileToken(value: unknown): string | undefined | null {
   if (value === undefined) return undefined;
   return typeof value === "string" && value.length > 0 && value.length <= 2_048 ? value : null;
+}
+
+/* An unrecognised token is simply no wallet: the player plays unwagered. */
+function walletTokenField(value: unknown): { walletToken?: string } {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value) ? { walletToken: value } : {};
 }
 
 function isLobbyIndex(value: unknown, count: number): value is number {
@@ -336,6 +353,7 @@ export function parseCreateRoomInput(
       protocolVersion: value.protocolVersion,
       ...(verifiedToken === undefined ? {} : { turnstileToken: verifiedToken }),
       ...(value.visibility === undefined ? {} : { visibility: value.visibility }),
+      ...walletTokenField(value.walletToken),
     },
   };
 }
@@ -373,6 +391,7 @@ export function parseQuickJoinInput(
       identifier: value.identifier,
       protocolVersion: value.protocolVersion,
       ...(verifiedToken === undefined ? {} : { turnstileToken: verifiedToken }),
+      ...walletTokenField(value.walletToken),
     },
   };
 }
@@ -420,6 +439,7 @@ export function parseCreateSessionInput(
       protocolVersion: value.protocolVersion,
       ...(value.ticket === undefined ? {} : { ticket: value.ticket }),
       ...(verifiedToken === undefined ? {} : { turnstileToken: verifiedToken }),
+      ...walletTokenField(value.walletToken),
     },
   };
 }
@@ -511,6 +531,16 @@ export function parseClientMessage(value: unknown): ValidationResult<ClientMessa
         type: "ping",
         v: SIGNALING_PROTOCOL_VERSION,
       },
+    };
+  }
+
+  if (value.type === "kill") {
+    const killer = parsePlayerProfile({ name: value.killer, style: "sage" });
+    const victim = parsePlayerProfile({ name: value.victim, style: "sage" });
+    if (!killer.ok || !victim.ok) return { ok: false, message: "Kill names are invalid." };
+    return {
+      ok: true,
+      value: { killer: killer.value.name, type: "kill", v: SIGNALING_PROTOCOL_VERSION, victim: victim.value.name },
     };
   }
 

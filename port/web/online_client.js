@@ -1322,6 +1322,16 @@
       }
       return;
     }
+    if (message.type === "reward") {
+      var myName = session.profile && session.profile.name;
+      if (myName && message.killer === myName && typeof message.killerLamports === "number") {
+        wallet.lamports = message.killerLamports;
+      }
+      if (myName && message.victim === myName && typeof message.victimLamports === "number") {
+        wallet.lamports = message.victimLamports;
+      }
+      return;
+    }
     if (message.type === "waiting") {
       if (session.role === "host" && typeof message.from === "string") lobby.waitingPeers.set(message.from, Date.now());
       return;
@@ -1514,6 +1524,7 @@
     };
     /* A public room's guests hold no ticket. */
     if (ticket) body.ticket = ticket;
+    if (wallet.token) body.walletToken = wallet.token;
     if (turnstileToken) body.turnstileToken = turnstileToken;
     return fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id) + "/sessions", {
       method: "POST",
@@ -1909,6 +1920,7 @@
         identifier: localIdentifier(),
       };
       if (turnstileToken) request.turnstileToken = turnstileToken;
+      if (wallet.token) request.walletToken = wallet.token;
       var result = await fetchJson("/v1/quickjoin", {
         method: "POST",
         body: JSON.stringify(request),
@@ -2657,6 +2669,7 @@
   function tickLobby() {
     restartForWaitingPlayers();
     broadcastMatch();
+    reportHostKills();
     var state = clientState();
     announceWaiting(state);
     if (session.active && session.transportConnected && state === CLIENT_STATE.SEARCHING) {
@@ -2693,6 +2706,7 @@
       if (prompt) prompt.hidden = true;
       return;
     }
+    renderWallet(inMatch);
     if (inMatch) {
       setLobbyVisible(false);
       /* Whenever the mouse is free during a match, one click takes it back. */
@@ -2770,6 +2784,338 @@
       sendSocket({ v: PROTOCOL_VERSION, type: "profile", profile: session.profile });
     } catch (error) {
       /* The next connection sends it. */
+    }
+  }
+
+
+  /* ---------- Wallets (the wager experiment, Solana devnet)
+
+     Sign-in with a Solana wallet through the Wallet Standard (Phantom,
+     Solflare, Backpack, ...). The room service checks the signature, holds
+     the balance, and moves the wager between wallets on each kill a
+     dedicated server reports. A wallet player plays under the wallet's
+     short name. */
+
+  var WALLET_STORAGE_KEY = "halo.web.wallet.v1";
+  var WALLET_CHAIN = "solana:devnet";
+  var DEPOSIT_LAMPORTS = 500000000;
+  var LAMPORTS_PER_SOL = 1000000000;
+  var BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  var wallet = {
+    standard: [],
+    provider: null,
+    account: null,
+    address: null,
+    token: null,
+    name: null,
+    lamports: 0,
+    enabled: false,
+    busy: false,
+    status: "",
+    tone: null,
+  };
+
+  function base58(bytes) {
+    var zeros = 0;
+    while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
+    var digits = [];
+    for (var index = zeros; index < bytes.length; index++) {
+      var carry = bytes[index];
+      for (var digit = 0; digit < digits.length; digit++) {
+        carry += digits[digit] << 8;
+        digits[digit] = carry % 58;
+        carry = (carry / 58) | 0;
+      }
+      while (carry > 0) {
+        digits.push(carry % 58);
+        carry = (carry / 58) | 0;
+      }
+    }
+    var text = "";
+    for (var zero = 0; zero < zeros; zero++) text += "1";
+    for (var position = digits.length - 1; position >= 0; position--) text += BASE58_ALPHABET[digits[position]];
+    return text;
+  }
+
+  function fromBase64(text) {
+    var binary = global.atob(text);
+    var bytes = new Uint8Array(binary.length);
+    for (var index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+
+  function formatSol(lamports) {
+    return (lamports / LAMPORTS_PER_SOL).toFixed(2);
+  }
+
+  function walletHeaders() {
+    var headers = { "Content-Type": "application/json" };
+    if (wallet.token) headers.Authorization = "Bearer " + wallet.token;
+    return headers;
+  }
+
+  function setWalletStatus(text, tone) {
+    wallet.status = text || "";
+    wallet.tone = tone || null;
+  }
+
+  /* The Wallet Standard: wallets announce themselves to the page. */
+  function registerStandardWallets() {
+    var wallets = Array.prototype.slice.call(arguments);
+    wallets.forEach(function(candidate) {
+      var features = candidate && candidate.features;
+      if (!features || !features["standard:connect"] || !features["solana:signMessage"] ||
+          !features["solana:signAndSendTransaction"]) return;
+      if (wallet.standard.indexOf(candidate) < 0) wallet.standard.push(candidate);
+    });
+    return function() {};
+  }
+
+  function discoverWallets() {
+    if (typeof global.addEventListener !== "function" || typeof global.CustomEvent !== "function") return;
+    var api = { register: registerStandardWallets };
+    global.addEventListener("wallet-standard:register-wallet", function(event) {
+      try { event.detail(api); } catch (error) { /* a broken wallet is skipped */ }
+    });
+    try {
+      global.dispatchEvent(new global.CustomEvent("wallet-standard:app-ready", { detail: api }));
+    } catch (error) {
+      /* No wallets. */
+    }
+  }
+
+  function preferredWallet() {
+    var named = function(name) {
+      return wallet.standard.find(function(candidate) { return /phantom/i.test(candidate.name); });
+    };
+    return named() || wallet.standard[0] || null;
+  }
+
+  async function connectProvider(silent) {
+    var provider = wallet.provider || preferredWallet();
+    if (!provider) return null;
+    var result = await provider.features["standard:connect"].connect(silent ? { silent: true } : undefined);
+    var accounts = (result && result.accounts) || provider.accounts || [];
+    var account = wallet.address ?
+      accounts.find(function(candidate) { return candidate.address === wallet.address; }) || accounts[0] :
+      accounts[0];
+    if (!account) return null;
+    wallet.provider = provider;
+    wallet.account = account;
+    return account;
+  }
+
+  function applyWalletSummary(summary) {
+    if (!summary) return;
+    wallet.address = summary.wallet || wallet.address;
+    wallet.name = summary.name || wallet.name;
+    wallet.enabled = summary.wagersEnabled === true;
+    if (typeof summary.lamports === "number") wallet.lamports = summary.lamports;
+    if (wallet.name) {
+      /* A wallet plays under its own short name. */
+      var profile = currentProfile();
+      if (profile.name !== wallet.name) {
+        try { savePlayerProfile({ name: wallet.name, style: profile.style }); } catch (error) { /* keep */ }
+      }
+    }
+  }
+
+  function saveWallet() {
+    try {
+      if (wallet.token) {
+        global.localStorage.setItem(WALLET_STORAGE_KEY, JSON.stringify({ token: wallet.token, address: wallet.address }));
+      } else {
+        global.localStorage.removeItem(WALLET_STORAGE_KEY);
+      }
+    } catch (error) {
+      /* Sign-in lasts the visit. */
+    }
+  }
+
+  async function restoreWallet() {
+    var saved = null;
+    try { saved = JSON.parse(global.localStorage.getItem(WALLET_STORAGE_KEY)); } catch (error) { saved = null; }
+    if (!saved || typeof saved.token !== "string") return;
+    wallet.token = saved.token;
+    wallet.address = saved.address || null;
+    try {
+      applyWalletSummary(await fetchJson("/v1/wallet", { method: "GET", headers: walletHeaders() }));
+    } catch (error) {
+      wallet.token = null;
+      wallet.address = null;
+      saveWallet();
+    }
+  }
+
+  async function signInWithWallet() {
+    if (wallet.busy) return;
+    if (!preferredWallet()) {
+      setWalletStatus("No Solana wallet found. Install Phantom, switch it to devnet, then reload.", "error");
+      return;
+    }
+    wallet.busy = true;
+    setWalletStatus("Approve the connection in your wallet…");
+    try {
+      var account = await connectProvider(false);
+      if (!account) throw new Error("The wallet shared no account.");
+      wallet.address = account.address;
+      var challenge = await fetchJson("/v1/auth/challenge", {
+        method: "POST",
+        body: JSON.stringify({ wallet: account.address }),
+      });
+      setWalletStatus("Sign the message in your wallet to sign in…");
+      var signed = await wallet.provider.features["solana:signMessage"].signMessage({
+        account: account,
+        message: new TextEncoder().encode(challenge.message),
+      });
+      var output = Array.isArray(signed) ? signed[0] : signed;
+      var result = await fetchJson("/v1/auth/verify", {
+        method: "POST",
+        body: JSON.stringify({ wallet: account.address, nonce: challenge.nonce, signature: base58(output.signature) }),
+      });
+      wallet.token = result.token;
+      applyWalletSummary(result);
+      saveWallet();
+      setWalletStatus(wallet.enabled ? "Signed in. Deposit devnet SOL to start wagering." : "Signed in.");
+    } catch (error) {
+      setWalletStatus((error && error.message) || "Wallet sign-in failed.", "error");
+    } finally {
+      wallet.busy = false;
+    }
+  }
+
+  function signOutWallet() {
+    wallet.token = null;
+    wallet.address = null;
+    wallet.account = null;
+    wallet.name = null;
+    wallet.lamports = 0;
+    saveWallet();
+    setWalletStatus("Signed out.");
+  }
+
+  async function depositToHouse() {
+    if (wallet.busy || !wallet.token) return;
+    wallet.busy = true;
+    try {
+      setWalletStatus("Approve the 0.5 SOL deposit in your wallet…");
+      var account = wallet.account || await connectProvider(true) || await connectProvider(false);
+      if (!account) throw new Error("Reconnect your wallet.");
+      var prepared = await fetchJson("/v1/wallet/deposit-transaction", {
+        method: "POST",
+        headers: walletHeaders(),
+        body: JSON.stringify({ lamports: DEPOSIT_LAMPORTS }),
+      });
+      var sent = await wallet.provider.features["solana:signAndSendTransaction"].signAndSendTransaction({
+        account: account,
+        chain: WALLET_CHAIN,
+        transaction: fromBase64(prepared.transaction),
+      });
+      var output = Array.isArray(sent) ? sent[0] : sent;
+      var signature = base58(output.signature);
+      setWalletStatus("Deposit sent. Waiting for devnet to confirm…");
+      for (var attempt = 0; attempt < 30; attempt++) {
+        await new Promise(function(resolve) { global.setTimeout(resolve, 2000); });
+        try {
+          applyWalletSummary(await fetchJson("/v1/wallet/deposit", {
+            method: "POST",
+            headers: walletHeaders(),
+            body: JSON.stringify({ signature: signature }),
+          }));
+          setWalletStatus("Deposit confirmed.");
+          return;
+        } catch (error) {
+          if (!error || error.haloCode !== "DEPOSIT_NOT_CONFIRMED") throw error;
+        }
+      }
+      throw new Error("The deposit is taking long to confirm; it will count once it does.");
+    } catch (error) {
+      setWalletStatus((error && error.message) || "The deposit failed.", "error");
+    } finally {
+      wallet.busy = false;
+    }
+  }
+
+  async function withdrawFromHouse() {
+    if (wallet.busy || !wallet.token) return;
+    wallet.busy = true;
+    setWalletStatus("Sending your balance to your wallet…");
+    try {
+      var result = await fetchJson("/v1/wallet/withdraw", {
+        method: "POST",
+        headers: walletHeaders(),
+        body: JSON.stringify({ lamports: "all" }),
+      });
+      applyWalletSummary(result);
+      setWalletStatus("Sent " + formatSol(result.paid || 0) + " SOL to your wallet.");
+    } catch (error) {
+      setWalletStatus((error && error.message) || "The withdrawal failed.", "error");
+    } finally {
+      wallet.busy = false;
+    }
+  }
+
+  function renderWallet(inMatch) {
+    var out = lobbyElement("lobby-wallet-out");
+    var signedIn = lobbyElement("lobby-wallet-in");
+    if (out) out.hidden = !!wallet.token;
+    if (signedIn) signedIn.hidden = !wallet.token;
+    var nameElement = lobbyElement("lobby-wallet-name");
+    if (nameElement && nameElement.textContent !== (wallet.name || "")) nameElement.textContent = wallet.name || "";
+    var balance = formatSol(wallet.lamports) + " SOL";
+    var balanceElement = lobbyElement("lobby-wallet-balance");
+    if (balanceElement && balanceElement.textContent !== balance) balanceElement.textContent = balance;
+    ["lobby-wallet-connect", "lobby-wallet-deposit", "lobby-wallet-withdraw"].forEach(function(id) {
+      var button = lobbyElement(id);
+      if (button) button.disabled = wallet.busy || (id !== "lobby-wallet-connect" && !wallet.enabled);
+    });
+    var status = lobbyElement("lobby-wallet-status");
+    if (status && status.textContent !== wallet.status) status.textContent = wallet.status;
+    if (status) {
+      if (wallet.tone) status.dataset.tone = wallet.tone;
+      else delete status.dataset.tone;
+    }
+    var nameInput = lobbyElement("lobby-name");
+    if (nameInput) nameInput.disabled = !!wallet.token;
+    var hud = lobbyElement("hud-balance");
+    if (hud) {
+      hud.hidden = !(inMatch && wallet.token);
+      var amount = lobbyElement("hud-balance-amount");
+      if (amount && amount.textContent !== formatSol(wallet.lamports)) amount.textContent = formatSol(wallet.lamports);
+    }
+  }
+
+  /* A dedicated host reports every kill (by the players' names) so the
+     room service moves the wager between their wallets. */
+  function reportHostKills() {
+    if (!session.active || session.role !== "host" || !session.dedicated) return;
+    var sequence = wasmNumber("platform_web_host_kill_sequence", 0);
+    if (lobby.hostKillsSeen === undefined || lobby.hostKillsSeen > sequence) lobby.hostKillsSeen = sequence;
+    if (sequence === lobby.hostKillsSeen || typeof HEAPU8 === "undefined") return;
+    var base = wasmNumber("platform_web_host_kills", 0);
+    if (!base) return;
+    var readName = function(offset) {
+      var text = "";
+      for (var index = 0; index < 12; index++) {
+        var code = HEAPU8[offset + index];
+        if (!code) break;
+        text += String.fromCharCode(code);
+      }
+      return text;
+    };
+    /* At most the last 32 are kept. */
+    if (sequence - lobby.hostKillsSeen > 32) lobby.hostKillsSeen = sequence - 32;
+    while (lobby.hostKillsSeen < sequence) {
+      var slot = base + (lobby.hostKillsSeen % 32) * 24;
+      var killer = readName(slot);
+      var victim = readName(slot + 12);
+      lobby.hostKillsSeen++;
+      if (!killer || !victim) continue;
+      try {
+        sendSocket({ v: PROTOCOL_VERSION, type: "kill", killer: killer, victim: victim });
+      } catch (error) {
+        /* The socket is reconnecting; this kill goes unreported. */
+      }
     }
   }
 
@@ -2905,6 +3251,12 @@
         event.target.value = currentProfile().name;
       }
     });
+    discoverWallets();
+    restoreWallet();
+    lobbyElement("lobby-wallet-connect").addEventListener("click", function() { signInWithWallet(); });
+    lobbyElement("lobby-wallet-deposit").addEventListener("click", function() { depositToHouse(); });
+    lobbyElement("lobby-wallet-withdraw").addEventListener("click", function() { withdrawFromHouse(); });
+    lobbyElement("lobby-wallet-signout").addEventListener("click", signOutWallet);
     lobbyElement("lobby-friends").addEventListener("click", function() {
       lobby.wantsPlay = false;
       showDialog();

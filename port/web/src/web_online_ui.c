@@ -58,6 +58,8 @@ unsigned char network_lobby_return_to_pregame(void);
 unsigned char network_lobby_restore_pregame_screen(void);
 void network_lobby_kill_on_screen(long *sequence, float *x, float *y, unsigned char *on_screen);
 long network_lobby_death_sequence(void);
+long network_lobby_host_kill_sequence(void);
+void const *network_lobby_host_kills(void);
 long halo_screen_width(void);
 
 enum
@@ -144,6 +146,7 @@ static atomic_int web_online_kill_y = ATOMIC_VAR_INIT(4000);
 static atomic_int web_online_kill_on_screen = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_screen_width = ATOMIC_VAR_INIT(640);
 static atomic_int web_online_death_sequence = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_host_kill_sequence = ATOMIC_VAR_INIT(0);
 /* seconds until the match starts while counting down, else -1 */
 static atomic_int web_online_countdown_remaining = ATOMIC_VAR_INIT(-1);
 
@@ -283,6 +286,18 @@ EMSCRIPTEN_KEEPALIVE void platform_web_online_request_restart(void)
 EMSCRIPTEN_KEEPALIVE int platform_web_kill_sequence(void)
 {
 	return atomic_load_explicit(&web_online_kill_sequence, memory_order_acquire);
+}
+
+/* A host's kills: how many so far, and the ring of the last 32 (killer and
+victim names, 12 bytes each), which the page reads to report them. */
+EMSCRIPTEN_KEEPALIVE int platform_web_host_kill_sequence(void)
+{
+	return atomic_load_explicit(&web_online_host_kill_sequence, memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE void const *platform_web_host_kills(void)
+{
+	return network_lobby_host_kills();
 }
 
 EMSCRIPTEN_KEEPALIVE int platform_web_death_sequence(void)
@@ -919,6 +934,7 @@ static void publish_kill(void)
 	atomic_store_explicit(&web_online_kill_sequence, (int)sequence, memory_order_release);
 	atomic_store_explicit(&web_online_screen_width, (int)halo_screen_width(), memory_order_relaxed);
 	atomic_store_explicit(&web_online_death_sequence, (int)network_lobby_death_sequence(), memory_order_release);
+	atomic_store_explicit(&web_online_host_kill_sequence, (int)network_lobby_host_kill_sequence(), memory_order_release);
 }
 
 void web_online_ui_update(int main_menu_loaded, float seconds)

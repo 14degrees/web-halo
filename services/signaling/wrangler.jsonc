@@ -25,7 +25,12 @@
     // The game quick join starts when no public room is open:
     // Blood Gulch (9) Slayer (0); see port/web/src/web_online_ui.h.
     "PUBLIC_LOBBY_MAP_INDEX": "9",
-    "PUBLIC_LOBBY_MODE_INDEX": "0"
+    "PUBLIC_LOBBY_MODE_INDEX": "0",
+    // The wager experiment: Solana devnet, 0.1 SOL a kill.
+    "SOLANA_CLUSTER": "devnet",
+    // Tried in order: Solana's own devnet endpoint refuses Cloudflare.
+    "SOLANA_RPC_URL": "https://api.devnet.solana.com,https://solana-devnet.api.onfinality.io/public",
+    "WAGER_LAMPORTS": "100000000"
   },
   "triggers": {
     "crons": ["*/5 * * * *"]
@@ -51,6 +56,10 @@
       {
         "name": "LOBBY_DIRECTORY",
         "class_name": "LobbyDirectory"
+      },
+      {
+        "name": "BANK",
+        "class_name": "Bank"
       }
     ]
   },
@@ -88,6 +97,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["LobbyDirectory"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["Bank"]
     }
   ],
   "observability": {

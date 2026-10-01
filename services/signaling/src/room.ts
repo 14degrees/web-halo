@@ -6,7 +6,9 @@ import {
   randomToken,
   hashToken,
 } from "./crypto";
+import { BANK_NAME } from "./bank";
 import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
+import { walletPlayerName } from "./solana";
 import {
   MAX_WEBSOCKET_MESSAGE_CHARACTERS,
   IDENTIFIER_PATTERN,
@@ -54,6 +56,8 @@ interface SocketAttachment {
   peerId: string;
   profile?: PlayerProfile;
   role: PeerRole;
+  /* The signed-in wallet this player wagers with, if any. */
+  wallet?: string;
 }
 
 interface PreparedSession {
@@ -73,6 +77,7 @@ export interface CreateRoomCommand {
   roomTtlMs: number;
   sessionTtlMs: number;
   visibility: RoomVisibility;
+  wallet?: string;
 }
 
 export type CreateRoomResult =
@@ -93,6 +98,7 @@ export interface CreateSessionCommand {
   sessionTtlMs: number;
   /* Absent: a guest of a public room. */
   ticket?: string;
+  wallet?: string;
 }
 
 export type CreateSessionResult =
@@ -274,6 +280,7 @@ export class SignalingRoom extends DurableObject<Env> {
         command.lobby === null ? null : command.lobby.modeIndex,
       );
       this.insertSession(hostSession);
+      this.rememberWallet(hostSession.session.peerId, command.wallet);
     });
 
     await this.ctx.storage.setAlarm(expiresAt);
@@ -361,6 +368,7 @@ export class SignalingRoom extends DurableObject<Env> {
       newSessionTokenHash,
     );
     this.insertSession(session);
+    this.rememberWallet(session.session.peerId, command.wallet);
 
     return {
       ok: true,
@@ -484,6 +492,7 @@ export class SignalingRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
+    const wallet = this.takeWallet(session.peer_id);
     const attachment: SocketAttachment = {
       identifier: session.identifier,
       joinedAt: now,
@@ -491,6 +500,7 @@ export class SignalingRoom extends DurableObject<Env> {
       messageWindowStartedAt: now,
       peerId: session.peer_id,
       role: session.role,
+      ...(wallet === null ? {} : { wallet }),
     };
 
     this.ctx.acceptWebSocket(server, [
@@ -655,8 +665,16 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
+    if (message.type === "kill") {
+      this.ctx.waitUntil(this.settleKill(socket, sender, message.killer, message.victim, now));
+      return;
+    }
+
     if (message.type === "profile") {
-      sender.profile = message.profile;
+      /* A wagering player plays under their wallet's name, so a kill report
+         can never be pinned on someone else. */
+      sender.profile = sender.wallet === undefined ? message.profile :
+        { name: walletPlayerName(sender.wallet), style: message.profile.style };
       try {
         socket.serializeAttachment(sender);
       } catch (error) {
@@ -1004,6 +1022,78 @@ export class SignalingRoom extends DurableObject<Env> {
     for (const [column, definition] of ROOM_COLUMN_UPGRADES) {
       if (!existing.has(column)) {
         this.ctx.storage.sql.exec(`ALTER TABLE room ADD COLUMN ${column} ${definition}`);
+      }
+    }
+  }
+
+  /* A pending session's wallet, until its socket opens. */
+  private walletTable(): void {
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS session_wallets (peer_id TEXT PRIMARY KEY, wallet TEXT NOT NULL)",
+    );
+  }
+
+  private rememberWallet(peerId: string, wallet: string | undefined): void {
+    if (wallet === undefined) return;
+    this.walletTable();
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO session_wallets (peer_id, wallet) VALUES (?, ?)",
+      peerId,
+      wallet,
+    );
+  }
+
+  private takeWallet(peerId: string): string | null {
+    this.walletTable();
+    const wallet = this.ctx.storage.sql
+      .exec<{ wallet: string }>("SELECT wallet FROM session_wallets WHERE peer_id = ?", peerId)
+      .toArray()[0]?.wallet ?? null;
+    this.ctx.storage.sql.exec("DELETE FROM session_wallets WHERE peer_id = ?", peerId);
+    return wallet;
+  }
+
+  /* A dedicated host reports a kill by names; the wager moves between the
+     two players' wallets and everyone in the room hears of it. */
+  private async settleKill(
+    socket: WebSocket,
+    sender: SocketAttachment,
+    killerName: string,
+    victimName: string,
+    now: number,
+  ): Promise<void> {
+    const room = this.getRoom();
+    if (room === null || room.dedicated !== 1 || sender.role !== "host") {
+      this.sendError(socket, "KILL_FORBIDDEN", "Only a dedicated host reports kills.");
+      return;
+    }
+    const byName = (name: string): string | undefined =>
+      this.connections().find(({ attachment }) => attachment.profile?.name === name)?.attachment.wallet;
+    const killer = byName(killerName);
+    const victim = byName(victimName);
+    if (killer === undefined || victim === undefined || killer === victim) return;
+    const wager = Number(this.env.WAGER_LAMPORTS);
+    const result = await this.env.BANK.getByName(BANK_NAME).transferForKill(
+      victim,
+      killer,
+      Number.isSafeInteger(wager) && wager > 0 ? wager : 100_000_000,
+      room.room_id,
+      now,
+    );
+    if (result.lamports <= 0) return;
+    const encoded = jsonMessage({
+      killer: killerName,
+      killerLamports: result.killerLamports,
+      lamports: result.lamports,
+      type: "reward",
+      v: SIGNALING_PROTOCOL_VERSION,
+      victim: victimName,
+      victimLamports: result.victimLamports,
+    });
+    for (const { socket: target } of this.connections()) {
+      try {
+        target.send(encoded);
+      } catch {
+        /* A closing socket misses one notice; its balance is kept. */
       }
     }
   }

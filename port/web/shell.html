@@ -563,6 +563,24 @@
     #lobby-deploy[hidden] { display: none; }
     #lobby-deploy small { display: block; margin-top: .6rem; font-size: .9rem; letter-spacing: .05em; color: #9fd4ff; text-transform: none; }
     body[data-lobby="open"] #loading { display: none; }
+    /* The wallet panel in the lobby and the balance over the game. */
+    #lobby-wallet { display: grid; gap: .35rem; padding: .7rem .8rem; border: 1px solid rgba(255, 210, 90, .3); border-radius: .35rem; background: rgba(20, 16, 4, .45); }
+    #lobby-wallet-out, #lobby-wallet-in { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+    #lobby-wallet-out[hidden], #lobby-wallet-in[hidden] { display: none; }
+    #lobby-wallet button { padding: .4rem .7rem; border: 1px solid rgba(255, 210, 90, .55); border-radius: .25rem; background: rgba(255, 200, 60, .12); color: #ffe7a3; font: inherit; font-size: .9rem; cursor: pointer; }
+    #lobby-wallet button:disabled { opacity: .5; cursor: default; }
+    #lobby-wallet button.lobby-wallet-link { padding: 0; border: 0; background: none; color: #c8b27a; text-decoration: underline; font-size: .8rem; }
+    #lobby-wallet-name { font-family: ui-monospace, Menlo, monospace; color: #ffe7a3; }
+    #lobby-wallet-balance { font-size: 1.15rem; color: #ffd65a; }
+    .lobby-wallet-hint { font-size: .8rem; color: #c8b27a; }
+    #lobby-wallet-status { min-height: 1.2em; margin: 0; font-size: .85rem; color: #e8d7a4; }
+    #lobby-wallet-status[data-tone="error"] { color: #ffb3a8; }
+    #hud-balance {
+      position: fixed; top: .7rem; left: 50%; z-index: 6; transform: translateX(-50%); pointer-events: none;
+      padding: .3rem .8rem; border: 1px solid rgba(255, 210, 90, .45); border-radius: 1rem; background: rgba(0, 0, 0, .5);
+      color: #ffd65a; font: 700 1rem/1 "Arial Narrow", "Segoe UI", sans-serif; letter-spacing: .04em;
+    }
+    #hud-balance[hidden] { display: none; }
     /* Rewards over the game: "+0.1 SOL" where a kill's body is. */
     #kill-pops { position: fixed; inset: 0; z-index: 6; pointer-events: none; overflow: hidden; }
     .kill-pop { position: absolute; transform: translate(-50%, -100%); will-change: left, top; }
@@ -1617,6 +1635,20 @@
       </figure>
       <p id="lobby-countdown" aria-live="off" hidden><span>Match starts in</span><strong id="lobby-countdown-seconds">10</strong></p>
       <p id="lobby-status" role="status" aria-live="polite">Loading Halo…</p>
+      <section id="lobby-wallet" aria-label="Wallet">
+        <div id="lobby-wallet-out">
+          <button id="lobby-wallet-connect" type="button">Connect wallet</button>
+          <span class="lobby-wallet-hint">Solana devnet · 0.1 SOL a kill</span>
+        </div>
+        <div id="lobby-wallet-in" hidden>
+          <span id="lobby-wallet-name"></span>
+          <strong id="lobby-wallet-balance">0.00 SOL</strong>
+          <button id="lobby-wallet-deposit" type="button">Deposit 0.5</button>
+          <button id="lobby-wallet-withdraw" type="button">Withdraw</button>
+          <button id="lobby-wallet-signout" type="button" class="lobby-wallet-link">Sign out</button>
+        </div>
+        <p id="lobby-wallet-status" role="status" aria-live="polite"></p>
+      </section>
       <button id="lobby-play" type="button">Play</button>
       <div class="lobby-links">
         <button id="lobby-spartan-toggle" type="button" aria-expanded="false">Spartan</button>
@@ -1640,6 +1672,7 @@
     </div>
   </section>
   <div id="kill-pops" aria-live="polite"></div>
+  <div id="hud-balance" hidden>◎ <span id="hud-balance-amount">0.00</span> SOL</div>
   <div id="lobby-deploy" role="button" tabindex="0" hidden>Match found<small>Click to play · Esc to release the mouse</small></div>
   <dialog id="about-dialog" aria-labelledby="about-title">
     <article class="about-card">

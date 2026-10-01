@@ -130,6 +130,44 @@ static struct
 /* this machine's player's deaths, for the death cam's penalty */
 static long lobby_death_sequence;
 
+/* every kill in the match, for a dedicated host to report to the room
+service, which moves the wager between the players' wallets: the players'
+names, as 12-byte ASCII strings, in a ring the page reads */
+#define HOST_KILL_RING 32
+#define HOST_KILL_NAME 12
+static char lobby_host_kills[HOST_KILL_RING][2][HOST_KILL_NAME];
+static long lobby_host_kill_sequence;
+
+long network_lobby_host_kill_sequence(
+	void)
+{
+	return lobby_host_kill_sequence;
+}
+
+void const *network_lobby_host_kills(
+	void)
+{
+	return lobby_host_kills;
+}
+
+static void lobby_name(
+	char *out,
+	struct player_datum const *player)
+{
+	short index;
+
+	for (index = 0; index < HOST_KILL_NAME - 1; index++)
+	{
+		wchar_t character = player->name[index];
+
+		out[index] = character > 0 && character < 0x80 ? (char)character : 0;
+		if (!out[index])
+			break;
+	}
+	for (; index < HOST_KILL_NAME; index++)
+		out[index] = 0;
+}
+
 long network_lobby_death_sequence(
 	void)
 {
@@ -156,6 +194,14 @@ void network_lobby_note_kill(
 	if (friendly_fire || killing_player_index == NONE || killing_player_index == dead_player_index)
 		return;
 	killer = player_try_and_get(killing_player_index);
+	if (killer && global_network_game_server_get())
+	{
+		long slot = lobby_host_kill_sequence % HOST_KILL_RING;
+
+		lobby_name(lobby_host_kills[slot][0], killer);
+		lobby_name(lobby_host_kills[slot][1], dead);
+		lobby_host_kill_sequence++;
+	}
 	if (!killer || killer->local_player_index == NONE)
 		return;
 	unit_index = dead->unit_index != NONE ? dead->unit_index : dead->dead_unit_index;

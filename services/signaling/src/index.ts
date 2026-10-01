@@ -10,6 +10,7 @@ import {
   verificationIdFor,
 } from "./abuse";
 import { roomIdSignatureMatches, signedRoomId } from "./crypto";
+import { HttpError } from "./errors";
 import type { RuntimeEnv } from "./env";
 import { LOBBY_DIRECTORY_NAME } from "./lobby";
 import {
@@ -40,7 +41,9 @@ import {
 import { generateIceServersWithFallback, revokeTurnCredential } from "./turn";
 import { enforceTurnBandwidthCaps, turnIsDisabled, turnUsageSummary } from "./turn_cap";
 import { requireHumanVerification } from "./turnstile";
+import { handleWalletRequest, walletForToken } from "./wallet";
 
+export { Bank } from "./bank";
 export { LobbyDirectory } from "./lobby";
 export { SignalingRoom } from "./room";
 export type {
@@ -69,15 +72,6 @@ const ADMIN_BAN_ROUTE = /^\/v1\/admin\/bans\/([0-9a-f]{32})$/u;
 const MINIMUM_ROOM_CAPACITY = 2;
 const MAXIMUM_ROOM_CAPACITY = 128;
 
-class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 function jsonResponse(
   value: unknown,
@@ -431,6 +425,7 @@ function inviteUrl(env: RuntimeEnv, inviteCode: string): string {
 
 interface RoomAllocation {
   actorId: string;
+  wallet?: string;
   buildId: string;
   capacity?: number;
   dedicated: boolean;
@@ -528,6 +523,7 @@ async function allocateRoom(
       roomTtlMs,
       sessionTtlMs,
       visibility: allocation.visibility,
+      ...(allocation.wallet === undefined ? {} : { wallet: allocation.wallet }),
     });
     if (result.ok) {
       break;
@@ -637,6 +633,7 @@ async function mintSession(
   env: RuntimeEnv,
   roomId: string,
   input: { buildId: string; identifier: string; protocolVersion: number; ticket?: string },
+  wallet?: string | null,
 ): Promise<CreateSessionResult> {
   return env.ROOMS.getByName(roomId).createSession({
     buildId: input.buildId,
@@ -645,6 +642,7 @@ async function mintSession(
     protocolVersion: input.protocolVersion,
     sessionTtlMs: sessionTtlMilliseconds(env),
     ...(input.ticket === undefined ? {} : { ticket: input.ticket }),
+    ...(wallet ? { wallet } : {}),
   });
 }
 
@@ -684,7 +682,8 @@ async function createSession(
     throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
   }
 
-  const result = await mintSession(env, roomId, parsed.value);
+  const wallet = await walletForToken(env, parsed.value.walletToken);
+  const result = await mintSession(env, roomId, parsed.value, wallet);
   if (!result.ok) {
     throw sessionError(result);
   }
@@ -718,8 +717,9 @@ async function quickJoin(
     parsed.value.protocolVersion,
     Date.now(),
   );
+  const wallet = await walletForToken(env, parsed.value.walletToken);
   for (const candidate of candidates) {
-    const result = await mintSession(env, candidate.roomId, parsed.value);
+    const result = await mintSession(env, candidate.roomId, parsed.value, wallet);
     if (result.ok) {
       const body: QuickJoinResponse = {
         ...(await sessionResponse(request, env, candidate.roomId, actorId, result)),
@@ -754,6 +754,7 @@ async function quickJoin(
       lobby: defaultLobby(env),
       protocolVersion: parsed.value.protocolVersion,
       visibility: "public",
+      ...(wallet ? { wallet } : {}),
     })),
     role: "host",
   };
@@ -883,6 +884,11 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
     await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
     return createRoom(request, env, origin);
+  }
+
+  const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
+  if (walletResponse !== null) {
+    return withCors(jsonResponse(walletResponse), origin);
   }
 
   if (request.method === "GET" && url.pathname === "/v1/lobbies") {
