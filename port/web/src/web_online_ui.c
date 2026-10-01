@@ -57,6 +57,7 @@ void network_lobby_end_game(void);
 unsigned char network_lobby_return_to_pregame(void);
 unsigned char network_lobby_restore_pregame_screen(void);
 void network_lobby_kill_on_screen(long *sequence, float *x, float *y, unsigned char *on_screen);
+long network_lobby_death_sequence(void);
 long halo_screen_width(void);
 
 enum
@@ -142,6 +143,7 @@ static atomic_int web_online_kill_x = ATOMIC_VAR_INIT(5000);
 static atomic_int web_online_kill_y = ATOMIC_VAR_INIT(4000);
 static atomic_int web_online_kill_on_screen = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_screen_width = ATOMIC_VAR_INIT(640);
+static atomic_int web_online_death_sequence = ATOMIC_VAR_INIT(0);
 /* seconds until the match starts while counting down, else -1 */
 static atomic_int web_online_countdown_remaining = ATOMIC_VAR_INIT(-1);
 
@@ -281,6 +283,11 @@ EMSCRIPTEN_KEEPALIVE void platform_web_online_request_restart(void)
 EMSCRIPTEN_KEEPALIVE int platform_web_kill_sequence(void)
 {
 	return atomic_load_explicit(&web_online_kill_sequence, memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_death_sequence(void)
+{
+	return atomic_load_explicit(&web_online_death_sequence, memory_order_acquire);
 }
 
 EMSCRIPTEN_KEEPALIVE int platform_web_kill_x(void)
@@ -911,6 +918,7 @@ static void publish_kill(void)
 	atomic_store_explicit(&web_online_kill_on_screen, on_screen ? 1 : 0, memory_order_relaxed);
 	atomic_store_explicit(&web_online_kill_sequence, (int)sequence, memory_order_release);
 	atomic_store_explicit(&web_online_screen_width, (int)halo_screen_width(), memory_order_relaxed);
+	atomic_store_explicit(&web_online_death_sequence, (int)network_lobby_death_sequence(), memory_order_release);
 }
 
 void web_online_ui_update(int main_menu_loaded, float seconds)

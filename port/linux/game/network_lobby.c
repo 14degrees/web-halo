@@ -127,6 +127,15 @@ static struct
 	long time;
 } lobby_kill;
 
+/* this machine's player's deaths, for the death cam's penalty */
+static long lobby_death_sequence;
+
+long network_lobby_death_sequence(
+	void)
+{
+	return lobby_death_sequence;
+}
+
 void network_lobby_note_kill(
 	long killing_player_index,
 	long dead_player_index,
@@ -136,14 +145,18 @@ void network_lobby_note_kill(
 	struct player_datum *dead;
 	long unit_index;
 
-	if (friendly_fire || killing_player_index == NONE || dead_player_index == NONE ||
-		killing_player_index == dead_player_index)
-	{
+	if (dead_player_index == NONE)
 		return;
-	}
-	killer = player_try_and_get(killing_player_index);
 	dead = player_try_and_get(dead_player_index);
-	if (!killer || !dead || killer->local_player_index == NONE)
+	if (!dead)
+		return;
+	/* any death of this machine's player: killed, fallen or by their own hand */
+	if (dead->local_player_index != NONE)
+		lobby_death_sequence++;
+	if (friendly_fire || killing_player_index == NONE || killing_player_index == dead_player_index)
+		return;
+	killer = player_try_and_get(killing_player_index);
+	if (!killer || killer->local_player_index == NONE)
 		return;
 	unit_index = dead->unit_index != NONE ? dead->unit_index : dead->dead_unit_index;
 	if (unit_index == NONE || !object_try_and_get(unit_index))

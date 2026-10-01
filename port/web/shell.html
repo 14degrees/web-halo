@@ -574,6 +574,19 @@
       animation: kill-pop-rise 1.7s cubic-bezier(.2, .8, .3, 1) forwards;
     }
     .kill-pop span small { margin-left: .2em; font-size: .62em; color: #fff3c4; }
+    .kill-pop.death { transform: translate(-50%, -50%); }
+    .kill-pop.death span {
+      font-size: clamp(1.8rem, 4vw, 3.2rem); color: #ff5a4e;
+      text-shadow: 0 0 .9rem rgba(255, 60, 40, .7), 0 2px 3px rgba(0, 0, 0, .85);
+      animation: death-pop 2.6s cubic-bezier(.2, .8, .3, 1) forwards;
+    }
+    .kill-pop.death span small { color: #ffc9c2; }
+    @keyframes death-pop {
+      0% { opacity: 0; transform: scale(1.6); }
+      10% { opacity: 1; transform: scale(1); }
+      80% { opacity: 1; transform: translateY(0); }
+      100% { opacity: 0; transform: translateY(1.4rem); }
+    }
     @keyframes kill-pop-rise {
       0% { opacity: 0; transform: translateY(.6rem) scale(.6); }
       12% { opacity: 1; transform: translateY(0) scale(1.15); }

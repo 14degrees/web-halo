@@ -2779,7 +2779,21 @@
   var KILL_REWARD_TEXT = "+0.1";
   var KILL_REWARD_UNIT = "SOL";
   var KILL_POP_MILLISECONDS = 1700;
-  var killPops = { last: -1, active: [] };
+  var DEATH_REWARD_TEXT = "\u22120.1";
+  var DEATH_POP_MILLISECONDS = 2600;
+  var killPops = { last: -1, lastDeath: -1, active: [] };
+
+  function makePop(className, text) {
+    var element = document.createElement("div");
+    element.className = className;
+    var label = document.createElement("span");
+    label.textContent = text;
+    var unit = document.createElement("small");
+    unit.textContent = KILL_REWARD_UNIT;
+    label.appendChild(unit);
+    element.appendChild(label);
+    return element;
+  }
 
   function wasmNumber(name, fallback) {
     try {
@@ -2805,6 +2819,12 @@
   function placeKillPop(pop, now) {
     var rect = gamePictureRect();
     if (!rect) return;
+    if (pop.death) {
+      /* The death cam: centered, a little above the middle. */
+      pop.element.style.left = (rect.left + 0.5 * rect.width) + "px";
+      pop.element.style.top = (rect.top + 0.42 * rect.height) + "px";
+      return;
+    }
     /* The body while it is on screen; otherwise above the crosshair. */
     var onScreen = wasmNumber("platform_web_kill_sequence", 0) === pop.sequence &&
       wasmNumber("platform_web_kill_on_screen", 0) === 1;
@@ -2825,19 +2845,20 @@
     if (killPops.last < 0) killPops.last = sequence;
     if (sequence !== killPops.last && container && typeof document.createElement === "function") {
       killPops.last = sequence;
-      var element = document.createElement("div");
-      element.className = "kill-pop";
-      var label = document.createElement("span");
-      label.textContent = KILL_REWARD_TEXT;
-      var unit = document.createElement("small");
-      unit.textContent = KILL_REWARD_UNIT;
-      label.appendChild(unit);
-      element.appendChild(label);
+      var element = makePop("kill-pop", KILL_REWARD_TEXT);
       container.appendChild(element);
       killPops.active.push({ element: element, sequence: sequence, born: now });
     }
+    var deaths = wasmNumber("platform_web_death_sequence", 0);
+    if (killPops.lastDeath < 0) killPops.lastDeath = deaths;
+    if (deaths !== killPops.lastDeath && container && typeof document.createElement === "function") {
+      killPops.lastDeath = deaths;
+      var deathElement = makePop("kill-pop death", DEATH_REWARD_TEXT);
+      container.appendChild(deathElement);
+      killPops.active.push({ element: deathElement, death: true, born: now });
+    }
     killPops.active = killPops.active.filter(function(pop) {
-      if (now - pop.born > KILL_POP_MILLISECONDS) {
+      if (now - pop.born > (pop.death ? DEATH_POP_MILLISECONDS : KILL_POP_MILLISECONDS)) {
         if (pop.element.parentNode) pop.element.parentNode.removeChild(pop.element);
         return false;
       }
