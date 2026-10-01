@@ -485,6 +485,81 @@
     .quick-play-copy { margin: 0; font-size: .8rem; line-height: 1.35; color: var(--halo-muted, #7395ae); }
     .quick-play button { width: 100%; min-height: 2.7rem; }
     .quick-play-divider { margin: 0 0 .5rem; }
+
+    /* ---------- The matchmaking lobby: the page's front door. It covers the
+       game until a match begins, so the Xbox menus are never seen or touched. */
+    #lobby {
+      position: fixed; inset: 0; z-index: 30;
+      display: grid; grid-template-columns: minmax(18rem, 30rem) 1fr minmax(16rem, 24rem);
+      gap: clamp(1rem, 3vw, 3rem); align-items: center;
+      padding: clamp(1.25rem, 5vh, 4rem) clamp(1.25rem, 5vw, 5rem);
+      color: #e5f4ff; font-family: "Arial Narrow", "Avenir Next Condensed", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(ellipse at 55% 40%, rgba(40, 110, 190, .35), transparent 60%),
+        radial-gradient(ellipse at 50% 120%, rgba(10, 60, 120, .55), transparent 55%),
+        linear-gradient(160deg, rgba(6,16,31,.92) 0%, rgba(10,30,56,.78) 45%, rgba(4,10,20,.94) 100%),
+        url("assets/ui/shell/lobby-backdrop.png") center / cover no-repeat,
+        #06101f;
+      transition: opacity .35s ease;
+    }
+    #lobby[hidden] { display: none; }
+    #lobby.fading { opacity: 0; pointer-events: none; }
+    .lobby-left { display: grid; gap: 1.1rem; align-content: center; }
+    .lobby-title { margin: 0; font-size: clamp(1.6rem, 3.2vw, 2.6rem); letter-spacing: .04em; text-transform: uppercase; font-weight: 700; }
+    .lobby-facts { display: grid; gap: .3rem; margin: 0; font-size: 1rem; letter-spacing: .06em; text-transform: uppercase; color: #a9c6e0; }
+    .lobby-facts span { color: #e5f4ff; }
+    .lobby-map { position: relative; overflow: hidden; border: 1px solid rgba(101, 194, 255, .35); border-radius: .35rem; aspect-ratio: 16 / 9; background: #0b1a2c; }
+    .lobby-map img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .lobby-map figcaption { position: absolute; left: 0; right: 0; bottom: 0; padding: .45rem .7rem; background: linear-gradient(transparent, rgba(0,0,0,.75)); font-size: .95rem; letter-spacing: .05em; }
+    #lobby-status { min-height: 2.6em; margin: 0; font-size: 1.05rem; color: #9fd4ff; letter-spacing: .03em; }
+    #lobby-status[data-tone="error"] { color: #ffb3a8; }
+    #lobby-play {
+      min-height: 3.6rem; border: 1px solid #5fc0ff; border-radius: .3rem;
+      background: linear-gradient(180deg, #1c8fe0, #0a4f91); color: #fff;
+      font: 700 1.5rem/1 inherit; letter-spacing: .18em; text-transform: uppercase; cursor: pointer;
+      box-shadow: 0 0 1.6rem rgba(40, 150, 255, .35);
+    }
+    #lobby-play:hover:not(:disabled) { background: linear-gradient(180deg, #2aa0f2, #0d5ea8); }
+    #lobby-play:disabled { opacity: .55; cursor: default; box-shadow: none; }
+    #lobby-play[data-mode="leave"] { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.25); font-size: 1rem; min-height: 2.6rem; box-shadow: none; }
+    .lobby-links { display: flex; gap: 1rem; font-size: .9rem; }
+    .lobby-links button { padding: 0; border: 0; background: none; color: #7fb6e0; text-decoration: underline; cursor: pointer; font: inherit; }
+    .lobby-center { display: grid; place-items: center; height: 100%; }
+    #lobby-nameplate {
+      display: grid; gap: .3rem; min-width: min(100%, 20rem); padding: 1.1rem 1.6rem;
+      border-left: .45rem solid var(--player-color, #78986a); border-radius: .25rem;
+      background: rgba(4, 12, 24, .72); box-shadow: 0 0 3rem rgba(40, 140, 255, .18);
+    }
+    .lobby-nameplate-label { font-size: .8rem; letter-spacing: .16em; text-transform: uppercase; color: #8fb5d6; }
+    #lobby-nameplate-name { font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 700; letter-spacing: .04em; }
+    .lobby-right { display: grid; gap: .4rem; align-content: center; }
+    .lobby-count { margin: 0 0 .3rem; font-size: .95rem; letter-spacing: .08em; text-transform: uppercase; color: #a9c6e0; }
+    #lobby-players { display: grid; gap: .3rem; margin: 0; padding: 0; list-style: none; }
+    #lobby-players li {
+      display: flex; align-items: center; gap: .6rem; min-height: 2.2rem; padding: 0 .75rem;
+      border-radius: .2rem; background: var(--player-color, #3f6f9e); color: #fff;
+      font-size: 1.05rem; text-shadow: 0 1px 2px rgba(0,0,0,.6);
+    }
+    #lobby-players li .role { margin-left: auto; font-size: .75rem; letter-spacing: .1em; text-transform: uppercase; opacity: .8; }
+    #lobby-players li.empty { background: rgba(255,255,255,.05); color: #7f9ab3; font-style: italic; text-shadow: none; }
+    #lobby-spartan-panel { display: grid; gap: .6rem; padding: .9rem; border: 1px solid rgba(101,194,255,.3); border-radius: .35rem; background: rgba(4, 12, 24, .85); }
+    #lobby-spartan-panel[hidden] { display: none; }
+    #lobby-spartan-panel input { padding: .45rem .6rem; border: 1px solid rgba(101,194,255,.4); border-radius: .25rem; background: #06101f; color: #fff; font: inherit; font-size: 1rem; }
+    #lobby-colors { display: flex; flex-wrap: wrap; gap: .35rem; }
+    #lobby-colors button { width: 1.6rem; height: 1.6rem; padding: 0; border: 2px solid transparent; border-radius: 50%; background: var(--player-color); cursor: pointer; }
+    #lobby-colors button[aria-pressed="true"] { border-color: #fff; }
+    #lobby-deploy {
+      position: fixed; inset: 0; z-index: 31; display: grid; place-items: center;
+      background: rgba(2, 8, 16, .55); color: #fff; cursor: pointer;
+      font: 700 clamp(1.4rem, 3vw, 2.4rem)/1.2 "Arial Narrow", "Segoe UI", sans-serif; letter-spacing: .15em; text-transform: uppercase; text-align: center;
+    }
+    #lobby-deploy[hidden] { display: none; }
+    #lobby-deploy small { display: block; margin-top: .6rem; font-size: .9rem; letter-spacing: .05em; color: #9fd4ff; text-transform: none; }
+    body[data-lobby="open"] #loading { display: none; }
+    @media (max-width: 900px) {
+      #lobby { grid-template-columns: 1fr; overflow: auto; align-content: start; }
+      .lobby-center { display: none; }
+    }
     .join-direct { margin-top: .7rem; color: #8fa1aa; font-size: .76rem; }
     .join-direct summary { width: fit-content; cursor: pointer; }
     #online-wizard:has(#online-setup[hidden]) #online-wizard-steps { display: none; }
@@ -1461,6 +1536,42 @@
       <p class="diagnostics-shortcut">⌘/Ctrl + Shift + L</p>
     </section>
   </main>
+  <section id="lobby" aria-label="Matchmaking lobby" hidden>
+    <div class="lobby-left">
+      <h1 class="lobby-title">Matchmaking lobby</h1>
+      <p class="lobby-facts">
+        Network: <span>Online · public</span><br>
+        Game: <span id="lobby-mode">Slayer</span><br>
+        Map: <span id="lobby-map-name">Blood Gulch</span>
+      </p>
+      <figure class="lobby-map">
+        <img id="lobby-map-image" src="assets/ui/maps/blood-gulch.png" alt="">
+        <figcaption id="lobby-map-caption">Slayer on Blood Gulch</figcaption>
+      </figure>
+      <p id="lobby-status" role="status" aria-live="polite">Loading Halo…</p>
+      <button id="lobby-play" type="button">Play</button>
+      <div class="lobby-links">
+        <button id="lobby-spartan-toggle" type="button" aria-expanded="false">Spartan</button>
+        <button id="lobby-friends" type="button">Play with friends</button>
+      </div>
+      <div id="lobby-spartan-panel" hidden>
+        <label for="lobby-name">Name</label>
+        <input id="lobby-name" type="text" maxlength="11" autocomplete="nickname" spellcheck="false">
+        <div id="lobby-colors" role="group" aria-label="Armor color"></div>
+      </div>
+    </div>
+    <div class="lobby-center">
+      <div id="lobby-nameplate" data-style="sage">
+        <span class="lobby-nameplate-label">Spartan</span>
+        <span id="lobby-nameplate-name">Player</span>
+      </div>
+    </div>
+    <div class="lobby-right">
+      <p class="lobby-count" id="lobby-count">Players</p>
+      <ul id="lobby-players"><li class="empty">Nobody here yet — press Play</li></ul>
+    </div>
+  </section>
+  <div id="lobby-deploy" role="button" tabindex="0" hidden>Match found<small>Click to play · Esc to release the mouse</small></div>
   <dialog id="about-dialog" aria-labelledby="about-title">
     <article class="about-card">
       <button id="about-close" class="icon-button" type="button" aria-label="Close">✕</button>
@@ -2529,6 +2640,14 @@
         progressElement.hidden = true;
       }
     }
+
+    /* While the lobby covers the game, nothing typed reaches it. Registered
+       before the game starts, so it runs ahead of SDL's window listeners. */
+    ["keydown", "keyup", "keypress"].forEach((type) => {
+      window.addEventListener(type, (event) => {
+        if (document.body.dataset.lobby === "open") event.stopImmediatePropagation();
+      }, true);
+    });
 
     var Module = {
       canvas,

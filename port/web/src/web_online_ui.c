@@ -91,6 +91,9 @@ enum
 	the pregame, once the stock map-select screen has taken over; a start
 	the server did not act on is asked again after this long */
 	WEB_ONLINE_DEDICATED_EMPTY_GAME_SECONDS = 30,
+	/* a match ends after this long, so players waiting to join (system link
+	admits nobody mid-match) are never kept out for good */
+	WEB_ONLINE_DEDICATED_MAXIMUM_GAME_SECONDS = 600,
 	WEB_ONLINE_DEDICATED_RESTORE_SECONDS = 1,
 	WEB_ONLINE_DEDICATED_START_RETRY_SECONDS = 5,
 };
@@ -153,8 +156,9 @@ static struct
 	float lobby_seconds;
 	/* until the start is asked (again) */
 	float start_retry_seconds;
-	/* how long the game has had no other player */
+	/* how long the game has had no other player, and how long it has run */
 	float empty_seconds;
+	float game_seconds;
 	/* how long the carnage report has shown */
 	float postgame_shown_seconds;
 	/* back from a game: the lobby's screen and countdown to put back */
@@ -218,7 +222,7 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_host_dedicated(
 {
 	if (map_index < 0 || map_index >= _web_online_multiplayer_level_count ||
 		mode_index < 0 || mode_index >= _web_online_game_mode_count ||
-		minimum_players < 1 || minimum_players > 127 ||
+		minimum_players < 0 || minimum_players > 127 ||
 		countdown_seconds < 0 || countdown_seconds > WEB_ONLINE_DEDICATED_MAXIMUM_SECONDS ||
 		postgame_seconds < 0 || postgame_seconds > WEB_ONLINE_DEDICATED_MAXIMUM_SECONDS)
 	{
@@ -597,6 +601,13 @@ static void update_dedicated(float seconds)
 		break;
 
 	case _network_client_ingame:
+		web_online.game_seconds += seconds;
+		if (web_online.game_seconds >= (float)WEB_ONLINE_DEDICATED_MAXIMUM_GAME_SECONDS)
+		{
+			platform_log("web online: ending the game at its time limit");
+			network_lobby_end_game();
+			web_online.game_seconds = 0.0f;
+		}
 		web_online.lobby_seconds = 0.0f;
 		web_online.start_retry_seconds = 0.0f;
 		web_online.postgame_shown_seconds = 0.0f;
@@ -618,6 +629,7 @@ static void update_dedicated(float seconds)
 		break;
 
 	case _network_client_postgame:
+		web_online.game_seconds = 0.0f;
 		publish_match(_web_online_match_postgame);
 		web_online.postgame_shown_seconds += seconds;
 		if (web_online.postgame_shown_seconds >= web_online.postgame_seconds)

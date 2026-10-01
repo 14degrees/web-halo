@@ -260,6 +260,37 @@ describe("public lobby", () => {
     browserSocket.close(1000, "test complete");
   });
 
+  it("lists open public rooms with their players before anyone joins", async () => {
+    const buildId = freshBuild();
+    const listUrl = `${API_ORIGIN}/v1/lobbies?buildId=${buildId}`;
+    const list = async (): Promise<{ lobbies: Array<Record<string, unknown>> }> =>
+      (await exports.default.fetch(new Request(listUrl, { headers: { Origin: GAME_ORIGIN } }))).json();
+    expect((await list()).lobbies).toEqual([]);
+
+    const room = await (await quickJoin(buildId, "4a4a4a4a4a4a")).json<QuickJoinResponse>();
+    if (room.role !== "host") throw new Error("expected host");
+    const hostSocket = await connect(room.host.session.websocketUrl);
+    hostSocket.send(JSON.stringify({ profile: { name: "Chief", style: "red" }, type: "profile", v: 1 }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((await list()).lobbies).toEqual([
+      {
+        capacity: 128,
+        dedicated: false,
+        mapIndex: 9,
+        modeIndex: 0,
+        names: [{ host: true, name: "Chief", style: "red" }],
+        players: 1,
+      },
+    ]);
+    expect(JSON.stringify(await list())).not.toContain(room.room.id);
+
+    const bad = await exports.default.fetch(new Request(`${API_ORIGIN}/v1/lobbies?buildId=bad%20id`, {
+      headers: { Origin: GAME_ORIGIN },
+    }));
+    expect(bad.status).toBe(400);
+    hostSocket.close(1000, "test complete");
+  });
+
   it("lets the host renew a room and refuses a wrong ticket", async () => {
     const buildId = freshBuild();
     const room = await (await createRoom(buildId, { visibility: "public" })).json<CreateRoomResponse>();

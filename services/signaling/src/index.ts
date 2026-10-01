@@ -760,6 +760,35 @@ async function quickJoin(
   return withCors(jsonResponse(body, 201), origin);
 }
 
+/* The public lobby's view before joining: the open public rooms on a build,
+   with their players' names, map and mode. No capability is listed. */
+async function listLobbies(
+  _request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+  url: URL,
+): Promise<Response> {
+  const buildId = url.searchParams.get("buildId") ?? "";
+  if (!/^[A-Za-z0-9._:+-]{1,96}$/u.test(buildId)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "buildId must be 1-96 URL-safe characters.");
+  }
+  const entries = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).list(Date.now());
+  const lobbies = entries
+    .filter((entry) => entry.buildId === buildId && entry.protocolVersion === SIGNALING_PROTOCOL_VERSION &&
+      (entry.hostConnected || entry.players > 0))
+    .slice(0, 16)
+    .map((entry) => ({
+      capacity: entry.capacity,
+      dedicated: entry.dedicated,
+      mapIndex: entry.mapIndex,
+      modeIndex: entry.modeIndex,
+      /* A dedicated host's own player is not a person. */
+      names: entry.dedicated ? entry.names.filter((player) => !player.host) : entry.names,
+      players: entry.players,
+    }));
+  return withCors(jsonResponse({ lobbies, v: SIGNALING_PROTOCOL_VERSION }), origin);
+}
+
 function readTicketBody(body: unknown): string {
   if (
     typeof body !== "object" ||
@@ -842,7 +871,7 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     const response = new Response(null, {
       headers: {
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Allow-Methods": "POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
         "Access-Control-Max-Age": "86400",
       },
       status: 204,
@@ -853,6 +882,11 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
     await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
     return createRoom(request, env, origin);
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/lobbies") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
+    return listLobbies(request, env, origin, url);
   }
 
   if (request.method === "POST" && url.pathname === "/v1/quickjoin") {

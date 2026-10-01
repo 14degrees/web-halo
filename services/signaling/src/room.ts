@@ -6,7 +6,7 @@ import {
   randomToken,
   hashToken,
 } from "./crypto";
-import { LOBBY_DIRECTORY_NAME, type LobbyEntry } from "./lobby";
+import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
 import {
   MAX_WEBSOCKET_MESSAGE_CHARACTERS,
   IDENTIFIER_PATTERN,
@@ -642,6 +642,7 @@ export class SignalingRoom extends DurableObject<Env> {
         return;
       }
       this.broadcastRoster();
+      this.ctx.waitUntil(this.publishToDirectory(now));
       return;
     }
 
@@ -767,6 +768,14 @@ export class SignalingRoom extends DurableObject<Env> {
       hostConnected,
       mapIndex: room.map_index,
       modeIndex: room.mode_index,
+      names: connections
+        .filter(({ attachment }) => attachment.profile !== undefined)
+        .slice(0, LOBBY_NAMES_LIMIT)
+        .map(({ attachment }) => ({
+          host: attachment.role === "host",
+          name: attachment.profile?.name ?? "",
+          style: attachment.profile?.style ?? "sage",
+        })),
       /* A dedicated host is not a player; a browser host is. */
       players: guests + (hostConnected && room.dedicated !== 1 ? 1 : 0),
       protocolVersion: room.protocol_version,

@@ -18,6 +18,16 @@ const HOST_CONNECT_GRACE_MS = 60_000;
    drop out after this long without an update. */
 const STALE_ENTRY_MS = 3 * 60 * 60 * 1_000;
 
+/* Who is in a room, for the public lobby's player list: display names and
+   armor styles only, at most LOBBY_NAMES_LIMIT of them. */
+export interface LobbyPlayer {
+  host: boolean;
+  name: string;
+  style: string;
+}
+
+export const LOBBY_NAMES_LIMIT = 16;
+
 export interface LobbyEntry {
   buildId: string;
   capacity: number;
@@ -27,6 +37,7 @@ export interface LobbyEntry {
   hostConnected: boolean;
   mapIndex: number | null;
   modeIndex: number | null;
+  names: LobbyPlayer[];
   players: number;
   protocolVersion: number;
   roomId: string;
@@ -41,9 +52,20 @@ interface LobbyRow extends Record<string, SqlStorageValue> {
   host_connected: number;
   map_index: number | null;
   mode_index: number | null;
+  names: string | null;
   players: number;
   protocol_version: number;
   room_id: string;
+}
+
+function parseNames(value: string | null): LobbyPlayer[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as LobbyPlayer[]).slice(0, LOBBY_NAMES_LIMIT) : [];
+  } catch {
+    return [];
+  }
 }
 
 function entryFromRow(row: LobbyRow): LobbyEntry {
@@ -56,6 +78,7 @@ function entryFromRow(row: LobbyRow): LobbyEntry {
     hostConnected: row.host_connected === 1,
     mapIndex: row.map_index,
     modeIndex: row.mode_index,
+    names: parseNames(row.names),
     players: row.players,
     protocolVersion: row.protocol_version,
     roomId: row.room_id,
@@ -86,14 +109,22 @@ export class LobbyDirectory extends DurableObject<Env> {
       );
       CREATE INDEX IF NOT EXISTS lobbies_build ON lobbies(build_id, expires_at);
     `);
+    /* Added after the first deployment. */
+    const columns = this.ctx.storage.sql
+      .exec<{ name: string }>("PRAGMA table_info(lobbies)")
+      .toArray()
+      .map(({ name }) => name);
+    if (!columns.includes("names")) {
+      this.ctx.storage.sql.exec("ALTER TABLE lobbies ADD COLUMN names TEXT");
+    }
   }
 
   async upsert(entry: LobbyEntry, now: number): Promise<void> {
     this.ctx.storage.sql.exec(
       `INSERT INTO lobbies (
          room_id, build_id, protocol_version, capacity, players, host_connected,
-         dedicated, map_index, mode_index, created_at, expires_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         dedicated, map_index, mode_index, created_at, expires_at, updated_at, names
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(room_id) DO UPDATE SET
          capacity = excluded.capacity,
          players = excluded.players,
@@ -102,7 +133,8 @@ export class LobbyDirectory extends DurableObject<Env> {
          map_index = excluded.map_index,
          mode_index = excluded.mode_index,
          expires_at = excluded.expires_at,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         names = excluded.names`,
       entry.roomId,
       entry.buildId,
       entry.protocolVersion,
@@ -115,6 +147,7 @@ export class LobbyDirectory extends DurableObject<Env> {
       entry.createdAt,
       entry.expiresAt,
       now,
+      JSON.stringify(entry.names.slice(0, LOBBY_NAMES_LIMIT)),
     );
     await this.scheduleSweep(now);
   }
@@ -136,7 +169,7 @@ export class LobbyDirectory extends DurableObject<Env> {
       .exec<LobbyRow>(
         `SELECT room_id, build_id, protocol_version, capacity, players,
                 host_connected, dedicated, map_index, mode_index, created_at,
-                expires_at
+                expires_at, names
            FROM lobbies
           WHERE build_id = ? AND protocol_version = ?
             AND players < capacity
@@ -158,7 +191,7 @@ export class LobbyDirectory extends DurableObject<Env> {
       .exec<LobbyRow>(
         `SELECT room_id, build_id, protocol_version, capacity, players,
                 host_connected, dedicated, map_index, mode_index, created_at,
-                expires_at
+                expires_at, names
            FROM lobbies ORDER BY dedicated DESC, players DESC, created_at ASC`,
       )
       .toArray()

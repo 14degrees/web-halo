@@ -82,6 +82,7 @@ elements['online-progress'].hidden = true;
 
 const requests = [];
 const configuredHosts = [];
+const drivenHosts = [];
 const commands = [];
 const intervals = new Map();
 const socketMessages = [];
@@ -150,6 +151,10 @@ const context = {
     _platform_web_online_get_state: () => gameState,
     _platform_web_online_host_configured: (mapIndex, modeIndex) => {
       configuredHosts.push([mapIndex, modeIndex]);
+      return 1;
+    },
+    _platform_web_online_host_dedicated: (...values) => {
+      drivenHosts.push(values);
       return 1;
     },
     _platform_web_online_request: command => {
@@ -228,8 +233,9 @@ async function settle() {
     buildId: 'test-build',
     identifier: '020000000001',
   });
-  assert.deepEqual(configuredHosts, [[9, 0]],
-    'the host opens the lobby the service chose');
+  assert.deepEqual(drivenHosts, [[9, 0, 1, 15, 12]],
+    'the host opens the lobby the service chose, with the lobby driver starting matches');
+  assert.deepEqual(configuredHosts, []);
   assert.deepEqual(commands, []);
   assert.equal(elements['online-invite'].hidden, false,
     'a public host still gets the invite link for friends');
@@ -272,7 +278,7 @@ async function settle() {
   await settle();
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, 'https://signal.example/v1/quickjoin');
-  assert.deepEqual(configuredHosts, [[9, 0]], 'a guest hosts nothing');
+  assert.deepEqual(drivenHosts, [[9, 0, 1, 15, 12]], 'a guest hosts nothing');
   assert.equal(elements['online-dialog'].dataset.view, 'progress');
   assert.match(elements['online-status'].textContent, /Connecting to the host/);
 

@@ -125,7 +125,8 @@ void platform_web_online_set_transport_state(int state);
 int platform_web_online_get_transport_state(void);
 
 /* A dedicated host. minimum_players counts the players besides the host's
-own; the game starts countdown_seconds after that many are in the lobby,
+own (0: start alone, which the art capture tool uses); a match ends after
+ten minutes; the game starts countdown_seconds after that many are in the lobby,
 and the lobby returns postgame_seconds after a game ends. */
 int platform_web_online_host_dedicated(
 	int map_index,
