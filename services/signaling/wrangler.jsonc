@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "halo-web-signaling",
+  "name": "halo-signaling",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-29",
   "compatibility_flags": ["nodejs_compat"],
@@ -8,14 +8,14 @@
     // Safe-by-default deployment settings. The exact public game origin is
     // allowed alongside the two deterministic local-development origins.
     "ENVIRONMENT": "production",
-    "ALLOWED_ORIGINS": "https://halo-web.otherness-bugs.workers.dev,https://mitchellhynes.com,http://127.0.0.1:8765,http://localhost:8765",
+    "ALLOWED_ORIGINS": "https://halo.lilchocobo2.workers.dev,http://127.0.0.1:8765,http://localhost:8765",
     "ALLOW_NO_ORIGIN": "false",
-    "PUBLIC_GAME_URL": "https://mitchellhynes.com/halo",
+    "PUBLIC_GAME_URL": "https://halo.lilchocobo2.workers.dev",
     "ROOM_TTL_SECONDS": "21600",
     "SESSION_TTL_SECONDS": "30",
     "TURN_TTL_SECONDS": "3600",
-    "TURNSTILE_HOSTNAMES": "halo-web.otherness-bugs.workers.dev,mitchellhynes.com",
-    "CLOUDFLARE_ACCOUNT_ID": "bea51ed443abd5b18e9e56723daa7a79",
+    "TURNSTILE_HOSTNAMES": "",
+    "CLOUDFLARE_ACCOUNT_ID": "86f73ff8d0ff09a24168f22d41b88b8b",
     "TURN_ACTOR_HOURLY_EGRESS_CAP_BYTES": "1000000000",
     "TURN_GLOBAL_DAILY_EGRESS_CAP_BYTES": "10000000000",
     "DEFAULT_ROOM_CAPACITY": "128",
@@ -33,7 +33,7 @@
   "kv_namespaces": [
     {
       "binding": "HALO_ABUSE",
-      "id": "39abc5d59c85450e82f75b2abe3e3afa"
+      "id": "0360e1b80a7f43a095ecdbd714e9934d"
     }
   ],
   "analytics_engine_datasets": [

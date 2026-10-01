@@ -152,6 +152,7 @@ def main() -> int:
     parser.add_argument("--turnstile-secret", default="", help="Turnstile secret key")
     parser.add_argument("--build-id", default="web-multiplayer-v1", help="build id players and hosts must share")
     parser.add_argument("--campaign", action="store_true", help="keep the R2 campaign map bucket")
+    parser.add_argument("--kv-id", help="reuse a HALO_ABUSE KV namespace created by an earlier run")
     parser.add_argument("--dry-run", action="store_true", help="rewrite files and print commands only")
     parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]), help=argparse.SUPPRESS)
     arguments = parser.parse_args()
@@ -179,8 +180,12 @@ def main() -> int:
             signaling_url = f"https://{arguments.name}-signaling.YOUR-SUBDOMAIN.workers.dev"
 
     # 1. The KV namespace the abuse controls use.
-    kv_id = None
-    if not dry_run:
+    kv_id = arguments.kv_id
+    if kv_id:
+        if not re.fullmatch(r"[0-9a-f]{32}", kv_id):
+            raise SystemExit("--kv-id must be 32 hexadecimal characters")
+        print(f"reusing KV namespace {kv_id}")
+    elif not dry_run:
         output = run(npx("kv", "namespace", "create", "HALO_ABUSE"), signaling, dry_run)
         found = re.search(r'"id":\s*"([0-9a-f]{32})"', output) or re.search(r'id\s*=\s*"([0-9a-f]{32})"', output)
         if not found:
@@ -211,12 +216,33 @@ def main() -> int:
     }
     if arguments.turnstile_secret:
         generated["TURNSTILE_SECRET"] = arguments.turnstile_secret
+    # Saved before anything can fail, so a failed deploy never loses them.
+    saved = repo / "build" / "deployment-secrets.txt"
+    if not dry_run:
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        saved.write_text(
+            "".join(f"{key}={value}\n" for key, value in generated.items()),
+            encoding="utf-8",
+        )
+        saved.chmod(0o600)
+        print(f"saved the secrets to {saved}")
     for secret_name, value in generated.items():
         run(npx("secret", "put", secret_name), signaling, dry_run, stdin=value)
 
     # 4. Deploy the signaling Worker and learn its address.
     output = run(["npm", "run", "check"], signaling, dry_run)
-    output = run(npx("deploy"), signaling, dry_run)
+    try:
+        output = run(npx("deploy"), signaling, dry_run)
+    except SystemExit:
+        print(
+            "\nThe deploy failed. A new account must enable Analytics Engine once, at\n"
+            "  https://dash.cloudflare.com/?to=/:account/workers/analytics-engine\n"
+            "Then finish with:  cd services/signaling && npx wrangler deploy\n"
+            "or rerun this script with --kv-id and the namespace id printed above,\n"
+            "so it reuses that namespace instead of creating another.",
+            file=sys.stderr,
+        )
+        raise
     if not dry_run:
         found = re.search(r"https://[a-z0-9.-]+\.workers\.dev", output)
         if found:
@@ -232,15 +258,6 @@ def main() -> int:
         build_id=arguments.build_id,
     )
     print(f"rewrote {page}")
-
-    saved = repo / "build" / "deployment-secrets.txt"
-    if not dry_run:
-        saved.parent.mkdir(parents=True, exist_ok=True)
-        saved.write_text(
-            "".join(f"{key}={value}\n" for key, value in generated.items()),
-            encoding="utf-8",
-        )
-        saved.chmod(0o600)
 
     print(
         f"""

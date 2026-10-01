@@ -105,7 +105,7 @@ class Lobby {
     this.status = status;
     if (!previous || previous.matchState !== status.matchState ||
         previous.players !== status.players || previous.roomId !== status.roomId) {
-      log(this.index, "status", status);
+      log(this.index, "status", { status });
     }
     if (status.active && status.dedicated) {
       this.inactiveSince = null;

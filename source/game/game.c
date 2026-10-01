@@ -774,6 +774,39 @@ void game_initialize_for_new_map(
 	return;
 }
 
+#ifdef HALO_WEB
+/* the map being precached, as its file name without directory or ".map"
+(bloodgulch), for the browser's loading telemetry (port/web/src/web_platform.c) */
+static char game_map_loading_file_name[64];
+
+char const *game_map_loading_name(
+	void)
+{
+	return game_map_loading_file_name;
+}
+
+static void game_map_loading_name_set(
+	char const *map_name)
+{
+	char const *base = map_name ? map_name : "";
+	char const *cursor;
+	unsigned long length;
+
+	for (cursor = base; *cursor; cursor++)
+	{
+		if (*cursor == '\\' || *cursor == '/')
+			base = cursor + 1;
+	}
+	length = csstrlen(base);
+	if (length >= 4 && !csstrcmp(base + length - 4, ".map"))
+		length -= 4;
+	if (length >= sizeof(game_map_loading_file_name))
+		length = sizeof(game_map_loading_file_name) - 1;
+	csmemcpy(game_map_loading_file_name, base, length);
+	game_map_loading_file_name[length] = 0;
+}
+#endif
+
 boolean game_map_loading_in_progress(
 	real *progress)
 {
@@ -868,6 +901,9 @@ void game_precache_new_map(
 {
 	long map_status;
 
+#ifdef HALO_WEB
+	game_map_loading_name_set(map_name);
+#endif
 	if (!cache_files_precache_map_loaded(map_name))
 	{
 		if (cache_files_precache_in_progress() &&
