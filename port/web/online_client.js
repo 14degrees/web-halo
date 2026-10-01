@@ -2535,7 +2535,10 @@
     queue.match = ticket.match || null;
     if (ticket.state === "ready" && ticket.match && ticket.match.inviteCode && !queue.joined && !session.active) {
       queue.joined = true;
+      /* a free match after a wagered one: the old wager stays only as the
+         lobby's result card */
       if (ticket.match.wager) startWager(ticket.match);
+      else lobby.wager = null;
       join(ticket.match.inviteCode, null, true).catch(function(error) { fail(error); });
       return;
     }
@@ -3654,7 +3657,7 @@
     /* in a wagered match: this player's running total, by the HUD */
     var hud = lobbyElement("hud-balance");
     if (hud) {
-      var mine = inMatch ? myWagerLine() : null;
+      var mine = inMatch && lobby.wager && !lobby.wager.done ? myWagerLine() : null;
       hud.hidden = !mine;
       if (mine) {
         setText("hud-balance-amount", formatSigned(mine.net));
@@ -3697,6 +3700,40 @@
   function applyWagerView(view) {
     if (!lobby.wager || !view || view.matchId !== lobby.wager.matchId) return;
     lobby.wager.view = view;
+    publishWagerTable();
+  }
+
+  /* The scoreboard's SOL column (port/web/src/web_online_ui.c): each
+     player's name and running total, and the pot, written where the game
+     reads them; an empty table outside a wagered match. */
+  var WAGER_TABLE_ROWS = 16;
+  function writeAscii(base, offset, text, size) {
+    for (var index = 0; index < size; index++) {
+      var code = index < text.length ? text.charCodeAt(index) : 0;
+      HEAPU8[base + offset + index] = index === size - 1 || code > 127 ? 0 : code;
+    }
+  }
+
+  function publishWagerTable() {
+    var commit = global.Module && global.Module._platform_web_wager_commit;
+    var base = wasmNumber("platform_web_wager_staging", 0);
+    if (typeof commit !== "function" || !base || typeof HEAPU8 === "undefined") return;
+    var view = session.active && lobby.wager && !lobby.wager.done ? lobby.wager.view : null;
+    var key = view ? JSON.stringify(view.players.map(function(player) { return [player.name, player.balance]; })) : "";
+    if (lobby.wagerTableKey === key) return;
+    lobby.wagerTableKey = key;
+    if (!view) {
+      commit(0);
+      return;
+    }
+    var players = view.players.slice(0, WAGER_TABLE_ROWS);
+    players.forEach(function(player, index) {
+      writeAscii(base, index * 24, player.name, 12);
+      writeAscii(base, index * 24 + 12, player.balance <= 0 ? "spent" : formatSigned(player.net), 12);
+    });
+    /* the pot, under the SOL column (Halo clips each column at the next) */
+    writeAscii(base, WAGER_TABLE_ROWS * 24, formatSol(view.pot), 48);
+    commit(players.length);
   }
 
   /* During the match: the balances, every few seconds (each kill's
@@ -3719,6 +3756,7 @@
     }
     /* not in it yet: the match is still being joined */
     if (!wager.joined) return;
+    publishWagerTable();
     if (!wager.endedAt) wager.endedAt = Date.now();
     if (Date.now() - wager.polledAt < 2000) return;
     if (Date.now() - wager.endedAt > 180000) {
@@ -3836,7 +3874,7 @@
 
   /* the bounty a kill or death pops, or null outside a wagered match */
   function bountyLamports() {
-    return session.active && lobby.wager ? lobby.wager.perKill : null;
+    return session.active && lobby.wager && !lobby.wager.done ? lobby.wager.perKill : null;
   }
   var killPops = { last: -1, lastDeath: -1, active: [] };
 
@@ -4020,7 +4058,10 @@
       lobby.error = null;
       lobby.started = false;
     };
-    lobbyElement("wallet-gate-connect").addEventListener("click", function() { signInWithWallet(); });
+    /* already loaded up (a returning player): connecting is enough */
+    lobbyElement("wallet-gate-connect").addEventListener("click", function() {
+      signInWithWallet().then(function() { playIfReady(true); });
+    });
     Array.prototype.forEach.call(lobbyElement("wallet-gate-amounts").querySelectorAll("button"), function(button) {
       button.addEventListener("click", function() { loadUp(Number(button.dataset.lamports)).then(playIfReady); });
     });

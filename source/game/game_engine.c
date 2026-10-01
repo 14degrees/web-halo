@@ -1407,6 +1407,35 @@ static void game_engine_generate_title_string(
 	return;
 }
 
+#ifdef HALO_WEB
+/* port: a wagered match's money (port/web/src/web_online_ui.c), by ASCII
+player name; both are FALSE outside a wagered match */
+int web_wager_label(char const *name, char *label, int label_size);
+int web_wager_footer(char *text, int text_size);
+
+/* A player's SOL label for the scoreboard, as a wide string; FALSE when the
+match is not wagered or the player is not in it. */
+static boolean in_game_score_wager_label(
+	struct player_datum const *player,
+	wchar_t *label,
+	long label_size)
+{
+	char name[12];
+	char ascii_label[12];
+	long index;
+
+	for (index = 0; index < 11 && player->name[index]; index++)
+		name[index] = player->name[index] < 128 ? (char)player->name[index] : '?';
+	name[index] = 0;
+	if (!web_wager_label(name, ascii_label, sizeof(ascii_label)))
+		return FALSE;
+	for (index = 0; index < label_size - 1 && ascii_label[index]; index++)
+		label[index] = (wchar_t)ascii_label[index];
+	label[index] = 0;
+	return TRUE;
+}
+#endif
+
 static void rasterize_in_game_score_draw_line(
 	wchar_t const *string,
 	boolean brighten,
@@ -1414,8 +1443,8 @@ static void rasterize_in_game_score_draw_line(
 	long row_index)
 {
 	rectangle2d bounds = render.camera.window_bounds;
-	short narrow_tab_stops[3];
-	short wide_tab_stops[3];
+	short narrow_tab_stops[4];
+	short wide_tab_stops[4];
 	short *tab_stops;
 	boolean splitscreen;
 	long font_index;
@@ -1428,6 +1457,9 @@ static void rasterize_in_game_score_draw_line(
 	wide_tab_stops[0] = 130;
 	wide_tab_stops[1] = 195;
 	wide_tab_stops[2] = 315;
+	/* port: a wagered match's SOL column (HALO_WEB) */
+	narrow_tab_stops[3] = 250;
+	wide_tab_stops[3] = 385;
 
 	if (bounds.x1 - bounds.x0 > 320)
 		tab_stops = wide_tab_stops;
@@ -1435,7 +1467,7 @@ static void rasterize_in_game_score_draw_line(
 		tab_stops = narrow_tab_stops;
 
 	if (row_index)
-		draw_string_set_tab_stops(tab_stops, 3);
+		draw_string_set_tab_stops(tab_stops, 4);
 	else
 		draw_string_set_tab_stops(NULL, 0);
 
@@ -1783,6 +1815,14 @@ static void game_engine_rasterize_in_game_score(
 
 	game_engine->format_score_name(score_string);
 	usprintf(row_string, L"\t%s\t%s\t%s", column_name, score_name, score_string);
+#ifdef HALO_WEB
+	{
+		char footer[48];
+
+		if (web_wager_footer(footer, sizeof(footer)))
+			usprintf(row_string, L"\t%s\t%s\t%s\tSOL", column_name, score_name, score_string);
+	}
+#endif
 	rasterize_in_game_score_draw_line(row_string, FALSE, &color, 1);
 
 	entry_index = 0;
@@ -1873,6 +1913,22 @@ static void game_engine_rasterize_in_game_score(
 					place_string,
 					player->name,
 					status_string);
+#ifdef HALO_WEB
+				{
+					wchar_t wager_label[12];
+
+					if (in_game_score_wager_label(player, wager_label, NUMBEROF(wager_label)))
+					{
+						usprintf(
+							row_string,
+							L"\t%s\t%s\t%s\t%s",
+							place_string,
+							player->name,
+							status_string,
+							wager_label);
+					}
+				}
+#endif
 
 				if (has_teams)
 					row_color = &team_colors[PIN(player->team_index, 0, 1)];
@@ -1891,6 +1947,30 @@ static void game_engine_rasterize_in_game_score(
 		}
 		while (entry_index < entry_count);
 	}
+
+#ifdef HALO_WEB
+	/* port: a wagered match's pot, under the rows */
+	{
+		char footer[48];
+		wchar_t footer_string[48];
+		long index;
+
+		if (web_wager_footer(footer, sizeof(footer)))
+		{
+			for (index = 0; index < NUMBEROF(footer_string) - 1 && footer[index]; index++)
+				footer_string[index] = (wchar_t)footer[index];
+			footer_string[index] = 0;
+			/* Halo clips each column at the next tab stop: the label under
+			Name, the amount under SOL */
+			usprintf(row_string, L"\t\tPot\t\t%s", footer_string);
+			color.red = 1.0f;
+			color.green = 0.84f;
+			color.blue = 0.35f;
+			color.alpha = alpha;
+			rasterize_in_game_score_draw_line(row_string, FALSE, &color, entry_count + 2);
+		}
+	}
+#endif
 
 	return;
 }

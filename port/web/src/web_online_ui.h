@@ -154,4 +154,13 @@ int platform_web_online_set_minimum_players(int minimum_players);
 /* Called on Halo's game thread once per frame. */
 void web_online_ui_update(int main_menu_loaded, float seconds);
 
+/* A wagered match's money for the scoreboard (the page writes it with
+platform_web_wager_staging and platform_web_wager_commit): a player's label
+by their ASCII name, and the money footer. Both are FALSE outside a wagered
+match. Game thread. */
+void *platform_web_wager_staging(void);
+void platform_web_wager_commit(int count);
+int web_wager_label(char const *name, char *label, int label_size);
+int web_wager_footer(char *text, int text_size);
+
 #endif /* HALO_WEB_ONLINE_UI_H */

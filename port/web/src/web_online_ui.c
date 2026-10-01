@@ -1019,3 +1019,108 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 	else
 		update_join(seconds);
 }
+
+/* ---------- a wagered match's money, for the scoreboard
+
+The page (online_client.js) writes each player's name and their running SOL
+total into the staging table, then commits it; the game thread's scoreboard
+looks a row's player up by name. A sequence lock keeps the game thread from
+reading a table half written: odd while the page copies in. */
+
+#define WEB_WAGER_ROWS 16
+#define WEB_WAGER_NAME 12
+#define WEB_WAGER_LABEL 12
+#define WEB_WAGER_FOOTER 48
+
+struct web_wager_table
+{
+	struct
+	{
+		char name[WEB_WAGER_NAME];
+		char label[WEB_WAGER_LABEL];
+	} rows[WEB_WAGER_ROWS];
+	char footer[WEB_WAGER_FOOTER];
+};
+
+static struct web_wager_table web_wager_staging;
+static struct web_wager_table web_wager_live;
+static int web_wager_count;
+static atomic_int web_wager_sequence = ATOMIC_VAR_INIT(0);
+
+/* where the page writes the table: rows of a 12-byte name and a 12-byte
+label, then a 48-byte footer, each NUL-terminated */
+EMSCRIPTEN_KEEPALIVE void *platform_web_wager_staging(void)
+{
+	return &web_wager_staging;
+}
+
+/* publish the staging table's first `count` rows (0: not a wagered match) */
+EMSCRIPTEN_KEEPALIVE void platform_web_wager_commit(int count)
+{
+	if (count < 0)
+		count = 0;
+	if (count > WEB_WAGER_ROWS)
+		count = WEB_WAGER_ROWS;
+	atomic_fetch_add_explicit(&web_wager_sequence, 1, memory_order_acq_rel);
+	memcpy(&web_wager_live, &web_wager_staging, sizeof(web_wager_live));
+	for (int index = 0; index < WEB_WAGER_ROWS; index++)
+	{
+		web_wager_live.rows[index].name[WEB_WAGER_NAME - 1] = 0;
+		web_wager_live.rows[index].label[WEB_WAGER_LABEL - 1] = 0;
+	}
+	web_wager_live.footer[WEB_WAGER_FOOTER - 1] = 0;
+	web_wager_count = count;
+	atomic_fetch_add_explicit(&web_wager_sequence, 1, memory_order_release);
+}
+
+/* A consistent copy of the live table, or 0 rows if the page was writing. */
+static int web_wager_snapshot(struct web_wager_table *table)
+{
+	for (int attempt = 0; attempt < 4; attempt++)
+	{
+		int before = atomic_load_explicit(&web_wager_sequence, memory_order_acquire);
+		int count;
+
+		if (before & 1)
+			continue;
+		count = web_wager_count;
+		memcpy(table, &web_wager_live, sizeof(*table));
+		atomic_thread_fence(memory_order_acquire);
+		if (atomic_load_explicit(&web_wager_sequence, memory_order_relaxed) == before)
+			return count;
+	}
+	return 0;
+}
+
+/* (game thread) a player's SOL label by their name, e.g. "+0.020"; FALSE
+when the match is not wagered or the player is not in it */
+int web_wager_label(char const *name, char *label, int label_size)
+{
+	struct web_wager_table table;
+	int count = web_wager_snapshot(&table);
+
+	for (int index = 0; index < count; index++)
+	{
+		if (strncmp(table.rows[index].name, name, WEB_WAGER_NAME) == 0)
+		{
+			strncpy(label, table.rows[index].label, (size_t)label_size - 1);
+			label[label_size - 1] = 0;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* (game thread) the match's pot for the scoreboard, e.g. "0.100", and
+whether this is a wagered match at all */
+int web_wager_footer(char *text, int text_size)
+{
+	struct web_wager_table table;
+	int count = web_wager_snapshot(&table);
+
+	if (count <= 0)
+		return 0;
+	strncpy(text, table.footer, (size_t)text_size - 1);
+	text[text_size - 1] = 0;
+	return 1;
+}
