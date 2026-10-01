@@ -563,18 +563,35 @@
     #lobby-deploy[hidden] { display: none; }
     #lobby-deploy small { display: block; margin-top: .6rem; font-size: .9rem; letter-spacing: .05em; color: #9fd4ff; text-transform: none; }
     body[data-lobby="open"] #loading { display: none; }
-    /* The wallet panel in the lobby and the balance over the game. */
-    #lobby-wallet { display: grid; gap: .35rem; padding: .7rem .8rem; border: 1px solid rgba(255, 210, 90, .3); border-radius: .35rem; background: rgba(20, 16, 4, .45); }
-    #lobby-wallet-out, #lobby-wallet-in { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
-    #lobby-wallet-out[hidden], #lobby-wallet-in[hidden] { display: none; }
-    #lobby-wallet button { padding: .4rem .7rem; border: 1px solid rgba(255, 210, 90, .55); border-radius: .25rem; background: rgba(255, 200, 60, .12); color: #ffe7a3; font: inherit; font-size: .9rem; cursor: pointer; }
-    #lobby-wallet button:disabled { opacity: .5; cursor: default; }
-    #lobby-wallet button.lobby-wallet-link { padding: 0; border: 0; background: none; color: #c8b27a; text-decoration: underline; font-size: .8rem; }
-    #lobby-wallet-name { font-family: ui-monospace, Menlo, monospace; color: #ffe7a3; }
-    #lobby-wallet-balance { font-size: 1.15rem; color: #ffd65a; }
-    .lobby-wallet-hint { font-size: .8rem; color: #c8b27a; }
-    #lobby-wallet-status { min-height: 1.2em; margin: 0; font-size: .85rem; color: #e8d7a4; }
-    #lobby-wallet-status[data-tone="error"] { color: #ffb3a8; }
+    /* The wallet: top right of the lobby, and a modal before an unwagered Play. */
+    #lobby-wallet { position: absolute; top: clamp(.9rem, 3vh, 1.6rem); right: clamp(.9rem, 3vw, 2rem); z-index: 2; display: grid; justify-items: end; gap: .4rem; max-width: min(22rem, 90vw); }
+    #lobby-wallet-out[hidden], #lobby-wallet-in[hidden], #lobby-wallet-menu[hidden] { display: none; }
+    #lobby-wallet-in { display: grid; justify-items: end; gap: .4rem; }
+    #lobby-wallet-connect, #wallet-gate-connect {
+      padding: .65rem 1.2rem; border: 1px solid #ffd65a; border-radius: .3rem;
+      background: linear-gradient(180deg, rgba(255, 214, 90, .28), rgba(160, 110, 10, .35)); color: #fff4cf;
+      font: 700 1rem/1 inherit; letter-spacing: .08em; text-transform: uppercase; cursor: pointer;
+    }
+    #lobby-wallet-chip {
+      display: flex; align-items: center; gap: .7rem; padding: .5rem .9rem; border: 1px solid rgba(255, 210, 90, .55);
+      border-radius: 2rem; background: rgba(10, 8, 2, .7); color: #ffe7a3; font: inherit; cursor: pointer;
+    }
+    #lobby-wallet-name { font-family: ui-monospace, Menlo, monospace; font-size: .9rem; }
+    #lobby-wallet-balance { font-size: 1.05rem; color: #ffd65a; }
+    #lobby-wallet-menu { display: grid; gap: .35rem; min-width: 12rem; padding: .6rem; border: 1px solid rgba(255, 210, 90, .35); border-radius: .4rem; background: rgba(10, 8, 2, .92); }
+    #lobby-wallet-menu button { padding: .45rem .7rem; border: 1px solid rgba(255, 210, 90, .4); border-radius: .25rem; background: rgba(255, 200, 60, .1); color: #ffe7a3; font: inherit; font-size: .9rem; text-align: left; cursor: pointer; }
+    #lobby-wallet-menu button:disabled { opacity: .45; cursor: default; }
+    .lobby-wallet-hint { font-size: .75rem; color: #c8b27a; }
+    #lobby-wallet-status, #wallet-gate-status { min-height: 1.2em; margin: 0; font-size: .85rem; color: #e8d7a4; text-align: right; }
+    #lobby-wallet-status[data-tone="error"], #wallet-gate-status[data-tone="error"] { color: #ffb3a8; }
+    #wallet-gate { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 1rem; background: rgba(0, 0, 0, .6); }
+    #wallet-gate[hidden] { display: none; }
+    .wallet-gate-card { position: relative; display: grid; gap: .8rem; width: min(26rem, 100%); padding: 1.6rem; border: 1px solid rgba(255, 210, 90, .45); border-radius: .5rem; background: #0b0d12; color: #e5f4ff; text-align: center; font-family: "Arial Narrow", "Avenir Next Condensed", "Segoe UI", sans-serif; }
+    .wallet-gate-card h2 { margin: 0; font-size: 1.5rem; letter-spacing: .04em; text-transform: uppercase; }
+    .wallet-gate-card p { margin: 0; color: #a9c6e0; line-height: 1.4; }
+    #wallet-gate-status { text-align: center; }
+    .wallet-gate-close { position: absolute; top: .6rem; right: .7rem; border: 0; background: none; color: #8fa6bd; font-size: 1.1rem; cursor: pointer; }
+    .wallet-gate-skip { justify-self: center; padding: 0; border: 0; background: none; color: #7fb6e0; text-decoration: underline; font: inherit; font-size: .85rem; cursor: pointer; }
     #hud-balance {
       position: fixed; top: .7rem; left: 50%; z-index: 6; transform: translateX(-50%); pointer-events: none;
       padding: .3rem .8rem; border: 1px solid rgba(255, 210, 90, .45); border-radius: 1rem; background: rgba(0, 0, 0, .5);
@@ -1635,21 +1652,6 @@
       </figure>
       <p id="lobby-countdown" aria-live="off" hidden><span>Match starts in</span><strong id="lobby-countdown-seconds">10</strong></p>
       <p id="lobby-status" role="status" aria-live="polite">Loading Halo…</p>
-      <section id="lobby-wallet" aria-label="Wallet">
-        <div id="lobby-wallet-out">
-          <button id="lobby-wallet-connect" type="button">Connect wallet</button>
-          <span class="lobby-wallet-hint">Solana devnet · 0.1 SOL a kill</span>
-        </div>
-        <div id="lobby-wallet-in" hidden>
-          <span id="lobby-wallet-name"></span>
-          <strong id="lobby-wallet-balance">0.00 SOL</strong>
-          <button id="lobby-wallet-faucet" type="button">Get 1 test SOL</button>
-          <button id="lobby-wallet-deposit" type="button">Deposit 0.5</button>
-          <button id="lobby-wallet-withdraw" type="button">Withdraw</button>
-          <button id="lobby-wallet-signout" type="button" class="lobby-wallet-link">Sign out</button>
-        </div>
-        <p id="lobby-wallet-status" role="status" aria-live="polite"></p>
-      </section>
       <button id="lobby-play" type="button">Play</button>
       <div class="lobby-links">
         <button id="lobby-spartan-toggle" type="button" aria-expanded="false">Spartan</button>
@@ -1661,6 +1663,24 @@
         <div id="lobby-colors" role="group" aria-label="Armor color"></div>
       </div>
     </div>
+    <section id="lobby-wallet" aria-label="Wallet">
+      <div id="lobby-wallet-out">
+        <button id="lobby-wallet-connect" type="button">Connect wallet</button>
+      </div>
+      <div id="lobby-wallet-in" hidden>
+        <button id="lobby-wallet-chip" type="button" aria-expanded="false" aria-controls="lobby-wallet-menu">
+          <span id="lobby-wallet-name"></span><strong id="lobby-wallet-balance">0.00 SOL</strong>
+        </button>
+        <div id="lobby-wallet-menu" hidden>
+          <button id="lobby-wallet-faucet" type="button">Get 1 test SOL</button>
+          <button id="lobby-wallet-deposit" type="button">Deposit 0.5 SOL</button>
+          <button id="lobby-wallet-withdraw" type="button">Withdraw all</button>
+          <button id="lobby-wallet-signout" type="button">Sign out</button>
+          <span class="lobby-wallet-hint">Solana devnet · 0.1 SOL a kill</span>
+        </div>
+      </div>
+      <p id="lobby-wallet-status" role="status" aria-live="polite"></p>
+    </section>
     <div class="lobby-center">
       <div id="lobby-nameplate" data-style="sage">
         <span class="lobby-nameplate-label">Spartan</span>
@@ -1672,6 +1692,16 @@
       <ul id="lobby-players"><li class="empty">Nobody here yet — press Play</li></ul>
     </div>
   </section>
+  <div id="wallet-gate" role="dialog" aria-modal="true" aria-labelledby="wallet-gate-title" hidden>
+    <div class="wallet-gate-card">
+      <button id="wallet-gate-close" class="wallet-gate-close" type="button" aria-label="Close">✕</button>
+      <h2 id="wallet-gate-title">Connect a wallet to play</h2>
+      <p>Matches are wagered: 0.1 SOL moves from the victim to the killer on every kill. Solana devnet, with free test SOL to start.</p>
+      <button id="wallet-gate-connect" type="button">Connect wallet</button>
+      <p id="wallet-gate-status" role="status" aria-live="polite"></p>
+      <button id="wallet-gate-skip" class="wallet-gate-skip" type="button">Play without a wallet</button>
+    </div>
+  </div>
   <div id="kill-pops" aria-live="polite"></div>
   <div id="hud-balance" hidden>◎ <span id="hud-balance-amount">0.00</span> SOL</div>
   <div id="lobby-deploy" role="button" tabindex="0" hidden>Match found<small>Click to play · Esc to release the mouse</small></div>

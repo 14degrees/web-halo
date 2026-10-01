@@ -2950,7 +2950,7 @@
   async function signInWithWallet() {
     if (wallet.busy) return;
     if (!preferredWallet()) {
-      setWalletStatus("No Solana wallet found. Install Phantom, switch it to devnet, then reload.", "error");
+      setWalletStatus("No Solana wallet found. Install Phantom (or another Solana wallet), then reload.", "error");
       return;
     }
     wallet.busy = true;
@@ -3090,12 +3090,19 @@
           ((id === "lobby-wallet-deposit" || id === "lobby-wallet-withdraw") && !wallet.enabled);
       }
     });
-    var status = lobbyElement("lobby-wallet-status");
-    if (status && status.textContent !== wallet.status) status.textContent = wallet.status;
-    if (status) {
+    var gate = lobbyElement("wallet-gate");
+    var gateOpen = gate && !gate.hidden;
+    ["lobby-wallet-status", "wallet-gate-status"].forEach(function(id) {
+      var status = lobbyElement(id);
+      if (!status) return;
+      /* The modal speaks while it is open; the corner otherwise. */
+      var text = (id === "wallet-gate-status") === !!gateOpen ? wallet.status : "";
+      if (status.textContent !== text) status.textContent = text;
       if (wallet.tone) status.dataset.tone = wallet.tone;
       else delete status.dataset.tone;
-    }
+    });
+    var gateConnect = lobbyElement("wallet-gate-connect");
+    if (gateConnect) gateConnect.disabled = wallet.busy;
     var nameInput = lobbyElement("lobby-name");
     if (nameInput) nameInput.disabled = !!wallet.token;
     var hud = lobbyElement("hud-balance");
@@ -3241,6 +3248,12 @@
     lobby.installed = true;
     root.addEventListener("keydown", function(event) { event.stopPropagation(); });
     lobbyElement("lobby-play").addEventListener("click", function() {
+      /* Play is wagered: without a wallet, the modal asks for one first. */
+      if (!session.active && !lobby.wantsPlay && !wallet.token && !lobby.skipWallet) {
+        lobbyElement("wallet-gate").hidden = false;
+        setWalletStatus("");
+        return;
+      }
       if (session.active || lobby.wantsPlay) {
         lobby.wantsPlay = false;
         lobby.error = null;
@@ -3275,6 +3288,29 @@
     discoverWallets();
     restoreWallet();
     lobbyElement("lobby-wallet-connect").addEventListener("click", function() { signInWithWallet(); });
+    var startPlay = function() {
+      lobbyElement("wallet-gate").hidden = true;
+      lobby.wantsPlay = true;
+      lobby.error = null;
+      lobby.started = false;
+    };
+    lobbyElement("wallet-gate-connect").addEventListener("click", function() {
+      signInWithWallet().then(function() {
+        if (wallet.token) startPlay();
+      });
+    });
+    lobbyElement("wallet-gate-skip").addEventListener("click", function() {
+      lobby.skipWallet = true;
+      startPlay();
+    });
+    lobbyElement("wallet-gate-close").addEventListener("click", function() {
+      lobbyElement("wallet-gate").hidden = true;
+    });
+    lobbyElement("lobby-wallet-chip").addEventListener("click", function() {
+      var menu = lobbyElement("lobby-wallet-menu");
+      menu.hidden = !menu.hidden;
+      lobbyElement("lobby-wallet-chip").setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+    });
     lobbyElement("lobby-wallet-faucet").addEventListener("click", function() { claimTestSol(); });
     lobbyElement("lobby-wallet-deposit").addEventListener("click", function() { depositToHouse(); });
     lobbyElement("lobby-wallet-withdraw").addEventListener("click", function() { withdrawFromHouse(); });
