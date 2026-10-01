@@ -37,6 +37,7 @@ docker run -d --name halo-server --env-file game-server.env \
 | `HALO_GAME_ORIGIN` | (required) | The game site. It must be in the Worker's `ALLOWED_ORIGINS`. |
 | `HALO_HOST_SERVICE_TOKEN` | (required) | The Worker's `HOST_SERVICE_TOKEN` secret. |
 | `HALO_WEBRTC_UDP_PORT` | `0` (any) | The one UDP port for all players' WebRTC traffic. Publish it. |
+| `HALO_WEBRTC_UDP_HOST` | (all) | The address to receive WebRTC on, where the platform needs one: `fly-global-services` on Fly.io. |
 | `HALO_PUBLIC_IP` | (none) | The address players reach the server at. Set it behind a 1:1 NAT (a cloud VM, a container). |
 | `HALO_BUILD_ID` | `web-multiplayer-v1` | Must equal the page's `halo-build-id`. Players only join rooms with their build. |
 | `HALO_LOBBY_ROTATION` | `bloodgulch:slayer` | Maps and modes in turn, for example `hangemhigh:slayer,prisoner`. |
@@ -61,3 +62,25 @@ crashed server drops out of quick join on its own. Stop a server with
 If the game exits, the gateway exits. If the room link fails eight times in
 a row, the gateway stops the game and exits. Run the container with a
 restart policy.
+
+## Fly.io
+
+`fly/fly.toml` runs one server in Los Angeles on a shared CPU with 512 MB,
+with a dedicated IPv4 address (Fly carries UDP only to dedicated
+addresses). Fly answers UDP only from `fly-global-services`, on the same
+port outside and in, so the gateway binds there.
+
+Fly mounts no folder at start, so the deployed image includes the maps. It
+lives only in the app's private registry. From the repository root:
+
+```sh
+docker build --platform linux/amd64 -f services/game-server/Dockerfile -t halo-game-server .
+mkdir -p build/fly/maps && cp services/game-server/fly/Dockerfile build/fly/
+cp assets/maps/{ui,bloodgulch,hangemhigh,beavercreek,sidewinder,damnation,ratrace,prisoner,chillout,carousel,boardingaction,wizard,putput,longest}.map build/fly/maps/
+docker build --platform linux/amd64 -t registry.fly.io/halo-game-lilchocobo:<tag> build/fly
+fly auth docker && docker push registry.fly.io/halo-game-lilchocobo:<tag>
+fly deploy -c services/game-server/fly/fly.toml --image registry.fly.io/halo-game-lilchocobo:<tag> --ha=false
+```
+
+The service credential is a Fly secret: `fly secrets set
+HALO_HOST_SERVICE_TOKEN=... -a halo-game-lilchocobo`.

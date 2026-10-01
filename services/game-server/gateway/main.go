@@ -55,6 +55,7 @@ type config struct {
 	CountdownSeconds  int
 	PostgameSeconds   int
 	StatusAddress     string
+	UDPHost           string
 	UDPPort           int
 	PublicIP          string
 	RestartForWaiting bool
@@ -156,6 +157,7 @@ func loadConfig() (*config, error) {
 	if c.UDPPort, err = integer("HALO_WEBRTC_UDP_PORT", 0, 0, 65535); err != nil {
 		return nil, err
 	}
+	c.UDPHost = environment("HALO_WEBRTC_UDP_HOST", "")
 	c.PublicIP = environment("HALO_PUBLIC_IP", "")
 	if c.PublicIP != "" && net.ParseIP(c.PublicIP) == nil {
 		return nil, errors.New("HALO_PUBLIC_IP must be an IP address")
@@ -413,7 +415,7 @@ func run() error {
 	s.room = &room{config: c, client: &http.Client{Timeout: 30 * time.Second}, waiting: map[string]time.Time{}}
 	s.peers, err = newPeerSet(s.link, func(to string, signal map[string]any) {
 		s.room.send(map[string]any{"type": "signal", "to": to, "signal": signal})
-	}, func() {}, c.UDPPort, c.PublicIP)
+	}, func() {}, c.UDPHost, c.UDPPort, c.PublicIP)
 	if err != nil {
 		return err
 	}

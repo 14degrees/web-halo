@@ -1,0 +1,29 @@
+# The game server on Fly.io (services/game-server/README.md, "Fly.io").
+# Deploy as the README says: the image is built locally with the
+# game data and pushed to the app's private registry.
+app = "halo-game-lilchocobo"
+primary_region = "lax"
+
+[env]
+  HALO_SIGNALING_URL = "https://halo-signaling.lilchocobo2.workers.dev"
+  HALO_GAME_ORIGIN = "https://halo.lilchocobo2.workers.dev"
+  HALO_LOBBY_ROTATION = "hangemhigh:slayer"
+  HALO_LOBBY_COUNTDOWN_SECONDS = "15"
+  HALO_LOBBY_POSTGAME_SECONDS = "8"
+  # Fly answers UDP only from this address, on the same port outside and in
+  HALO_WEBRTC_UDP_HOST = "fly-global-services"
+  HALO_WEBRTC_UDP_PORT = "40100"
+  HALO_PUBLIC_IP = "37.16.2.146"
+
+[[services]]
+  protocol = "udp"
+  internal_port = 40100
+  [[services.ports]]
+    port = 40100
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[[restart]]
+  policy = "always"

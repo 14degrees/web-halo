@@ -65,10 +65,20 @@ type peerSet struct {
 // with publicIP, the server's candidates carry that address, as a machine
 // behind a 1:1 NAT (a cloud VM, a container) must.
 func newPeerSet(link *gameLink, signal func(string, map[string]any), changed func(),
-	udpPort int, publicIP string) (*peerSet, error) {
+	udpHost string, udpPort int, publicIP string) (*peerSet, error) {
 	settings := webrtc.SettingEngine{}
 	if udpPort > 0 {
-		conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: udpPort})
+		/* udpHost: the address to receive on, where the platform needs one
+		   (Fly.io answers only from fly-global-services) */
+		bind := &net.UDPAddr{Port: udpPort}
+		if udpHost != "" {
+			resolved, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(udpHost, fmt.Sprint(udpPort)))
+			if err != nil {
+				return nil, fmt.Errorf("WebRTC address %s: %w", udpHost, err)
+			}
+			bind = resolved
+		}
+		conn, err := net.ListenUDP("udp4", bind)
 		if err != nil {
 			return nil, fmt.Errorf("WebRTC port %d: %w", udpPort, err)
 		}
