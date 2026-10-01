@@ -3799,8 +3799,32 @@
     if (typeof global.requestAnimationFrame === "function") global.requestAnimationFrame(tickKillPops);
   }
 
+  /* Halo admits nobody to a match already started, so leaving the page
+     mid-match is for good: the browser asks first, and the refresh keys do
+     nothing while a match is on. */
+  function inMatch() {
+    if (!session.active) return false;
+    var state = clientState();
+    return state === CLIENT_STATE.PREGAME || state === CLIENT_STATE.INGAME || state === CLIENT_STATE.POSTGAME;
+  }
+
+  function guardMatchFromRefresh() {
+    global.addEventListener("beforeunload", function(event) {
+      if (!inMatch()) return;
+      event.preventDefault();
+      /* (older browsers show the dialog only for a returnValue) */
+      event.returnValue = "";
+    });
+    global.addEventListener("keydown", function(event) {
+      var refresh = event.key === "F5" ||
+        ((event.metaKey || event.ctrlKey) && (event.key === "r" || event.key === "R"));
+      if (refresh && inMatch()) event.preventDefault();
+    }, true);
+  }
+
   function initialize() {
     if (!WALLET_ENABLED) document.body.dataset.wallet = "off";
+    guardMatchFromRefresh();
     collectElements();
     restoreHostSettings();
     restorePlayerProfile();
