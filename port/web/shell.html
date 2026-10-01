@@ -675,6 +675,47 @@
     #lobby-play, #lobby-play[data-mode="leave"] { font-size: 1.35rem; text-transform: uppercase; }
     .lobby-card { margin-top: auto; display: grid; gap: .45rem; padding-top: 1rem; }
     .lobby-card[hidden] { display: none; }
+    .lobby-info [hidden] { display: none; }
+    .lobby-pick::after { content: "  ▸"; color: #ffb069; }
+    #lobby-play:disabled { opacity: 1; color: #9aa6bd; cursor: default; animation: none; background: rgba(30, 44, 92, .55); }
+    /* Halo 3's small dialogs: friends, and the game and map choosers */
+    .h3-dialog {
+      position: fixed; inset: 0; margin: auto; height: fit-content; width: min(30rem, calc(100vw - 2rem)); padding: 0;
+      border: 1px solid rgba(128, 148, 180, .45); background: linear-gradient(160deg, #0c1a30, #050b16); color: #e1e8f2;
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif; box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, .7);
+    }
+    .h3-dialog::backdrop { background: rgba(0, 4, 12, .72); backdrop-filter: blur(4px); }
+    .h3-dialog-card { position: relative; display: grid; gap: .8rem; padding: 1.5rem 1.6rem 1.4rem; }
+    .h3-dialog h2 { margin: 0; font-weight: 400; font-size: 1.7rem; text-transform: uppercase; color: #fff; }
+    .h3-dialog p { margin: 0; color: #b9c7dc; font-size: 1.1rem; line-height: 1.35; }
+    .h3-dialog [hidden] { display: none !important; }
+    #party-out, #party-in { display: grid; gap: .8rem; }
+    .h3-action {
+      padding: .55rem 1rem; border: 0; background: rgba(30, 44, 92, .75); color: #e9ecf2; cursor: pointer;
+      font-family: inherit; font-size: 1.2rem; text-transform: uppercase; letter-spacing: .03em; text-align: left;
+    }
+    .h3-action:hover, .h3-action:focus-visible { background: #54362e; outline: none; animation: h3-pulse 2s infinite; }
+    .h3-quiet { background: rgba(255, 255, 255, .06); }
+    .party-join { display: grid; gap: .4rem; }
+    .party-join label { color: #8094b4; font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; }
+    .party-join div { display: flex; gap: .5rem; }
+    #party-join-code {
+      flex: 1; min-width: 0; padding: .5rem .7rem; border: 1px solid rgba(128, 148, 180, .45); background: rgba(0, 0, 0, .35);
+      color: #fff; font-family: inherit; font-size: 1.4rem; letter-spacing: .25em; text-transform: uppercase;
+    }
+    .party-code { font-size: 2.6rem !important; letter-spacing: .3em; color: #fff !important; }
+    .party-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+    #party-status:empty { display: none; }
+    #party-status[data-tone="error"] { color: #ffb3a8; }
+    .choice-options { display: grid; max-height: min(60vh, 30rem); overflow-y: auto; }
+    .choice-options button {
+      padding: .5rem 1rem; border: 0; background: transparent; color: #8094b4; cursor: pointer; text-align: left;
+      font-family: inherit; font-size: 1.3rem; text-transform: uppercase;
+    }
+    .choice-options button[aria-selected="true"] { background: #54362e; color: #e4e4e4; }
+    .choice-options button:hover:not([aria-selected="true"]) { background: rgba(64, 86, 132, .35); color: #e1e8f2; }
+    /* the party's leader */
+    #lobby-players li .leader { margin-left: .5rem; color: #ffb069; font-size: .9em; }
     /* ---------- Halo 3's matchmaking lobby, as the game draws it: a wide
        navy panel (title, the lobby's settings, the focused Start bar, the
        options, the state, the world at night with its lights, who is
@@ -1999,11 +2040,15 @@
   <section id="lobby" aria-label="Matchmaking lobby" hidden>
     <video class="lobby-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
     <div class="lobby-left">
-      <h1 class="lobby-title">Matchmaking lobby</h1>
+      <h1 class="lobby-title" id="lobby-title">Matchmaking lobby</h1>
       <nav class="lobby-menu" aria-label="Matchmaking">
         <div class="lobby-info">
-          <p class="lobby-menu-item lobby-menu-static">Network: <span>Online</span></p>
+          <button id="lobby-switch" class="lobby-menu-item" type="button">Switch Lobby</button>
+          <p class="lobby-menu-item lobby-menu-static">Network: <span id="lobby-network">Online</span></p>
+          <button id="lobby-party-code" class="lobby-menu-item" type="button" hidden>Party: <span id="lobby-party-code-text"></span></button>
           <button id="lobby-playlist-open" class="lobby-menu-item" type="button">Playlist: <span id="lobby-playlist">Team Doubles</span></button>
+          <button id="lobby-game-open" class="lobby-menu-item lobby-pick" type="button" hidden>Game: <span id="lobby-game">Slayer</span></button>
+          <button id="lobby-map-open" class="lobby-menu-item lobby-pick" type="button" hidden>Map: <span id="lobby-map">Battle Creek</span></button>
         </div>
         <button id="lobby-play" type="button">Start matchmaking</button>
         <button id="lobby-options" class="lobby-option" type="button">Edit Matchmaking Options</button>
@@ -2093,6 +2138,39 @@
         <p id="playlist-detail-counts"></p>
         <button id="playlist-dialog-select" type="button">Select</button>
       </div>
+    </div>
+  </dialog>
+  <dialog id="party-dialog" class="h3-dialog" aria-labelledby="party-dialog-title">
+    <div class="h3-dialog-card">
+      <button id="party-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
+      <h2 id="party-dialog-title">Friends</h2>
+      <div id="party-out">
+        <p>Start a party and send your friends its code or link. They land in your lobby, and you play together: in matchmaking or in a custom game of your own.</p>
+        <button id="party-create" class="h3-action" type="button">Start a party</button>
+        <form id="party-join-form" class="party-join">
+          <label for="party-join-code">Join with a code</label>
+          <div>
+            <input id="party-join-code" maxlength="6" autocomplete="off" spellcheck="false" placeholder="K7QX2M">
+            <button class="h3-action" type="submit">Join</button>
+          </div>
+        </form>
+      </div>
+      <div id="party-in" hidden>
+        <p>Your party code</p>
+        <p id="party-code" class="party-code"></p>
+        <div class="party-actions">
+          <button id="party-copy" class="h3-action" type="button">Copy invite link</button>
+          <button id="party-leave" class="h3-action h3-quiet" type="button">Leave party</button>
+        </div>
+      </div>
+      <p id="party-status" role="status" aria-live="polite"></p>
+    </div>
+  </dialog>
+  <dialog id="choice-dialog" class="h3-dialog" aria-labelledby="choice-dialog-title">
+    <div class="h3-dialog-card">
+      <button id="choice-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
+      <h2 id="choice-dialog-title">Game</h2>
+      <div id="choice-options" class="choice-options" role="listbox"></div>
     </div>
   </dialog>
   <dialog id="spartan-dialog" aria-labelledby="spartan-dialog-title">

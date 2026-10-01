@@ -2495,6 +2495,11 @@
 
   async function enqueueForMatch() {
     if (lobby.queue) return;
+    if (partyView()) {
+      if (partyLeader() && lobbyKind() === "matchmaking") startParty();
+      else lobby.wantsPlay = false;
+      return;
+    }
     var queue = { id: null, state: "joining", queued: 0, playlist: selectedPlaylist().id, polledAt: 0 };
     lobby.queue = queue;
     try {
@@ -2635,6 +2640,8 @@
 
   function choosePlaylist(id) {
     if (!playlistById(id) || id === selectedPlaylist().id) return;
+    if (partyView() && !partyLeader()) return;
+    if (partyView()) configureParty({ playlist: id });
     lobby.playlist = id;
     try { global.localStorage.setItem(PLAYLIST_STORAGE_KEY, id); } catch (error) { /* this load only */ }
     /* searching already: search the new playlist instead */
@@ -2707,6 +2714,323 @@
       focused.id === selectedPlaylist().id ? "Selected" : "Select " + focused.label;
   }
 
+  /* ---------- parties (services/signaling/src/party.ts)
+
+     Friends together in the lobby, by a six-letter code (or a link with
+     #party=CODE). Every member's page polls the party each second; the
+     leader picks the lobby (matchmaking with a playlist, or a custom game
+     with a map and game type) and starts it, which gives every member a
+     ticket that their page then follows as its own. After the match, the
+     party is still together. */
+
+  var PARTY_STORAGE_KEY = "halo-party";
+  var PARTY_POLL_MILLISECONDS = 1000;
+
+  function partyMember() {
+    var profile = currentProfile();
+    var member = {
+      playerKey: playerKey(),
+      identifier: localIdentifier(),
+      profile: { name: profile.name, style: profile.style },
+    };
+    if (validEmblem(profile.emblem)) member.profile.emblem = profile.emblem;
+    if (WALLET_ENABLED && wallet.token) member.walletToken = wallet.token;
+    return member;
+  }
+
+  function partyView() {
+    return lobby.party && lobby.party.view ? lobby.party.view : null;
+  }
+
+  function partyLeader() {
+    var view = partyView();
+    return !view || view.leader;
+  }
+
+  /* the lobby shown: the party's, or this player's own pick */
+  function lobbyKind() {
+    var view = partyView();
+    return view ? view.lobby : (lobby.kind || "matchmaking");
+  }
+
+  function setPartyStatus(text, tone) {
+    var status = lobbyElement("party-status");
+    if (!status) return;
+    status.textContent = text || "";
+    if (tone) status.dataset.tone = tone;
+    else delete status.dataset.tone;
+  }
+
+  function rememberParty(code) {
+    try {
+      if (code) global.localStorage.setItem(PARTY_STORAGE_KEY, code);
+      else global.localStorage.removeItem(PARTY_STORAGE_KEY);
+    } catch (error) { /* this visit only */ }
+  }
+
+  function inviteLink(code) {
+    var base = global.location.origin + global.location.pathname;
+    return base + "#party=" + encodeURIComponent(code);
+  }
+
+  function applyParty(view) {
+    if (!view) return;
+    if (!lobby.party || lobby.party.code !== view.code) lobby.party = { code: view.code, adopted: null, polledAt: 0 };
+    lobby.party.view = view;
+    rememberParty(view.code);
+    adoptPartyActivity(view);
+    renderPartyDialog();
+  }
+
+  /* The party started something: this member follows their own ticket in
+     it. The leader stopping a search drops it. */
+  function adoptPartyActivity(view) {
+    var activity = view.activity;
+    var party = lobby.party;
+    if (activity && activity.ticket && activity.id !== party.adopted && !session.active) {
+      party.adopted = activity.id;
+      if (lobby.queue && lobby.queue.id !== activity.ticket) cancelQueue();
+      lobby.error = null;
+      lobby.queue = { id: activity.ticket, state: activity.kind === "custom" ? "assigning" : "queued", queued: 0,
+        playlist: activity.playlist, polledAt: 0, party: true };
+      /* matchmaking searches again after each match, as alone; a custom
+         game comes back to the lobby */
+      lobby.wantsPlay = activity.kind === "queue";
+      lobby.started = true;
+      return;
+    }
+    if (!activity && party.adopted && lobby.queue && lobby.queue.party && lobby.queue.state === "queued") {
+      lobby.queue = null;
+      lobby.wantsPlay = false;
+      lobby.started = false;
+      party.adopted = null;
+    }
+  }
+
+  async function partyRequest(action, extra) {
+    var body = partyMember();
+    if (extra) Object.keys(extra).forEach(function(key) { body[key] = extra[key]; });
+    var path = action === "create" ? "/v1/parties" : "/v1/parties/" + encodeURIComponent(lobby.party.code) + "/" + action;
+    return fetchJson(path, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async function createParty() {
+    if (!session.runtimeReady) {
+      setPartyStatus("Halo is still loading. Try again in a moment.");
+      return;
+    }
+    setPartyStatus("Starting your party…");
+    try {
+      var settings = { buildId: buildId(), lobby: lobbyKind(), playlist: selectedPlaylist().id,
+        mapIndex: lobby.customMap || 0, modeIndex: lobby.customMode === undefined ? 1 : lobby.customMode };
+      var result = await partyRequest("create", settings);
+      lobby.party = null;
+      applyParty(result.party);
+      setPartyStatus("");
+    } catch (error) {
+      setPartyStatus((error && error.message) || "Couldn't start a party.", "error");
+    }
+  }
+
+  async function joinParty(code) {
+    code = String(code || "").trim().toUpperCase();
+    if (!session.runtimeReady) {
+      lobby.pendingParty = { code: code, fromLink: true };
+      setPartyStatus("Halo is loading; you'll join " + code + " as soon as it's ready.");
+      return;
+    }
+    if (!/^[A-Z0-9]{6}$/.test(code)) {
+      setPartyStatus("A party code is six letters and numbers.", "error");
+      return;
+    }
+    if (lobby.party && lobby.party.code === code) return;
+    if (lobby.party) await leaveParty();
+    setPartyStatus("Joining " + code + "…");
+    try {
+      lobby.party = { code: code, adopted: null, polledAt: 0 };
+      var result = await partyRequest("join");
+      applyParty(result.party);
+      setPartyStatus("");
+      var dialog = lobbyElement("party-dialog");
+      if (dialog && dialog.open) dialog.close();
+    } catch (error) {
+      lobby.party = null;
+      rememberParty(null);
+      setPartyStatus((error && error.message) || "Couldn't join that party.", "error");
+      openPartyDialog();
+    }
+  }
+
+  async function leaveParty() {
+    var party = lobby.party;
+    if (!party) return;
+    lobby.party = null;
+    rememberParty(null);
+    if (lobby.queue && lobby.queue.party && !session.active) {
+      lobby.queue = null;
+      lobby.wantsPlay = false;
+      lobby.started = false;
+    }
+    try {
+      await fetchJson("/v1/parties/" + encodeURIComponent(party.code) + "/leave", {
+        method: "POST", body: JSON.stringify({ playerKey: playerKey() }),
+      });
+    } catch (error) { /* it times out anyway */ }
+    renderPartyDialog();
+  }
+
+  function pollParty() {
+    if (!session.runtimeReady) return;
+    var pending = lobby.pendingParty;
+    if (pending) {
+      lobby.pendingParty = null;
+      if (pending.fromLink) {
+        joinParty(pending.code);
+      } else {
+        lobby.party = { code: pending.code, adopted: null, polledAt: Date.now() };
+        partyRequest("join").then(function(result) { applyParty(result.party); }).catch(function() {
+          lobby.party = null;
+          rememberParty(null);
+        });
+      }
+      return;
+    }
+    var party = lobby.party;
+    if (!party || party.polling || Date.now() - party.polledAt < PARTY_POLL_MILLISECONDS) return;
+    party.polling = true;
+    party.polledAt = Date.now();
+    partyRequest("poll")
+      .then(function(result) { if (lobby.party === party) applyParty(result.party); })
+      .catch(function(error) {
+        var code = error && error.haloCode;
+        if (lobby.party === party && (code === "PARTY_NOT_FOUND" || code === "PARTY_NOT_MEMBER")) {
+          lobby.party = null;
+          rememberParty(null);
+          lobby.error = "You're no longer in that party.";
+        }
+      })
+      .then(function() { party.polling = false; });
+  }
+
+  async function configureParty(settings) {
+    if (!lobby.party) return;
+    try {
+      applyParty((await partyRequest("settings", settings)).party);
+    } catch (error) {
+      lobby.error = (error && error.message) || "Couldn't change the party's settings.";
+    }
+  }
+
+  /* The leader starts the party's search or custom game. */
+  async function startParty() {
+    if (!lobby.party || lobby.party.starting) return;
+    lobby.party.starting = true;
+    lobby.error = null;
+    try {
+      applyParty((await partyRequest("start")).party);
+    } catch (error) {
+      lobby.wantsPlay = false;
+      lobby.started = false;
+      if (error && error.haloCode === "STAKE_NOT_READY" && error.message.indexOf(wallet.name || "\u0000") === 0) {
+        openLoadUp(error.message);
+      }
+      lobby.error = (error && error.message) || "Couldn't start.";
+    } finally {
+      if (lobby.party) lobby.party.starting = false;
+    }
+  }
+
+  async function stopParty() {
+    if (!lobby.party) return;
+    try {
+      applyParty((await partyRequest("stop")).party);
+    } catch (error) { /* the next poll shows where things stand */ }
+  }
+
+  function openPartyDialog() {
+    var dialog = lobbyElement("party-dialog");
+    if (!dialog) return;
+    renderPartyDialog();
+    if (!dialog.open) dialog.showModal();
+  }
+
+  function renderPartyDialog() {
+    var inParty = !!partyView();
+    var out = lobbyElement("party-out");
+    var into = lobbyElement("party-in");
+    if (out) out.hidden = inParty;
+    if (into) into.hidden = !inParty;
+    var code = lobbyElement("party-code");
+    if (code && inParty && code.textContent !== partyView().code) code.textContent = partyView().code;
+  }
+
+  /* Halo 3's choosers: a game type or a map for the custom game. */
+  function openChooser(kind) {
+    var dialog = lobbyElement("choice-dialog");
+    var select = kind === "map" ? elements.map : elements.mode;
+    if (!dialog || !select) return;
+    var current = kind === "map" ? currentCustomMap() : currentCustomMode();
+    lobbyElement("choice-dialog-title").textContent = kind === "map" ? "Map" : "Game";
+    var options = lobbyElement("choice-options");
+    options.replaceChildren.apply(options, Array.prototype.map.call(select.options, function(option) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", Number(option.value) === current ? "true" : "false");
+      button.textContent = option.textContent;
+      button.addEventListener("click", function() {
+        var index = Number(option.value);
+        if (kind === "map") lobby.customMap = index;
+        else lobby.customMode = index;
+        if (partyView() && partyLeader()) {
+          configureParty(kind === "map" ? { mapIndex: index } : { modeIndex: index });
+        }
+        dialog.close();
+      });
+      return button;
+    }));
+    dialog.showModal();
+  }
+
+  function currentCustomMap() {
+    var view = partyView();
+    return view ? view.mapIndex : (lobby.customMap || 0);
+  }
+
+  function currentCustomMode() {
+    var view = partyView();
+    return view ? view.modeIndex : (lobby.customMode === undefined ? 1 : lobby.customMode);
+  }
+
+  /* the lobby's left column for its kind: matchmaking or custom games */
+  function renderLobbyKind() {
+    var custom = lobbyKind() === "custom";
+    var view = partyView();
+    var setText = function(id, text) {
+      var element = lobbyElement(id);
+      if (element && element.textContent !== text) element.textContent = text;
+    };
+    var show = function(id, visible) {
+      var element = lobbyElement(id);
+      if (element && element.hidden === visible) element.hidden = !visible;
+    };
+    setText("lobby-title", custom ? "Custom games lobby" : "Matchmaking lobby");
+    setText("lobby-network", view ? "Online (Party)" : "Online");
+    show("lobby-party-code", !!view);
+    if (view) setText("lobby-party-code-text", view.code);
+    show("lobby-playlist-open", !custom);
+    show("lobby-game-open", custom);
+    show("lobby-map-open", custom);
+    setText("lobby-game", selectedLabel(elements.mode, currentCustomMode()) || "Slayer");
+    setText("lobby-map", selectedLabel(elements.map, currentCustomMap()) || "Battle Creek");
+    setText("lobby-options", custom ? "Edit Game Options" : "Edit Matchmaking Options");
+    var leaderOnly = !!view && !view.leader;
+    ["lobby-switch", "lobby-playlist-open", "lobby-game-open", "lobby-map-open", "lobby-options"].forEach(function(id) {
+      var element = lobbyElement(id);
+      if (element) element.disabled = leaderOnly;
+    });
+  }
+
   function queueStatus() {
     var queue = lobby.queue;
     var label = (playlistById(queue.playlist) || { label: queue.playlist }).label;
@@ -2717,6 +3041,9 @@
         (others === 0 ? "nobody else is queued yet." : others + (others === 1 ? " other player" : " other players") + " queued.") };
     }
     var staking = queue.match && queue.match.wager && queue.match.wager.escrow === "locking";
+    if (queue.playlist === "custom") {
+      return { text: queue.state === "ready" ? "Joining your custom game…" : "Setting up a server for your custom game…" };
+    }
     if (queue.state === "assigning") {
       return { text: staking ? "Match found. Locking everyone's stakes on Solana…" : "Match found. Setting up a server…" };
     }
@@ -2814,7 +3141,16 @@
        the matchmaker looks for players */
     var playlist = (lobby.queue && playlistById(lobby.queue.playlist)) || selectedPlaylist();
     var slots = 0;
-    if (!session.active) {
+    var party = partyView();
+    var maximum = lobbyKind() === "custom" ? 16 : playlist.maximum;
+    if (!session.active && party) {
+      /* the party, its leader starred */
+      players = party.members.map(function(member) {
+        return { peerId: "party:" + member.id, role: "guest", self: member.self, leader: member.leader,
+          profile: { name: member.name, style: member.style, emblem: member.emblem === null ? undefined : member.emblem } };
+      });
+      if (lobby.queue && lobbyKind() !== "custom") slots = Math.max(0, playlist.maximum - players.length);
+    } else if (!session.active) {
       players = [{ peerId: "self", role: "guest", profile: currentProfile(), self: true }];
       if (lobby.queue) slots = playlist.maximum - 1;
     } else if (session.matchmade) {
@@ -2825,11 +3161,11 @@
     var searching = !!(lobby.queue && !session.active && lobby.queue.state !== "assigning" && lobby.queue.state !== "ready");
     if (count) {
       /* Halo 3's "1 Player (16 max)" */
-      var countText = total + (total === 1 ? " Player" : " Players") + " (" + playlist.maximum + " max)";
+      var countText = total + (total === 1 ? " Player" : " Players") + " (" + maximum + " max)";
       if (count.textContent !== countText) count.textContent = countText;
     }
     var signature = players.map(function(player) {
-      return player.peerId + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
+      return player.peerId + (player.leader ? "*" : "") + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
         player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches);
     }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "");
     if (list.dataset.signature === signature) return;
@@ -2863,6 +3199,13 @@
       role.className = "role";
       role.textContent = player.peerId === session.selfPeerId ? "You" : (player.role === "host" ? "Host" : "");
       row.appendChild(name);
+      if (player.leader) {
+        var star = document.createElement("span");
+        star.className = "leader";
+        star.title = "Party leader";
+        star.textContent = "\u2605";
+        row.appendChild(star);
+      }
       row.appendChild(role);
       var matches = typeof player.matches === "number" ? player.matches :
         (self && typeof lobby.matches === "number" ? lobby.matches : null);
@@ -2885,7 +3228,10 @@
     var playlistLabel = lobbyElement("lobby-playlist");
     if (playlistLabel && playlistLabel.textContent !== playlist.label) playlistLabel.textContent = playlist.label;
     var description = lobbyElement("lobby-playlist-description");
-    if (description && description.textContent !== playlist.description) description.textContent = playlist.description;
+    var party = partyView();
+    var line = party ? "This party is open to friends. Code " + party.code + "." :
+      lobbyKind() === "custom" ? "Custom games are for parties. Press Friends to start one." : playlist.description;
+    if (description && description.textContent !== line) description.textContent = line;
     var counts = lobbyElement("lobby-playlist-counts");
     var countText = teamSize(playlist) + " · " + playlistCounts(playlist);
     if (counts && counts.textContent !== countText) counts.textContent = countText;
@@ -2893,6 +3239,8 @@
     var online = playlists().reduce(function(sum, entry) {
       return sum + (entry.searching || 0) + (entry.playing || 0);
     }, 0) + (lobby.queue || session.active ? 0 : 1);
+    /* a party waiting in the lobby is online too */
+    if (partyView() && !lobby.queue && !session.active) online = Math.max(online, partyView().members.length);
     var onlineText = online + (online === 1 ? " Gamer Online" : " Gamers Online");
     var onlineElement = lobbyElement("lobby-online");
     if (onlineElement && onlineElement.textContent !== onlineText) onlineElement.textContent = onlineText;
@@ -3065,6 +3413,7 @@
 
   function tickLobby() {
     pollQueue();
+    pollParty();
     if (document.body.dataset.lobby === "open") refreshPlaylists();
     moveToOpenServer(clientState());
     restartForWaitingPlayers();
@@ -3108,6 +3457,7 @@
     }
     tickWager();
     renderWallet(inMatch);
+    renderLobbyKind();
     if (inMatch) {
       setLobbyVisible(false);
       /* Whenever the mouse is free during a match, one click takes it back. */
@@ -3147,8 +3497,16 @@
     if (play) {
       var leaving = session.active || lobby.wantsPlay;
       play.dataset.mode = leaving ? "leave" : "play";
-      play.textContent = session.active ? "Leave match" : lobby.wantsPlay ? "Stop searching" : "Start matchmaking";
-      play.disabled = false;
+      var partyNow = partyView();
+      var customLobby = lobbyKind() === "custom";
+      var partyBusy = !!(lobby.queue && lobby.queue.party);
+      var waiting = !!partyNow && !partyNow.leader && !session.active && !partyBusy;
+      play.textContent = session.active ? "Leave match" :
+        waiting ? "Waiting for the party leader" :
+        customLobby ? (partyBusy ? "Starting the game…" : "Start game") :
+        lobby.wantsPlay || partyBusy ? "Stop searching" : "Start matchmaking";
+      play.disabled = waiting || (customLobby && partyBusy && !session.active);
+      if (waiting || (customLobby && partyBusy)) play.dataset.mode = "wait";
     }
     renderLobbyGame();
     renderLobbyPlayers();
@@ -4015,8 +4373,30 @@
     lobby.installed = true;
     root.addEventListener("keydown", function(event) { event.stopPropagation(); });
     lobbyElement("lobby-play").addEventListener("click", function() {
+      var custom = lobbyKind() === "custom";
+      var view = partyView();
+      if (!session.active) {
+        /* a custom game is a party's */
+        if (custom && !view) {
+          setPartyStatus("Custom games are for parties: start one and invite your friends.");
+          openPartyDialog();
+          return;
+        }
+        /* in a party, the leader starts and stops */
+        if (view && !view.leader) return;
+        if (view && (lobby.wantsPlay || (lobby.queue && lobby.queue.party))) {
+          lobby.wantsPlay = false;
+          lobby.started = false;
+          if (lobby.queue && lobby.queue.state === "queued") stopParty();
+          return;
+        }
+        if (view && custom) {
+          startParty();
+          return;
+        }
+      }
       /* a wagered playlist: load up first, if the vault cannot stake yet */
-      var wagered = selectedPlaylist().wager;
+      var wagered = custom ? null : selectedPlaylist().wager;
       if (WALLET_ENABLED && wagered && !session.active && !lobby.wantsPlay) {
         var blocker = stakeBlocker(wagered.stake);
         if (blocker) {
@@ -4056,8 +4436,53 @@
         });
     }
     lobbyElement("lobby-options").addEventListener("click", function() {
-      lobbyElement("lobby-playlist-open").click();
+      if (lobbyKind() === "custom") openChooser("mode");
+      else lobbyElement("lobby-playlist-open").click();
     });
+    lobbyElement("lobby-switch").addEventListener("click", function() {
+      if (session.active || lobby.queue) return;
+      var next = lobbyKind() === "custom" ? "matchmaking" : "custom";
+      lobby.kind = next;
+      if (partyView()) configureParty({ lobby: next });
+    });
+    lobbyElement("lobby-game-open").addEventListener("click", function() { openChooser("mode"); });
+    lobbyElement("lobby-map-open").addEventListener("click", function() { openChooser("map"); });
+    lobbyElement("lobby-party-code").addEventListener("click", openPartyDialog);
+    lobbyElement("choice-dialog-close").addEventListener("click", function() { lobbyElement("choice-dialog").close(); });
+    lobbyElement("party-dialog-close").addEventListener("click", function() { lobbyElement("party-dialog").close(); });
+    lobbyElement("party-create").addEventListener("click", function() { createParty(); });
+    lobbyElement("party-join-form").addEventListener("submit", function(event) {
+      event.preventDefault();
+      joinParty(lobbyElement("party-join-code").value);
+    });
+    lobbyElement("party-leave").addEventListener("click", function() {
+      leaveParty();
+      setPartyStatus("You left the party.");
+    });
+    lobbyElement("party-copy").addEventListener("click", function() {
+      var view = partyView();
+      if (!view) return;
+      var link = inviteLink(view.code);
+      var done = function() { setPartyStatus("Invite link copied. Send it to your friends."); };
+      try {
+        global.navigator.clipboard.writeText(link).then(done, function() { setPartyStatus(link); });
+      } catch (error) {
+        setPartyStatus(link);
+      }
+    });
+    lobbyElement("party-dialog").addEventListener("keydown", function(event) { event.stopPropagation(); });
+    lobbyElement("choice-dialog").addEventListener("keydown", function(event) { event.stopPropagation(); });
+    /* a party link (#party=CODE), or the party this browser was in */
+    var partyHash = /(?:^#|&)party=([A-Za-z0-9]{6})/.exec(global.location.hash || "");
+    var savedParty = null;
+    try { savedParty = global.localStorage.getItem(PARTY_STORAGE_KEY); } catch (error) { savedParty = null; }
+    /* joined once the game is up: a member carries its network identity */
+    if (partyHash) {
+      try { global.history.replaceState(null, "", global.location.pathname + global.location.search); } catch (error) { /* keep */ }
+      lobby.pendingParty = { code: partyHash[1].toUpperCase(), fromLink: true };
+    } else if (savedParty) {
+      lobby.pendingParty = { code: savedParty, fromLink: false };
+    }
     lobbyElement("lobby-playlist-open").addEventListener("click", function() {
       lobby.playlistFocus = selectedPlaylist().id;
       playlistDialog.showModal();
@@ -4145,9 +4570,8 @@
     lobbyElement("lobby-wallet-withdraw").addEventListener("click", function() { withdrawVault(); });
     lobbyElement("lobby-wallet-signout").addEventListener("click", signOutWallet);
     lobbyElement("lobby-friends").addEventListener("click", function() {
-      lobby.wantsPlay = false;
-      showDialog();
-      if (!session.active) showSetup();
+      setPartyStatus("");
+      openPartyDialog();
     });
     var prompt = lobbyElement("lobby-deploy");
     prompt.addEventListener("click", deploy);

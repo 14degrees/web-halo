@@ -92,8 +92,9 @@ export function isPlaylist(value: unknown): value is Playlist {
    (bounty: per kill; team: the winning team takes the pot); null for a free
    one. */
 export function playlistWager(playlist: Playlist): { stake: number; perKill: number; mode: WagerMode } | null {
-  const rules = PLAYLISTS[playlist];
-  if (!("stake" in rules)) return null;
+  /* a party's custom game is no playlist */
+  const rules = PLAYLISTS[playlist] as (typeof PLAYLISTS)[Playlist] | undefined;
+  if (!rules || !("stake" in rules)) return null;
   return { stake: rules.stake, perKill: rules.perKill, mode: "mode" in rules ? rules.mode : "bounty" };
 }
 
@@ -180,7 +181,18 @@ interface TicketRow extends Record<string, SqlStorageValue> {
   created_at: number;
   polled_at: number;
   match_id: string | null;
+  party_id: string | null;
 }
+
+/* a party member the matchmaker queues or seats (src/party.ts) */
+export interface PartyMemberTicket {
+  key: string;
+  identifier: string;
+  wallet: string | null;
+}
+
+/* the playlist name a party's custom game is recorded under */
+export const CUSTOM_PLAYLIST = "custom";
 
 interface MatchRow extends Record<string, SqlStorageValue> {
   id: string;
@@ -276,6 +288,10 @@ export class Matchmaker extends DurableObject<Env> {
     if (!columns.includes("player_key")) {
       this.ctx.storage.sql.exec("ALTER TABLE tickets ADD COLUMN player_key TEXT");
     }
+    if (!columns.includes("party_id")) {
+      /* a party's tickets land in one match together */
+      this.ctx.storage.sql.exec("ALTER TABLE tickets ADD COLUMN party_id TEXT");
+    }
     const serverColumns = this.ctx.storage.sql
       .exec<{ name: string }>("PRAGMA table_info(servers)").toArray().map(({ name }) => name);
     if (!serverColumns.includes("machine_id")) {
@@ -304,6 +320,7 @@ export class Matchmaker extends DurableObject<Env> {
       CREATE INDEX IF NOT EXISTS tickets_wallet ON tickets(wallet);
       CREATE INDEX IF NOT EXISTS tickets_player_key ON tickets(player_key);
       CREATE INDEX IF NOT EXISTS tickets_match ON tickets(match_id);
+      CREATE INDEX IF NOT EXISTS tickets_party ON tickets(party_id, state);
       CREATE INDEX IF NOT EXISTS servers_seen ON servers(seen_at);
       CREATE INDEX IF NOT EXISTS servers_machine ON servers(machine_id);
       CREATE INDEX IF NOT EXISTS servers_state ON servers(state, build_id, seen_at);
@@ -594,6 +611,143 @@ export class Matchmaker extends DurableObject<Env> {
 
   /* ---------- forming matches */
 
+  /* The oldest queued tickets that fit a match: a party's tickets all
+     together or none of them. */
+  private chooseTickets(playlist: Playlist, buildId: string, maximum: number): TicketRow[] {
+    const queued = this.ctx.storage.sql.exec<TicketRow>(
+      `SELECT * FROM tickets WHERE playlist = ? AND build_id = ? AND state = 'queued'
+        ORDER BY created_at ASC LIMIT 64`,
+      playlist, buildId,
+    ).toArray();
+    const chosen: TicketRow[] = [];
+    const parties = new Set<string>();
+    for (const ticket of queued) {
+      if (chosen.length >= maximum) break;
+      if (ticket.party_id === null) {
+        chosen.push(ticket);
+        continue;
+      }
+      if (parties.has(ticket.party_id)) continue;
+      parties.add(ticket.party_id);
+      const party = queued.filter((other) => other.party_id === ticket.party_id);
+      if (chosen.length + party.length <= maximum) chosen.push(...party);
+    }
+    return chosen;
+  }
+
+  /* ---------- parties (src/party.ts) */
+
+  /* Who of these members is busy: queued is fine (it is replaced), in a
+     match that is setting up or live is not. */
+  private busyMember(members: PartyMemberTicket[]): PartyMemberTicket | null {
+    for (const member of members) {
+      const active = this.ctx.storage.sql.exec<{ id: string }>(
+        `SELECT id FROM tickets WHERE (identifier = ? OR player_key = ?) AND state IN ('assigning', 'ready')`,
+        member.identifier, member.key,
+      ).toArray();
+      if (active.length > 0) return member;
+    }
+    return null;
+  }
+
+  private retireQueued(members: PartyMemberTicket[], now: number): void {
+    for (const member of members) {
+      const queued = this.ctx.storage.sql.exec<{ id: string }>(
+        `SELECT id FROM tickets WHERE (identifier = ? OR player_key = ? OR (wallet IS NOT NULL AND wallet = ?))
+           AND state = 'queued'`,
+        member.identifier, member.key, member.wallet,
+      ).toArray();
+      for (const { id } of queued) {
+        this.ctx.storage.sql.exec("UPDATE tickets SET state = 'cancelled' WHERE id = ?", id);
+        this.log(now, "ticket_replaced", id);
+      }
+    }
+  }
+
+  /* A party queues together: a ticket each, which form a match only all
+     together. The tickets, by member key, or the member who is busy. */
+  async enqueueParty(input: {
+    partyId: string; buildId: string; playlist: Playlist; members: PartyMemberTicket[]; now: number;
+  }): Promise<{ tickets: Record<string, string> } | { busy: string }> {
+    this.sweep(input.now);
+    const busy = this.busyMember(input.members);
+    if (busy) return { busy: busy.key };
+    this.retireQueued(input.members, input.now);
+    const tickets: Record<string, string> = {};
+    for (const member of input.members) {
+      const id = randomToken(24);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO tickets (id, playlist, build_id, identifier, wallet, player_key, party_id, state, created_at, polled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+        id, input.playlist, input.buildId, member.identifier, member.wallet, member.key, input.partyId,
+        input.now, input.now,
+      );
+      tickets[member.key] = id;
+    }
+    this.log(input.now, "party_queued", input.partyId, { playlist: input.playlist, players: input.members.length });
+    this.formMatches(input.now);
+    await this.schedule(input.now);
+    return { tickets };
+  }
+
+  /* A party's custom game: a server of its own, with the leader's map and
+     game type. The tickets, by member key; the member who is busy; or no
+     server free. */
+  async startCustom(input: {
+    partyId: string; buildId: string; mapIndex: number; modeIndex: number; members: PartyMemberTicket[]; now: number;
+  }): Promise<{ tickets: Record<string, string>; matchId: string } | { busy: string } | { noServer: true }> {
+    this.sweep(input.now);
+    const busy = this.busyMember(input.members);
+    if (busy) return { busy: busy.key };
+    const server = this.ctx.storage.sql.exec<ServerRow>(
+      `SELECT * FROM servers WHERE build_id = ? AND state = 'idle' AND seen_at > ?
+        ORDER BY registered_at ASC LIMIT 1`,
+      input.buildId, input.now - SERVER_TIMEOUT_MS,
+    ).toArray()[0];
+    if (!server) {
+      /* the autoscaler starts a machine on its next round */
+      await this.schedule(input.now);
+      return { noServer: true };
+    }
+    this.retireQueued(input.members, input.now);
+    const matchId = randomToken(12);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO matches (id, playlist, build_id, server_id, state, created_at, updated_at,
+         map_index, mode_index, roster) VALUES (?, ?, ?, ?, 'assigning', ?, ?, ?, ?, ?)`,
+      matchId, CUSTOM_PLAYLIST, input.buildId, server.id, input.now, input.now, input.mapIndex, input.modeIndex,
+      JSON.stringify(input.members.map((member) => member.identifier)),
+    );
+    const tickets: Record<string, string> = {};
+    for (const member of input.members) {
+      const id = randomToken(24);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO tickets (id, playlist, build_id, identifier, wallet, player_key, party_id, state, created_at,
+           polled_at, match_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'assigning', ?, ?, ?)`,
+        id, CUSTOM_PLAYLIST, input.buildId, member.identifier, member.wallet, member.key, input.partyId,
+        input.now, input.now, matchId,
+      );
+      tickets[member.key] = id;
+    }
+    this.ctx.storage.sql.exec("UPDATE servers SET state = 'assigned', match_id = ? WHERE id = ?", matchId, server.id);
+    this.log(input.now, "custom_formed", matchId, {
+      party: input.partyId, server: server.id, mapIndex: input.mapIndex, modeIndex: input.modeIndex,
+      players: input.members.length,
+    });
+    await this.schedule(input.now);
+    return { tickets, matchId };
+  }
+
+  /* The party stopped searching: its queued tickets are cancelled. */
+  async cancelParty(partyId: string, now: number): Promise<void> {
+    const queued = this.ctx.storage.sql.exec<{ id: string }>(
+      "SELECT id FROM tickets WHERE party_id = ? AND state = 'queued'", partyId,
+    ).toArray();
+    for (const { id } of queued) {
+      this.ctx.storage.sql.exec("UPDATE tickets SET state = 'cancelled' WHERE id = ?", id);
+      this.log(now, "ticket_cancelled", id);
+    }
+  }
+
   private formMatches(now: number): void {
     for (const playlist of Object.keys(PLAYLISTS) as Playlist[]) {
       const rules = PLAYLISTS[playlist];
@@ -613,11 +767,8 @@ export class Matchmaker extends DurableObject<Env> {
             build.build_id, now - SERVER_TIMEOUT_MS,
           ).toArray()[0];
           if (!server) continue;
-          const tickets = this.ctx.storage.sql.exec<TicketRow>(
-            `SELECT * FROM tickets WHERE playlist = ? AND build_id = ? AND state = 'queued'
-              ORDER BY created_at ASC LIMIT ?`,
-            playlist, build.build_id, rules.maximum,
-          ).toArray();
+          const tickets = this.chooseTickets(playlist, build.build_id, rules.maximum);
+          if (tickets.length < rules.minimum) continue;
           const [mapIndex, modeIndex] = this.nextRotation(playlist);
           const matchId = randomToken(12);
           const roster = tickets.map((ticket) => ticket.identifier);

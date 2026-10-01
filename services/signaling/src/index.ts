@@ -45,6 +45,7 @@ import {
 import { generateIceServersWithFallback, revokeTurnCredential } from "./turn";
 import { enforceTurnBandwidthCaps, turnIsDisabled, turnUsageSummary } from "./turn_cap";
 import { requireHumanVerification } from "./turnstile";
+import { handlePartyRequest } from "./parties";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
@@ -54,6 +55,7 @@ export { LobbyDirectory } from "./lobby";
 export { Matchmaker } from "./matchmaker";
 export { SignalingRoom } from "./room";
 export { Wager } from "./wager";
+export { Party } from "./party";
 export type {
   ClientMessage,
   CreateRoomResponse,
@@ -1096,6 +1098,12 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
     await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
     return createRoom(request, env, origin);
+  }
+
+  if (url.pathname.startsWith("/v1/parties")) {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "party");
+    const partyResponse = await handlePartyRequest(request, env, url, () => readJsonBody(request));
+    if (partyResponse !== null) return withCors(jsonResponse(partyResponse), origin);
   }
 
   const escrowResponse = await handleEscrowRequest(request, env, url, () => readJsonBody(request));

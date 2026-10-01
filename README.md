@@ -171,8 +171,10 @@ The game can play system link games on a local network and on the internet:
   networks permit it.
 - Native builds can use an invite link without a server from this project.
 - The browser build has matchmaking on dedicated servers, including
-  playlists played for SOL on Solana devnet. Refer to
-  [docs/wagers.md](docs/wagers.md).
+  playlists played for SOL on Solana devnet
+  ([docs/wagers.md](docs/wagers.md)), and parties: friends join by a code
+  or link, then search together or play a custom game on a server of their
+  own (`services/signaling/src/party.ts`).
 - The default netcode is new. Each machine moves its own player at once,
   and the host makes the decisions for the game. Refer to
   [port/linux/NETCODE.md](port/linux/NETCODE.md).
