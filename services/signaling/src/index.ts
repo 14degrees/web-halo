@@ -906,6 +906,11 @@ async function handleMatchmaking(
       return withCors(jsonResponse({ cancelled, v: SIGNALING_PROTOCOL_VERSION }), origin);
     }
   }
+  if (request.method === "GET" && url.pathname === "/v1/playlists") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
+    const playlists = await matchmaker(env).playlists(now);
+    return withCors(jsonResponse({ playlists, v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
   if (request.method === "GET" && url.pathname === "/v1/matchmaker") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
     const snapshot = await matchmaker(env).snapshot(now);

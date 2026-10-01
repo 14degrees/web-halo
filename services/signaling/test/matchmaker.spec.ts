@@ -172,4 +172,15 @@ describe("matchmaker", () => {
     /* a machine that never queued has no rank */
     expect(await stub.matchesFor(identifier(0x8ff))).toBeNull();
   });
+
+  it("lists the playlists with who is searching in each", async () => {
+    const buildId = freshBuild();
+    await call("POST", "/v1/queue", { protocolVersion: 1, buildId, identifier: identifier(0x901), playlist: "ctf" });
+    const result = await call("GET", "/v1/playlists");
+    expect(result.status).toBe(200);
+    const ctf = result.body.playlists.find((playlist: { id: string }) => playlist.id === "ctf");
+    expect(ctf).toMatchObject({ label: "Team Objective", teams: true, maximum: 8 });
+    expect(ctf.modes.every((mode: number) => mode === 2)).toBe(true);
+    expect(ctf.searching).toBeGreaterThanOrEqual(1);
+  });
 });

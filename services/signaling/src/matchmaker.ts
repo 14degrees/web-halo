@@ -27,13 +27,36 @@ export const MATCHMAKER_NAME = "main";
 /* the queue's playlists: players per match, and how long a match waits for
    more than the minimum before it forms */
 export const PLAYLISTS = {
-  ffa: { label: "Free-for-all", minimum: 2, maximum: 8, fillMs: 10_000, rotation: [[5, 0]] },
-  /* Halo puts joining players on red and blue in turn, and each match has
-     a fresh server, so four players make two teams of two */
-  team: { label: "2v2 Team Slayer", minimum: 2, maximum: 4, fillMs: 10_000, rotation: [[0, 1]] },
-  duel: { label: "1v1", minimum: 2, maximum: 2, fillMs: 0, rotation: [[4, 0], [6, 0], [10, 0]] },
+  /* Halo joins players to red and blue in turn (the server, to the smaller
+     team), and each match has a fresh server, so teams come out even */
+  team: {
+    label: "Team Doubles", minimum: 2, maximum: 4, fillMs: 10_000, teams: true,
+    description: "Two on two Team Slayer. Bring a partner, or get one.",
+    rotation: [[0, 1], [6, 1], [4, 1]],
+  },
+  bigteam: {
+    label: "Team Slayer", minimum: 2, maximum: 8, fillMs: 15_000, teams: true,
+    description: "Up to four on four Team Slayer on Halo's bigger maps.",
+    rotation: [[9, 1], [2, 1], [1, 1]],
+  },
+  ctf: {
+    label: "Team Objective", minimum: 2, maximum: 8, fillMs: 15_000, teams: true,
+    description: "Capture the Flag, up to four on four. Take theirs, keep yours.",
+    rotation: [[0, 2], [2, 2], [9, 2]],
+  },
+  ffa: {
+    label: "Rumble Pit", minimum: 2, maximum: 8, fillMs: 10_000, teams: false,
+    description: "Free-for-all Slayer. Every Spartan for themselves.",
+    rotation: [[5, 0], [4, 0], [3, 0], [6, 0]],
+  },
+  duel: {
+    label: "Head to Head", minimum: 2, maximum: 2, fillMs: 0, teams: false,
+    description: "One on one Slayer. No excuses.",
+    rotation: [[4, 0], [6, 0], [10, 0]],
+  },
 } as const satisfies Record<string, {
-  label: string; minimum: number; maximum: number; fillMs: number; rotation: ReadonlyArray<readonly [number, number]>;
+  label: string; minimum: number; maximum: number; fillMs: number; teams: boolean; description: string;
+  rotation: ReadonlyArray<readonly [number, number]>;
 }>;
 export type Playlist = keyof typeof PLAYLISTS;
 export function isPlaylist(value: unknown): value is Playlist {
@@ -227,6 +250,20 @@ export class Matchmaker extends DurableObject<Env> {
         idle_since INTEGER,
         changed_at INTEGER NOT NULL
       );
+      /* Durable Object storage bills (and caps) rows read: every lookup
+         and sweep below reads only the rows it needs */
+      CREATE INDEX IF NOT EXISTS events_at ON events(at);
+      CREATE INDEX IF NOT EXISTS tickets_state ON tickets(state, polled_at);
+      CREATE INDEX IF NOT EXISTS tickets_identifier ON tickets(identifier, created_at);
+      CREATE INDEX IF NOT EXISTS tickets_wallet ON tickets(wallet);
+      CREATE INDEX IF NOT EXISTS tickets_player_key ON tickets(player_key);
+      CREATE INDEX IF NOT EXISTS tickets_match ON tickets(match_id);
+      CREATE INDEX IF NOT EXISTS servers_seen ON servers(seen_at);
+      CREATE INDEX IF NOT EXISTS servers_machine ON servers(machine_id);
+      CREATE INDEX IF NOT EXISTS servers_state ON servers(state, build_id, seen_at);
+      CREATE INDEX IF NOT EXISTS matches_state ON matches(state, created_at);
+      CREATE INDEX IF NOT EXISTS matches_updated ON matches(state, updated_at);
+      CREATE INDEX IF NOT EXISTS matches_playlist ON matches(playlist, state);
     `);
   }
 
@@ -534,7 +571,13 @@ export class Matchmaker extends DurableObject<Env> {
 
   /* ---------- timeouts */
 
+  private sweptAt = 0;
+
+  /* at most every few seconds: timeouts are seconds long, and every call
+     reads rows */
   private sweep(now: number): void {
+    if (now - this.sweptAt < 3_000 && now >= this.sweptAt) return;
+    this.sweptAt = now;
     const abandoned = this.ctx.storage.sql.exec<{ id: string }>(
       "SELECT id FROM tickets WHERE state = 'queued' AND polled_at <= ?", now - TICKET_TIMEOUT_MS,
     ).toArray();
@@ -666,6 +709,30 @@ export class Matchmaker extends DurableObject<Env> {
       this.log(now, "machine_stopped", machine.name, { idleMinutes: Math.round((now - row.idle_since) / 60_000) });
       return;
     }
+  }
+
+  /* The playlists, with who is searching and playing in each, for the
+     lobby's playlist picker. */
+  async playlists(now: number): Promise<Array<{
+    id: Playlist; label: string; description: string; minimum: number; maximum: number; teams: boolean;
+    maps: number[]; modes: number[]; searching: number; playing: number;
+  }>> {
+    this.sweep(now);
+    return (Object.keys(PLAYLISTS) as Playlist[]).map((id) => {
+      const rules = PLAYLISTS[id];
+      const searching = this.ctx.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM tickets WHERE playlist = ? AND state IN ('queued', 'assigning')", id,
+      ).one().count;
+      const playing = this.ctx.storage.sql.exec<{ count: number }>(
+        "SELECT COALESCE(SUM(players), 0) AS count FROM matches WHERE playlist = ? AND state = 'ready'", id,
+      ).one().count;
+      return {
+        id, label: rules.label, description: rules.description, minimum: rules.minimum,
+        maximum: rules.maximum, teams: rules.teams,
+        maps: rules.rotation.map(([map]) => map), modes: rules.rotation.map(([, mode]) => mode),
+        searching, playing,
+      };
+    });
   }
 
   /* ---------- the dashboard */
