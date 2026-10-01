@@ -25,8 +25,11 @@ const (
 	poolHeartbeatEvery = 2 * time.Second
 	// how long the assigned players have to connect and load
 	poolLoadDeadline = 45 * time.Second
-	// a match everyone has left ends after this long, whatever the game does
-	poolEmptyLimit = 30 * time.Second
+	// a match nobody is connected to ends after this long, whatever the game
+	// says: Halo keeps a player who left in its count, for the scoreboard
+	poolEmptyLimit = 20 * time.Second
+	// a match still not live this long after its room opened is called off
+	poolStartLimit = poolLoadDeadline + 30*time.Second
 	// and every match ends by this long after it went live (the playlists
 	// are ten minutes)
 	poolMatchLimit = 12 * time.Minute
@@ -82,7 +85,7 @@ func (s *server) poolHeartbeat(ctx context.Context, serverID string) (*assignmen
 	callContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	err := s.room.api(callContext, http.MethodPost, "/v1/pool/servers/"+url.PathEscape(serverID)+"/heartbeat",
-		map[string]any{"matchState": stateName(status.Match), "players": status.Players}, &result)
+		map[string]any{"matchState": stateName(status.Match), "players": s.peers.connectedCount()}, &result)
 	if err != nil {
 		var refusal *apiError
 		if errors.As(err, &refusal) && refusal.status == http.StatusNotFound {
@@ -197,6 +200,27 @@ func (s *server) runPool(ctx context.Context, identifier string, gameDone, linkD
 		s.mu.Lock()
 		status := s.status
 		s.mu.Unlock()
+		/* the gateway's own limits, from who is really connected: the game's
+		   count and its own endings cannot be trusted to free the server */
+		if match.endReason == "" {
+			connected := s.peers.connectedCount()
+			if connected == 0 && time.Since(match.readyAt) > 10*time.Second {
+				if match.emptyAt.IsZero() {
+					match.emptyAt = time.Now()
+				} else if time.Since(match.emptyAt) > poolEmptyLimit {
+					if match.started {
+						end("finished: everyone left")
+					} else {
+						end("void: nobody connected")
+					}
+				}
+			} else {
+				match.emptyAt = time.Time{}
+			}
+			if match.endReason == "" && !match.started && time.Since(match.readyAt) > poolStartLimit {
+				end("void: the match never started")
+			}
+		}
 		switch {
 		case match.endReason != "":
 			/* the scores show for the postgame, then the next match gets a
@@ -209,18 +233,7 @@ func (s *server) runPool(ctx context.Context, identifier string, gameDone, linkD
 				match.started = true
 				match.liveAt = time.Now()
 			}
-			/* the game's own ending can fail to fire on a server with no
-			   player of its own: the gateway holds the limits too */
-			if status.Players == 0 {
-				if match.emptyAt.IsZero() {
-					match.emptyAt = time.Now()
-				} else if time.Since(match.emptyAt) > poolEmptyLimit {
-					end("finished: everyone left")
-				}
-			} else {
-				match.emptyAt = time.Time{}
-			}
-			if match.endReason == "" && time.Since(match.liveAt) > poolMatchLimit {
+			if time.Since(match.liveAt) > poolMatchLimit {
 				end("finished: time limit")
 			}
 		case match.started && (status.Match == matchPostgame || status.Match == matchLobby):

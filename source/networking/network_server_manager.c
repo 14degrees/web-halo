@@ -1723,9 +1723,37 @@ boolean network_game_server_add_player_to_game(
 
 	if (machine->machine_index == player->machine_index)
 	{
+#ifdef HALO_SERVER
+		/* the dedicated server: the team with fewer players, so a player who
+		drops and comes back never leaves a team empty, which no team game
+		can start with (port/server/README.md) */
+		{
+			long count[NUMBER_OF_MULTIPLAYER_TEAMS];
+			long index;
+
+			csmemset(count, 0, sizeof(count));
+			for (index = 0; index < MAXIMUM_NETWORK_PLAYER_COUNT; index++)
+			{
+				struct network_player *other = &server->game.players[index];
+
+				if (network_player_is_valid(other) &&
+					other->team_index >= 0 && other->team_index < NUMBER_OF_MULTIPLAYER_TEAMS)
+				{
+					count[other->team_index]++;
+				}
+			}
+			player->team_index = 0;
+			for (index = 1; index < NUMBER_OF_MULTIPLAYER_TEAMS; index++)
+			{
+				if (count[index] < count[player->team_index])
+					player->team_index = (char)index;
+			}
+		}
+#else
 		player->team_index = (char)network_game_server_next_team_index;
 		network_game_server_next_team_index =
 			(network_game_server_next_team_index + 1) % NUMBER_OF_MULTIPLAYER_TEAMS;
+#endif
 
 		if (!player->name[0])
 			get_unique_random_name(server, player);
