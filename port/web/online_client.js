@@ -2533,12 +2533,15 @@
     var prompt = lobbyElement("lobby-deploy");
     if (prompt) prompt.hidden = true;
     lobby.deployed = true;
-    /* One click, so the browser allows both: the game fills the screen and
-       takes the mouse. */
-    var fullscreen = byId("fullscreen");
-    if (fullscreen && !document.fullscreenElement) fullscreen.click();
+    /* Only the mouse: a fullscreen request would spend the click's user
+       activation, and Chrome then refuses the pointer lock. The game already
+       fills the window. */
     var focus = byId("focus");
     if (focus) focus.click();
+  }
+
+  function mouseCaptured() {
+    return document.pointerLockElement === byId("canvas");
   }
 
   function tickLobby() {
@@ -2579,7 +2582,18 @@
     }
     if (inMatch) {
       setLobbyVisible(false);
-      if (prompt) prompt.hidden = lobby.deployed;
+      /* Whenever the mouse is free during a match, one click takes it back. */
+      if (prompt) {
+        var free = !mouseCaptured();
+        if (free && lobby.deployed && prompt.dataset.mode !== "resume") {
+          prompt.dataset.mode = "resume";
+          prompt.firstChild.textContent = "Click to resume";
+        } else if (!lobby.deployed && prompt.dataset.mode !== "start") {
+          prompt.dataset.mode = "start";
+          prompt.firstChild.textContent = "Match found";
+        }
+        prompt.hidden = !free;
+      }
       return;
     }
     lobby.deployed = false;

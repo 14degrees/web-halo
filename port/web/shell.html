@@ -2489,6 +2489,10 @@
     canvas.addEventListener("pointerdown", () => {
       focusCanvas();
       if (!audioMuted) resumeBrowserAudio();
+      /* Clicking the game takes the mouse, as in any browser shooter. */
+      if (document.pointerLockElement !== canvas && document.body.dataset.lobby !== "open") {
+        captureGameInput();
+      }
     });
 
     function webUiOwnsKeyboardFocus() {
