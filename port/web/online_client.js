@@ -12,7 +12,7 @@
   var PROTOCOL_VERSION = 1;
   /* The wager experiment's wallet: sign-in, the Play prompt, the balance
      panel and the in-match balance. Off for now; true brings it all back. */
-  var WALLET_ENABLED = false;
+  var WALLET_ENABLED = true;
   var ROOM_CAPACITY = 128;
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
@@ -1397,6 +1397,10 @@
       }
       return;
     }
+    if (message.type === "wager") {
+      applyWagerView(message.wager);
+      return;
+    }
     if (message.type === "reward") {
       var myName = session.profile && session.profile.name;
       if (myName && message.killer === myName && typeof message.killerLamports === "number") {
@@ -2509,6 +2513,13 @@
       if (lobby.queue !== queue) return;
       lobby.queue = null;
       lobby.started = false;
+      if (error && (error.haloCode === "STAKE_NOT_READY" || error.haloCode === "WALLET_SIGN_IN_REQUIRED")) {
+        /* a wagered playlist this wallet cannot stake in yet */
+        lobby.wantsPlay = false;
+        refreshWallet();
+        openLoadUp(error.message);
+        return;
+      }
       scheduleRejoin(error && error.message ? error.message : "Could not join the queue.");
     }
   }
@@ -2524,6 +2535,7 @@
     queue.match = ticket.match || null;
     if (ticket.state === "ready" && ticket.match && ticket.match.inviteCode && !queue.joined && !session.active) {
       queue.joined = true;
+      if (ticket.match.wager) startWager(ticket.match);
       join(ticket.match.inviteCode, null, true).catch(function(error) { fail(error); });
       return;
     }
@@ -2647,6 +2659,10 @@
         option.append(playlist.label);
         var count = document.createElement("small");
         count.textContent = playlist.searching ? playlist.searching + " searching" : "";
+        if (playlist.wager && !playlist.searching) {
+          count.className = "wager";
+          count.textContent = "\u25ce " + formatSol(playlist.wager.stake);
+        }
         option.appendChild(count);
         option.addEventListener("click", function() {
           lobby.playlistFocus = playlist.id;
@@ -2662,6 +2678,10 @@
     lobbyElement("playlist-detail-name").textContent = focused.label;
     lobbyElement("playlist-detail-size").textContent = teamSize(focused);
     lobbyElement("playlist-detail-description").textContent = focused.description;
+    var wagerLine = lobbyElement("playlist-detail-wager");
+    wagerLine.hidden = !focused.wager;
+    wagerLine.textContent = focused.wager ? "\u25ce " + formatSol(focused.wager.stake) + " SOL buy-in · " +
+      formatSol(focused.wager.perKill) + " SOL a kill · 5% fee on winnings" : "";
     lobbyElement("playlist-detail-counts").textContent = playlistCounts(focused);
     var maps = lobbyElement("playlist-detail-maps");
     if (maps.dataset.playlist !== focused.id) {
@@ -2692,8 +2712,13 @@
       return { text: "Searching for " + label + " players… " +
         (others === 0 ? "nobody else is queued yet." : others + (others === 1 ? " other player" : " other players") + " queued.") };
     }
-    if (queue.state === "assigning") return { text: "Match found. Setting up a server…" };
-    if (queue.state === "ready") return { text: "Match found. Joining the server…" };
+    var staking = queue.match && queue.match.wager && queue.match.wager.escrow === "locking";
+    if (queue.state === "assigning") {
+      return { text: staking ? "Match found. Locking everyone's stakes on Solana…" : "Match found. Setting up a server…" };
+    }
+    if (queue.state === "ready") {
+      return { text: staking ? "Match found. Locking everyone's stakes on Solana…" : "Match found. Joining the server…" };
+    }
     return { text: "Searching for players…" };
   }
 
@@ -3069,6 +3094,7 @@
       if (prompt) prompt.hidden = true;
       return;
     }
+    tickWager();
     renderWallet(inMatch);
     if (inMatch) {
       setLobbyVisible(false);
@@ -3212,7 +3238,6 @@
 
   var WALLET_STORAGE_KEY = "halo.web.wallet.v1";
   var WALLET_CHAIN = "solana:devnet";
-  var DEPOSIT_LAMPORTS = 500000000;
   var LAMPORTS_PER_SOL = 1000000000;
   var BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   var wallet = {
@@ -3225,6 +3250,9 @@
     lamports: 0,
     onchainLamports: null,
     enabled: false,
+    /* the player's vault in the escrow program (GET /v1/escrow) */
+    vault: null,
+    playSession: null,
     busy: false,
     status: "",
     tone: null,
@@ -3260,7 +3288,14 @@
   }
 
   function formatSol(lamports) {
-    return (lamports / LAMPORTS_PER_SOL).toFixed(2);
+    return (lamports / LAMPORTS_PER_SOL).toFixed(3);
+  }
+
+  /* "+0.019" / "\u22120.010" / "0.000" */
+  function formatSigned(lamports) {
+    if (lamports > 0) return "+" + formatSol(lamports);
+    if (lamports < 0) return "\u2212" + formatSol(-lamports);
+    return formatSol(0);
   }
 
   function walletHeaders() {
@@ -3324,10 +3359,14 @@
     if (!summary) return;
     wallet.address = summary.wallet || wallet.address;
     wallet.name = summary.name || wallet.name;
-    wallet.enabled = summary.wagersEnabled === true;
-    if (typeof summary.lamports === "number") wallet.lamports = summary.lamports;
-    if (summary.onchainLamports === null || typeof summary.onchainLamports === "number") {
-      wallet.onchainLamports = summary.onchainLamports;
+    /* a vault summary (/v1/escrow) */
+    if (typeof summary.enabled === "boolean") {
+      wallet.enabled = summary.enabled;
+      wallet.vault = summary.vault || null;
+      wallet.playSession = summary.session || null;
+      if (summary.walletLamports === null || typeof summary.walletLamports === "number") {
+        wallet.onchainLamports = summary.walletLamports;
+      }
     }
     if (wallet.name) {
       /* A wallet plays under its own short name. */
@@ -3351,11 +3390,14 @@
   }
 
   async function refreshWallet() {
-    if (!wallet.token || wallet.busy) return;
+    if (!wallet.token || wallet.refreshing) return;
+    wallet.refreshing = true;
     try {
-      applyWalletSummary(await fetchJson("/v1/wallet", { method: "GET", headers: walletHeaders() }));
+      applyWalletSummary(await fetchJson("/v1/escrow", { method: "GET", headers: walletHeaders() }));
     } catch (error) {
-      /* The next refresh tries again. */
+      if (error && error.haloCode === "WALLET_SIGN_IN_REQUIRED") signOutWallet();
+    } finally {
+      wallet.refreshing = false;
     }
   }
 
@@ -3366,11 +3408,13 @@
     wallet.token = saved.token;
     wallet.address = saved.address || null;
     try {
-      applyWalletSummary(await fetchJson("/v1/wallet", { method: "GET", headers: walletHeaders() }));
+      applyWalletSummary(await fetchJson("/v1/escrow", { method: "GET", headers: walletHeaders() }));
     } catch (error) {
-      wallet.token = null;
-      wallet.address = null;
-      saveWallet();
+      if (error && error.haloCode === "WALLET_SIGN_IN_REQUIRED") {
+        wallet.token = null;
+        wallet.address = null;
+        saveWallet();
+      }
     }
   }
 
@@ -3403,7 +3447,8 @@
       wallet.token = result.token;
       applyWalletSummary(result);
       saveWallet();
-      setWalletStatus(wallet.enabled ? "Signed in. Deposit devnet SOL to start wagering." : "Signed in.");
+      await refreshWallet();
+      setWalletStatus("Signed in as " + wallet.name + ".");
     } catch (error) {
       setWalletStatus((error && error.message) || "Wallet sign-in failed.", "error");
     } finally {
@@ -3417,82 +3462,102 @@
     wallet.account = null;
     wallet.name = null;
     wallet.lamports = 0;
+    wallet.vault = null;
+    wallet.playSession = null;
     saveWallet();
     setWalletStatus("Signed out.");
   }
 
-  async function depositToHouse() {
-    if (wallet.busy || !wallet.token) return;
+  /* ---------- the vault (services/escrow; services/signaling/src/vault.ts)
+
+     Load up is one wallet prompt: open the vault (the first time), deposit,
+     and approve a day's play session, which lets the game stake up to
+     SESSION_LIMIT_LAMPORTS of the vault in matches. Withdraw sends the free
+     balance back to the wallet. The Worker builds each transaction; the
+     wallet signs and sends it. */
+
+  var LOAD_UP_CHOICES = [50000000, 100000000, 250000000];
+  var SESSION_LIMIT_LAMPORTS = 500000000;
+
+  function playSessionLeft() {
+    var session_ = wallet.playSession;
+    return session_ ? Math.max(0, session_.limit - session_.spent) : 0;
+  }
+
+  /* Why this wallet cannot stake `stake` yet, or null when it can. */
+  function stakeBlocker(stake) {
+    if (!wallet.token) return "Connect a wallet to play for SOL.";
+    if (!wallet.enabled) return "Playing for SOL is not set up on this server.";
+    if (!wallet.vault || wallet.vault.free < stake) return "Load up your vault to play for SOL.";
+    if (!wallet.playSession || playSessionLeft() < stake) return "Approve a new play session to keep playing for SOL.";
+    return null;
+  }
+
+  async function signAndSend(transaction) {
+    var account = wallet.account || await connectProvider(true) || await connectProvider(false);
+    if (!account) throw new Error("Reconnect your wallet.");
+    var sent = await wallet.provider.features["solana:signAndSendTransaction"].signAndSendTransaction({
+      account: account,
+      chain: WALLET_CHAIN,
+      transaction: fromBase64(transaction),
+    });
+    var output = Array.isArray(sent) ? sent[0] : sent;
+    return base58(output.signature);
+  }
+
+  /* Waits (up to a minute) for the vault to show a change. */
+  async function awaitVault(changed) {
+    for (var attempt = 0; attempt < 30; attempt++) {
+      await new Promise(function(resolve) { global.setTimeout(resolve, 2000); });
+      await refreshWallet();
+      if (changed()) return true;
+    }
+    return false;
+  }
+
+  async function loadUp(deposit) {
+    if (wallet.busy || !wallet.token) return false;
     wallet.busy = true;
+    var before = wallet.vault ? wallet.vault.free : -1;
     try {
-      setWalletStatus("Approve the 0.5 SOL deposit in your wallet…");
-      var account = wallet.account || await connectProvider(true) || await connectProvider(false);
-      if (!account) throw new Error("Reconnect your wallet.");
-      var prepared = await fetchJson("/v1/wallet/deposit-transaction", {
+      setWalletStatus(deposit > 0 ? "Approve the " + formatSol(deposit) + " SOL load-up in your wallet…" :
+        "Approve the play session in your wallet…");
+      var prepared = await fetchJson("/v1/escrow/load", {
         method: "POST",
         headers: walletHeaders(),
-        body: JSON.stringify({ lamports: DEPOSIT_LAMPORTS }),
+        body: JSON.stringify({ deposit: deposit, limit: SESSION_LIMIT_LAMPORTS }),
       });
-      var sent = await wallet.provider.features["solana:signAndSendTransaction"].signAndSendTransaction({
-        account: account,
-        chain: WALLET_CHAIN,
-        transaction: fromBase64(prepared.transaction),
+      await signAndSend(prepared.transaction);
+      setWalletStatus("Sent. Waiting for Solana to confirm…");
+      var done = await awaitVault(function() {
+        return !!wallet.playSession && (deposit === 0 || (wallet.vault && wallet.vault.free > before));
       });
-      var output = Array.isArray(sent) ? sent[0] : sent;
-      var signature = base58(output.signature);
-      setWalletStatus("Deposit sent. Waiting for devnet to confirm…");
-      for (var attempt = 0; attempt < 30; attempt++) {
-        await new Promise(function(resolve) { global.setTimeout(resolve, 2000); });
-        try {
-          applyWalletSummary(await fetchJson("/v1/wallet/deposit", {
-            method: "POST",
-            headers: walletHeaders(),
-            body: JSON.stringify({ signature: signature }),
-          }));
-          setWalletStatus("Deposit confirmed.");
-          return;
-        } catch (error) {
-          if (!error || error.haloCode !== "DEPOSIT_NOT_CONFIRMED") throw error;
-        }
-      }
-      throw new Error("The deposit is taking long to confirm; it will count once it does.");
+      setWalletStatus(done ? "Loaded up. You're ready to play for SOL." :
+        "Still confirming; your balance updates when it does.", done ? null : "error");
+      return done;
     } catch (error) {
-      setWalletStatus((error && error.message) || "The deposit failed.", "error");
+      setWalletStatus((error && error.message) || "The load-up failed.", "error");
+      return false;
     } finally {
       wallet.busy = false;
     }
   }
 
-  async function claimTestSol() {
-    if (wallet.busy || !wallet.token) return;
+  async function withdrawVault() {
+    if (wallet.busy || !wallet.token || !wallet.vault || wallet.vault.free <= 0) return;
     wallet.busy = true;
-    setWalletStatus("Adding 1 test SOL…");
+    var before = wallet.vault.free;
     try {
-      applyWalletSummary(await fetchJson("/v1/wallet/faucet", {
-        method: "POST",
-        headers: walletHeaders(),
-        body: "{}",
-      }));
-      setWalletStatus("Added 1 test SOL to your balance. Go wager it.");
-    } catch (error) {
-      setWalletStatus((error && error.message) || "Could not add test SOL.", "error");
-    } finally {
-      wallet.busy = false;
-    }
-  }
-
-  async function withdrawFromHouse() {
-    if (wallet.busy || !wallet.token) return;
-    wallet.busy = true;
-    setWalletStatus("Sending your balance to your wallet…");
-    try {
-      var result = await fetchJson("/v1/wallet/withdraw", {
+      setWalletStatus("Approve the withdrawal in your wallet…");
+      var prepared = await fetchJson("/v1/escrow/withdraw", {
         method: "POST",
         headers: walletHeaders(),
         body: JSON.stringify({ lamports: "all" }),
       });
-      applyWalletSummary(result);
-      setWalletStatus("Sent " + formatSol(result.paid || 0) + " SOL to your wallet.");
+      await signAndSend(prepared.transaction);
+      setWalletStatus("Sent. Waiting for Solana to confirm…");
+      var done = await awaitVault(function() { return wallet.vault && wallet.vault.free < before; });
+      setWalletStatus(done ? "Withdrawn to your wallet." : "Still confirming; your balance updates when it does.");
     } catch (error) {
       setWalletStatus((error && error.message) || "The withdrawal failed.", "error");
     } finally {
@@ -3500,39 +3565,77 @@
     }
   }
 
+  /* The load-up modal: connect, then pick an amount. `reason` says why it
+     opened (a wagered playlist the wallet cannot stake in yet). */
+  function openLoadUp(reason) {
+    lobbyElement("wallet-gate").hidden = false;
+    lobby.loadUpReason = reason || null;
+    setWalletStatus("");
+    renderLoadUp();
+  }
+
+  function renderLoadUp() {
+    var gate = lobbyElement("wallet-gate");
+    if (!gate || gate.hidden) return;
+    var connect = lobbyElement("wallet-gate-connect");
+    var amounts = lobbyElement("wallet-gate-amounts");
+    var renew = lobbyElement("wallet-gate-renew");
+    connect.hidden = !!wallet.token;
+    connect.disabled = wallet.busy;
+    amounts.hidden = !wallet.token;
+    Array.prototype.forEach.call(amounts.querySelectorAll("button"), function(button) {
+      var lamports = Number(button.dataset.lamports);
+      button.disabled = wallet.busy || (wallet.onchainLamports !== null && wallet.onchainLamports < lamports + 5000000);
+    });
+    /* a funded vault whose session ran out needs only a new session */
+    var needsSessionOnly = !!wallet.token && !!wallet.vault && wallet.vault.free > 0 && playSessionLeft() <= 0;
+    renew.hidden = !needsSessionOnly;
+    renew.disabled = wallet.busy;
+    var reason = lobbyElement("wallet-gate-reason");
+    /* why it opened, kept current: connecting answers "connect a wallet" */
+    var wagered = selectedPlaylist().wager;
+    var text = lobby.loadUpReason ? (wagered ? stakeBlocker(wagered.stake) || "" : "") : "";
+    if (reason.textContent !== text) reason.textContent = text;
+    var funds = lobbyElement("wallet-gate-funds");
+    var fundsText = wallet.token && wallet.onchainLamports !== null ?
+      "Your wallet: " + formatSol(wallet.onchainLamports) + " SOL" +
+        (wallet.onchainLamports < LOAD_UP_CHOICES[0] + 5000000 ? " — get devnet SOL at faucet.solana.com" : "") : "";
+    if (funds.textContent !== fundsText) funds.textContent = fundsText;
+  }
+
   function renderWallet(inMatch) {
     if (!WALLET_ENABLED) return;
     var out = lobbyElement("lobby-wallet-out");
     var signedIn = lobbyElement("lobby-wallet-in");
+    var chip = lobbyElement("lobby-wallet-chip");
     if (out) out.hidden = !!wallet.token;
-    if (signedIn) signedIn.hidden = !wallet.token;
-    var nameElement = lobbyElement("lobby-wallet-name");
-    if (nameElement && nameElement.textContent !== (wallet.name || "")) nameElement.textContent = wallet.name || "";
-    var balance = formatSol(wallet.lamports) + " SOL";
-    var balanceElement = lobbyElement("lobby-wallet-balance");
-    if (balanceElement && balanceElement.textContent !== balance) balanceElement.textContent = balance;
-    var onchain = lobbyElement("lobby-wallet-onchain");
-    var onchainText = wallet.onchainLamports === null ? "unknown" : formatSol(wallet.onchainLamports) + " SOL";
-    if (onchain && onchain.textContent !== onchainText) onchain.textContent = onchainText;
-    /* Deposit needs devnet SOL in the wallet (and a little for the fee);
-       withdraw needs something in the game balance. */
-    var canDeposit = wallet.enabled && wallet.onchainLamports !== null &&
-      wallet.onchainLamports >= DEPOSIT_LAMPORTS + 10000;
-    var states = {
-      "lobby-wallet-connect": false,
-      "lobby-wallet-faucet": false,
-      "lobby-wallet-deposit": !canDeposit,
-      "lobby-wallet-withdraw": !wallet.enabled || wallet.lamports <= 5000,
+    if (chip) chip.hidden = !wallet.token;
+    if (signedIn) signedIn.hidden = !wallet.token || !lobby.walletOpen;
+    if (chip) chip.setAttribute("aria-expanded", wallet.token && lobby.walletOpen ? "true" : "false");
+    var setText = function(id, text) {
+      var element = lobbyElement(id);
+      if (element && element.textContent !== text) element.textContent = text;
     };
-    Object.keys(states).forEach(function(id) {
-      var button = lobbyElement(id);
-      if (button) button.disabled = wallet.busy || states[id];
-    });
-    var deposit = lobbyElement("lobby-wallet-deposit");
-    if (deposit) {
-      deposit.title = canDeposit ? "Move 0.5 devnet SOL from your wallet into your game balance" :
-        "Your wallet needs at least 0.5 devnet SOL (faucet.solana.com); use +1 test SOL instead";
+    setText("lobby-wallet-name", wallet.name || "");
+    setText("lobby-wallet-chip-name", wallet.name || "");
+    setText("lobby-wallet-chip-balance", wallet.vault ? formatSol(wallet.vault.free) : "0.000");
+    var vault = wallet.vault;
+    setText("lobby-wallet-balance", (vault ? formatSol(vault.free) : "0.000") + " SOL");
+    var lockedRow = lobbyElement("lobby-wallet-locked-row");
+    if (lockedRow) lockedRow.hidden = !(vault && vault.locked > 0);
+    setText("lobby-wallet-locked", vault ? formatSol(vault.locked) + " SOL" : "");
+    setText("lobby-wallet-onchain", wallet.onchainLamports === null ? "…" : formatSol(wallet.onchainLamports) + " SOL");
+    var sessionText = "No play session";
+    if (wallet.playSession) {
+      var hours = Math.max(0, Math.round((wallet.playSession.expiresAt * 1000 - Date.now()) / 3600000));
+      sessionText = "Session: " + formatSol(wallet.playSession.spent) + " of " + formatSol(wallet.playSession.limit) +
+        " staked · " + hours + "h left";
     }
+    setText("lobby-wallet-session", sessionText);
+    var load = lobbyElement("lobby-wallet-load");
+    if (load) load.disabled = wallet.busy || !wallet.enabled;
+    var withdraw = lobbyElement("lobby-wallet-withdraw");
+    if (withdraw) withdraw.disabled = wallet.busy || !vault || vault.free <= 0;
     var gate = lobbyElement("wallet-gate");
     var gateOpen = gate && !gate.hidden;
     ["lobby-wallet-status", "wallet-gate-status"].forEach(function(id) {
@@ -3544,16 +3647,134 @@
       if (wallet.tone) status.dataset.tone = wallet.tone;
       else delete status.dataset.tone;
     });
-    var gateConnect = lobbyElement("wallet-gate-connect");
-    if (gateConnect) gateConnect.disabled = wallet.busy;
+    renderLoadUp();
+    renderWagerResult();
     var nameInput = lobbyElement("lobby-name");
     if (nameInput) nameInput.disabled = !!wallet.token;
+    /* in a wagered match: this player's running total, by the HUD */
     var hud = lobbyElement("hud-balance");
     if (hud) {
-      hud.hidden = !(inMatch && wallet.token);
-      var amount = lobbyElement("hud-balance-amount");
-      if (amount && amount.textContent !== formatSol(wallet.lamports)) amount.textContent = formatSol(wallet.lamports);
+      var mine = inMatch ? myWagerLine() : null;
+      hud.hidden = !mine;
+      if (mine) {
+        setText("hud-balance-amount", formatSigned(mine.net));
+        var tone = mine.spent ? "spent" : mine.net > 0 ? "up" : mine.net < 0 ? "down" : "even";
+        if (hud.dataset.tone !== tone) hud.dataset.tone = tone;
+        setText("hud-balance-note", mine.spent ? "playing for pride" : "pot " + formatSol(lobby.wager.view.pot));
+      }
     }
+  }
+
+  /* ---------- the wagered match (services/signaling/src/wager.ts)
+
+     While a wagered match runs, the room sends each kill's new balances
+     ("wager" messages); after it, the lobby follows the match until it is
+     settled (or void) on chain and shows the result. */
+
+  function myWagerLine() {
+    var wager = lobby.wager;
+    var name = (session.profile && session.profile.name) || wallet.name;
+    if (!wager || !wager.view || !name) return null;
+    for (var index = 0; index < wager.view.players.length; index++) {
+      if (wager.view.players[index].name === name) return wager.view.players[index];
+    }
+    return null;
+  }
+
+  function startWager(match) {
+    lobby.wager = {
+      matchId: match.id,
+      stake: match.wager.stake,
+      perKill: match.wager.perKill,
+      label: (playlistById(lobby.queue && lobby.queue.playlist) || { label: "Wagered match" }).label,
+      view: null,
+      done: false,
+      polledAt: 0,
+    };
+    lobby.wagerResult = null;
+  }
+
+  function applyWagerView(view) {
+    if (!lobby.wager || !view || view.matchId !== lobby.wager.matchId) return;
+    lobby.wager.view = view;
+  }
+
+  /* After the match: follow it to its settlement, every couple of seconds
+     for up to three minutes. */
+  function tickWager() {
+    var wager = lobby.wager;
+    if (!wager || wager.done || session.active || wager.polling) return;
+    if (!wager.endedAt) wager.endedAt = Date.now();
+    if (Date.now() - wager.polledAt < 2000) return;
+    if (Date.now() - wager.endedAt > 180000) {
+      wager.done = true;
+      return;
+    }
+    wager.polling = true;
+    wager.polledAt = Date.now();
+    fetchJson("/v1/wagers/" + encodeURIComponent(wager.matchId), { method: "GET" })
+      .then(function(result) {
+        applyWagerView(result.wager);
+        var state = result.wager && result.wager.state;
+        if (state === "settled" || state === "void" || state === "failed") {
+          wager.done = true;
+          lobby.wagerResult = { label: wager.label, view: result.wager, line: myWagerLine() };
+          refreshWallet();
+        }
+      })
+      .catch(function() { /* the next tick tries again */ })
+      .then(function() { wager.polling = false; });
+  }
+
+  function explorerLink(signature, cluster) {
+    return "https://explorer.solana.com/tx/" + encodeURIComponent(signature) +
+      (cluster && cluster !== "mainnet-beta" && cluster !== "mainnet" ? "?cluster=" + encodeURIComponent(cluster) : "");
+  }
+
+  function renderWagerResult() {
+    var box = lobbyElement("lobby-wager-result");
+    if (!box) return;
+    var result = lobby.wagerResult;
+    var pending = lobby.wager && !lobby.wager.done && !session.active && lobby.wager.endedAt;
+    var key = result ? result.view.matchId + ":" + result.view.state : pending ? "pending:" + lobby.wager.matchId : "";
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.hidden = !key;
+    box.replaceChildren();
+    if (pending) {
+      box.dataset.tone = "even";
+      box.append(lobby.wager.label + ": settling on Solana…");
+      return;
+    }
+    if (!result) return;
+    var view = result.view;
+    var line = result.line;
+    var title = document.createElement("strong");
+    var detail = document.createElement("small");
+    if (view.state === "settled" && line) {
+      var won = (line.payout === null ? line.balance : line.payout) - view.stake;
+      title.textContent = formatSigned(won) + " SOL";
+      box.dataset.tone = won > 0 ? "up" : won < 0 ? "down" : "even";
+      detail.append(result.label + " · " + line.kills + " kills, " + line.deaths + " deaths · ");
+    } else if (view.state === "void") {
+      title.textContent = "Stake returned";
+      box.dataset.tone = "even";
+      detail.append(result.label + " didn't finish, so everyone got their stake back · ");
+    } else {
+      title.textContent = "Stakes not locked";
+      box.dataset.tone = "even";
+      detail.append(result.label + " was called off before it started; nothing was staked.");
+    }
+    var signature = view.signatures && (view.signatures.settle || view.signatures["void"]);
+    if (signature) {
+      var link = document.createElement("a");
+      link.href = explorerLink(signature, view.cluster);
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = (view.state === "settled" ? "Settled" : "Returned") + " on Solana ✓";
+      detail.appendChild(link);
+    }
+    box.append(title, detail);
   }
 
   /* A dedicated host reports every kill (by the players' names) so the
@@ -3590,14 +3811,18 @@
     }
   }
 
-  /* ---------- Kill rewards: "+0.1 SOL" over the body of each kill this
-     player makes. Display only for now; the amount is a placeholder. */
+  /* ---------- Bounties: in a wagered match, "+0.010 SOL" over the body of
+     each kill this player makes the moment it happens (the bounty the room
+     then moves), and "\u22120.010" on their own death. */
 
-  var KILL_REWARD_TEXT = "+0.1";
   var KILL_REWARD_UNIT = "SOL";
   var KILL_POP_MILLISECONDS = 1700;
-  var DEATH_REWARD_TEXT = "\u22120.1";
   var DEATH_POP_MILLISECONDS = 2600;
+
+  /* the bounty a kill or death pops, or null outside a wagered match */
+  function bountyLamports() {
+    return session.active && lobby.wager ? lobby.wager.perKill : null;
+  }
   var killPops = { last: -1, lastDeath: -1, active: [] };
 
   function makePop(className, text) {
@@ -3659,20 +3884,27 @@
   function tickKillPops(now) {
     var sequence = wasmNumber("platform_web_kill_sequence", 0);
     var container = byId("kill-pops");
+    var bounty = bountyLamports();
     if (killPops.last < 0) killPops.last = sequence;
     if (sequence !== killPops.last && container && typeof document.createElement === "function") {
       killPops.last = sequence;
-      var element = makePop("kill-pop", KILL_REWARD_TEXT);
-      container.appendChild(element);
-      killPops.active.push({ element: element, sequence: sequence, born: now });
+      if (bounty !== null) {
+        var element = makePop("kill-pop", formatSigned(bounty));
+        container.appendChild(element);
+        killPops.active.push({ element: element, sequence: sequence, born: now });
+      }
     }
     var deaths = wasmNumber("platform_web_death_sequence", 0);
     if (killPops.lastDeath < 0) killPops.lastDeath = deaths;
     if (deaths !== killPops.lastDeath && container && typeof document.createElement === "function") {
       killPops.lastDeath = deaths;
-      var deathElement = makePop("kill-pop death", DEATH_REWARD_TEXT);
-      container.appendChild(deathElement);
-      killPops.active.push({ element: deathElement, death: true, born: now });
+      var mine = myWagerLine();
+      /* nothing left to lose: no pop */
+      if (bounty !== null && !(mine && mine.balance <= 0)) {
+        var deathElement = makePop("kill-pop death", formatSigned(-bounty));
+        container.appendChild(deathElement);
+        killPops.active.push({ element: deathElement, death: true, born: now });
+      }
     }
     killPops.active = killPops.active.filter(function(pop) {
       if (now - pop.born > (pop.death ? DEATH_POP_MILLISECONDS : KILL_POP_MILLISECONDS)) {
@@ -3691,11 +3923,14 @@
     lobby.installed = true;
     root.addEventListener("keydown", function(event) { event.stopPropagation(); });
     lobbyElement("lobby-play").addEventListener("click", function() {
-      /* Play is wagered: without a wallet, the modal asks for one first. */
-      if (WALLET_ENABLED && !session.active && !lobby.wantsPlay && !wallet.token && !lobby.skipWallet) {
-        lobbyElement("wallet-gate").hidden = false;
-        setWalletStatus("");
-        return;
+      /* a wagered playlist: load up first, if the vault cannot stake yet */
+      var wagered = selectedPlaylist().wager;
+      if (WALLET_ENABLED && wagered && !session.active && !lobby.wantsPlay) {
+        var blocker = stakeBlocker(wagered.stake);
+        if (blocker) {
+          openLoadUp(blocker);
+          return;
+        }
       }
       if (session.active || lobby.wantsPlay) {
         lobby.wantsPlay = false;
@@ -3761,27 +3996,40 @@
       if (WALLET_ENABLED && document.body.dataset.lobby === "open") refreshWallet();
     }, 15000);
     lobbyElement("lobby-wallet-connect").addEventListener("click", function() { signInWithWallet(); });
-    var startPlay = function() {
+    /* loaded up for a wagered playlist: search right away */
+    var playIfReady = function(loaded) {
+      var wagered = selectedPlaylist().wager;
+      if (!loaded || !wagered || stakeBlocker(wagered.stake) || session.active || lobby.wantsPlay) return;
       lobbyElement("wallet-gate").hidden = true;
       lobby.wantsPlay = true;
       lobby.error = null;
       lobby.started = false;
     };
-    lobbyElement("wallet-gate-connect").addEventListener("click", function() {
-      signInWithWallet().then(function() {
-        if (wallet.token) startPlay();
-      });
+    lobbyElement("wallet-gate-connect").addEventListener("click", function() { signInWithWallet(); });
+    Array.prototype.forEach.call(lobbyElement("wallet-gate-amounts").querySelectorAll("button"), function(button) {
+      button.addEventListener("click", function() { loadUp(Number(button.dataset.lamports)).then(playIfReady); });
     });
-    lobbyElement("wallet-gate-skip").addEventListener("click", function() {
-      lobby.skipWallet = true;
-      startPlay();
-    });
+    lobbyElement("wallet-gate-renew").addEventListener("click", function() { loadUp(0).then(playIfReady); });
     lobbyElement("wallet-gate-close").addEventListener("click", function() {
       lobbyElement("wallet-gate").hidden = true;
     });
-    lobbyElement("lobby-wallet-faucet").addEventListener("click", function() { claimTestSol(); });
-    lobbyElement("lobby-wallet-deposit").addEventListener("click", function() { depositToHouse(); });
-    lobbyElement("lobby-wallet-withdraw").addEventListener("click", function() { withdrawFromHouse(); });
+    lobbyElement("lobby-wallet-load").addEventListener("click", function() {
+      lobby.walletOpen = false;
+      openLoadUp(null);
+    });
+    lobbyElement("lobby-wallet-chip").addEventListener("click", function(event) {
+      event.stopPropagation();
+      lobby.walletOpen = !lobby.walletOpen;
+      renderWallet(false);
+    });
+    lobbyElement("lobby-wallet-in").addEventListener("click", function(event) { event.stopPropagation(); });
+    document.addEventListener("click", function() {
+      if (lobby.walletOpen) {
+        lobby.walletOpen = false;
+        renderWallet(false);
+      }
+    });
+    lobbyElement("lobby-wallet-withdraw").addEventListener("click", function() { withdrawVault(); });
     lobbyElement("lobby-wallet-signout").addEventListener("click", signOutWallet);
     lobbyElement("lobby-friends").addEventListener("click", function() {
       lobby.wantsPlay = false;
