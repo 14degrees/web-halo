@@ -2824,8 +2824,9 @@
     var total = players.length;
     var searching = !!(lobby.queue && !session.active && lobby.queue.state !== "assigning" && lobby.queue.state !== "ready");
     if (count) {
-      count.textContent = !session.active && !lobby.queue ? "Your party" :
-        total + (slots ? " of " + (total + slots) : "") + (total + slots === 1 ? " player" : " players");
+      /* Halo 3's "1 Player (16 max)" */
+      var countText = total + (total === 1 ? " Player" : " Players") + " (" + playlist.maximum + " max)";
+      if (count.textContent !== countText) count.textContent = countText;
     }
     var signature = players.map(function(player) {
       return player.peerId + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
@@ -2888,6 +2889,13 @@
     var counts = lobbyElement("lobby-playlist-counts");
     var countText = teamSize(playlist) + " · " + playlistCounts(playlist);
     if (counts && counts.textContent !== countText) counts.textContent = countText;
+    /* everyone searching or playing, across the playlists */
+    var online = playlists().reduce(function(sum, entry) {
+      return sum + (entry.searching || 0) + (entry.playing || 0);
+    }, 0) + (lobby.queue || session.active ? 0 : 1);
+    var onlineText = online + (online === 1 ? " Gamer Online" : " Gamers Online");
+    var onlineElement = lobbyElement("lobby-online");
+    if (onlineElement && onlineElement.textContent !== onlineText) onlineElement.textContent = onlineText;
     var mapIndex = Number(settings.mapIndex);
     var modeIndex = Number(settings.modeIndex);
     var mapName = selectedLabel(elements.map, mapIndex) || "Blood Gulch";
@@ -4032,6 +4040,24 @@
     });
     /* the playlist picker */
     var playlistDialog = lobbyElement("playlist-dialog");
+    /* Halo 3's lights of the world at night: where its cities are */
+    var lights = lobbyElement("lobby-world-lights");
+    if (lights && !lights.firstChild) {
+      [[17, 34], [19, 31], [22, 36], [24, 33], [26, 30], [21, 41], [15, 38], [12, 30], [28, 35], [25, 45],
+        [31, 64], [33, 74], [29, 58], [47, 28], [49, 25], [51, 30], [53, 27], [46, 33], [55, 33], [57, 30],
+        [50, 45], [53, 55], [57, 70], [63, 42], [67, 47], [71, 40], [74, 35], [77, 33], [79, 38], [83, 31],
+        [81, 45], [76, 52], [84, 76], [88, 79], [86, 70], [60, 36], [44, 36], [18, 45], [35, 70], [70, 55]]
+        .forEach(function(point, index) {
+          var light = document.createElement("i");
+          light.style.left = point[0] + "%";
+          light.style.top = point[1] + "%";
+          light.style.animationDelay = (index % 7) * 0.55 + "s";
+          lights.appendChild(light);
+        });
+    }
+    lobbyElement("lobby-options").addEventListener("click", function() {
+      lobbyElement("lobby-playlist-open").click();
+    });
     lobbyElement("lobby-playlist-open").addEventListener("click", function() {
       lobby.playlistFocus = selectedPlaylist().id;
       playlistDialog.showModal();
