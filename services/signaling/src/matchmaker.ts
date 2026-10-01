@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import { randomToken } from "./crypto";
 import { FlyMachines, type FlyMachine } from "./fly";
+import type { MatchResult, WagerMode } from "./wager";
 
 /* The matchmaker: one singleton Durable Object that queues players, groups
    them into matches, and gives each match a dedicated server from the pool.
@@ -68,20 +69,32 @@ export const PLAYLISTS = {
     rotation: [[4, 0], [6, 0], [3, 0]],
     stake: 50_000_000, perKill: 10_000_000,
   },
+  /* pot against pot: the team Halo scores the winner takes every stake.
+     It waits for a full two on two: an uneven match at equal stakes is not
+     fair */
+  teamstakes: {
+    label: "Team Stakes", minimum: 4, maximum: 4, fillMs: 0, teams: true,
+    description: "Two on two Team Slayer for SOL. 0.05 buy-in; the winning team takes the pot.",
+    rotation: [[0, 1], [6, 1], [4, 1]],
+    stake: 50_000_000, perKill: 0, mode: "team",
+  },
 } as const satisfies Record<string, {
   label: string; minimum: number; maximum: number; fillMs: number; teams: boolean; description: string;
   rotation: ReadonlyArray<readonly [number, number]>;
-  stake?: number; perKill?: number;
+  stake?: number; perKill?: number; mode?: WagerMode;
 }>;
 export type Playlist = keyof typeof PLAYLISTS;
 export function isPlaylist(value: unknown): value is Playlist {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(PLAYLISTS, value);
 }
 
-/* A wagered playlist's buy-in and bounty, in lamports; null for a free one. */
-export function playlistWager(playlist: Playlist): { stake: number; perKill: number } | null {
+/* A wagered playlist's buy-in and bounty, in lamports, and how it pays
+   (bounty: per kill; team: the winning team takes the pot); null for a free
+   one. */
+export function playlistWager(playlist: Playlist): { stake: number; perKill: number; mode: WagerMode } | null {
   const rules = PLAYLISTS[playlist];
-  return "stake" in rules ? { stake: rules.stake, perKill: rules.perKill } : null;
+  if (!("stake" in rules)) return null;
+  return { stake: rules.stake, perKill: rules.perKill, mode: "mode" in rules ? rules.mode : "bounty" };
 }
 
 /* a ticket not polled in this long is abandoned */
@@ -125,7 +138,7 @@ export interface TicketView {
     endReason: string | null;
     /* a wagered match: its buy-in and bounty, and whether the stakes are
        locked yet (the invite waits for them) */
-    wager?: { stake: number; perKill: number; escrow: string | null };
+    wager?: { stake: number; perKill: number; mode: WagerMode; escrow: string | null };
   };
 }
 
@@ -509,10 +522,12 @@ export class Matchmaker extends DurableObject<Env> {
   /* The server's report that its match is over: finished (played to its
      end) or void (it never went live). The server leaves the pool; a fresh
      one registers. */
-  async matchEnded(serverId: string, matchId: string, reason: string, now: number): Promise<boolean> {
+  async matchEnded(
+    serverId: string, matchId: string, reason: string, now: number, result: MatchResult | null = null,
+  ): Promise<boolean> {
     const match = this.match(matchId);
     if (!match || match.server_id !== serverId) return false;
-    if (match.state !== "ended") this.endMatch(match, reason, now);
+    if (match.state !== "ended") this.endMatch(match, reason, now, result);
     this.ctx.storage.sql.exec("DELETE FROM servers WHERE id = ?", serverId);
     return true;
   }
@@ -530,7 +545,7 @@ export class Matchmaker extends DurableObject<Env> {
     ).toArray()[0]?.matches ?? 0;
   }
 
-  private endMatch(match: MatchRow, reason: string, now: number): void {
+  private endMatch(match: MatchRow, reason: string, now: number, result: MatchResult | null = null): void {
     /* a finished match counts for everyone who was in it */
     if (reason.startsWith("finished")) {
       const players = this.ctx.storage.sql.exec<TicketRow>(
@@ -552,14 +567,15 @@ export class Matchmaker extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       "UPDATE tickets SET state = 'ended' WHERE match_id = ? AND state IN ('assigning', 'ready')", match.id,
     );
-    this.log(now, "match_ended", match.id, { reason });
-    this.endWager(match, reason.startsWith("finished"));
+    this.log(now, "match_ended", match.id, result ? { reason, teamScores: result.teamScores } : { reason });
+    this.endWager(match, reason.startsWith("finished"), result);
   }
 
-  /* A wagered match's end: finished pays it out, anything else voids it. */
-  private endWager(match: MatchRow, finished: boolean): void {
+  /* A wagered match's end: finished pays it out (a team match by the
+     server's result), anything else voids it. */
+  private endWager(match: MatchRow, finished: boolean, result: MatchResult | null = null): void {
     if (match.stake === null) return;
-    this.ctx.waitUntil(this.env.WAGERS.getByName(match.id).end(finished));
+    this.ctx.waitUntil(this.env.WAGERS.getByName(match.id).end(finished, result));
   }
 
   /* A match that never got its room: its players go back to the front of
@@ -615,7 +631,7 @@ export class Matchmaker extends DurableObject<Env> {
           if (wager) {
             /* the stakes lock while the server opens its room */
             this.ctx.waitUntil(this.env.WAGERS.getByName(matchId).start({
-              matchId, stake: wager.stake, perKill: wager.perKill,
+              matchId, stake: wager.stake, perKill: wager.perKill, mode: wager.mode,
               wallets: tickets.map((ticket) => ticket.wallet!),
             }));
           }
@@ -785,7 +801,7 @@ export class Matchmaker extends DurableObject<Env> {
   async playlists(now: number): Promise<Array<{
     id: Playlist; label: string; description: string; minimum: number; maximum: number; teams: boolean;
     maps: number[]; modes: number[]; searching: number; playing: number;
-    wager: { stake: number; perKill: number } | null;
+    wager: { stake: number; perKill: number; mode: WagerMode } | null;
   }>> {
     this.sweep(now);
     return (Object.keys(PLAYLISTS) as Playlist[]).map((id) => {

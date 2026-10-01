@@ -2683,8 +2683,9 @@
     lobbyElement("playlist-detail-description").textContent = focused.description;
     var wagerLine = lobbyElement("playlist-detail-wager");
     wagerLine.hidden = !focused.wager;
-    wagerLine.textContent = focused.wager ? "\u25ce " + formatSol(focused.wager.stake) + " SOL buy-in · " +
-      formatSol(focused.wager.perKill) + " SOL a kill · 5% fee on winnings" : "";
+    wagerLine.textContent = !focused.wager ? "" : "\u25ce " + formatSol(focused.wager.stake) + " SOL buy-in · " +
+      (focused.wager.mode === "team" ? "the winning team takes the pot" :
+        formatSol(focused.wager.perKill) + " SOL a kill") + " · 5% fee on winnings";
     lobbyElement("playlist-detail-counts").textContent = playlistCounts(focused);
     var maps = lobbyElement("playlist-detail-maps");
     if (maps.dataset.playlist !== focused.id) {
@@ -3676,7 +3677,12 @@
     if (hud) {
       var mine = inMatch && lobby.wager && !lobby.wager.done ? myWagerLine() : null;
       hud.hidden = !mine;
-      if (mine) {
+      if (mine && lobby.wager.mode === "team") {
+        /* pot against pot: nothing moves until the winner is known */
+        setText("hud-balance-amount", formatSol(lobby.wager.stake) + " in");
+        if (hud.dataset.tone !== "even") hud.dataset.tone = "even";
+        setText("hud-balance-note", "team pot " + formatSol(lobby.wager.view.pot) + " · winners take it");
+      } else if (mine) {
         setText("hud-balance-amount", formatSigned(mine.net));
         var tone = mine.spent ? "spent" : mine.net > 0 ? "up" : mine.net < 0 ? "down" : "even";
         if (hud.dataset.tone !== tone) hud.dataset.tone = tone;
@@ -3706,6 +3712,7 @@
       matchId: match.id,
       stake: match.wager.stake,
       perKill: match.wager.perKill,
+      mode: match.wager.mode || "bounty",
       label: (playlistById(lobby.queue && lobby.queue.playlist) || { label: "Wagered match" }).label,
       view: null,
       done: false,
@@ -3746,7 +3753,10 @@
     var players = view.players.slice(0, WAGER_TABLE_ROWS);
     players.forEach(function(player, index) {
       writeAscii(base, index * 24, player.name, 12);
-      writeAscii(base, index * 24 + 12, player.balance <= 0 ? "spent" : formatSigned(player.net), 12);
+      /* a team match: each player's stake in the pot; a bounty match: their
+         running total */
+      writeAscii(base, index * 24 + 12, view.mode === "team" ? formatSol(view.stake) :
+        player.balance <= 0 ? "spent" : formatSigned(player.net), 12);
     });
     /* the pot, under the SOL column (Halo clips each column at the next) */
     writeAscii(base, WAGER_TABLE_ROWS * 24, formatSol(view.pot), 48);
@@ -3825,7 +3835,9 @@
       var won = (line.payout === null ? line.balance : line.payout) - view.stake;
       title.textContent = formatSigned(won) + " SOL";
       box.dataset.tone = won > 0 ? "up" : won < 0 ? "down" : "even";
-      detail.append(result.label + " · " + line.kills + " kills, " + line.deaths + " deaths · ");
+      var teamLine = view.mode === "team" && view.winningTeam !== null ?
+        (view.winningTeam === 0 ? "Red" : "Blue") + " team won · " : "";
+      detail.append(result.label + " · " + teamLine + line.kills + " kills, " + line.deaths + " deaths · ");
     } else if (view.state === "void") {
       title.textContent = "Stake returned";
       box.dataset.tone = "even";
@@ -3891,7 +3903,9 @@
 
   /* the bounty a kill or death pops, or null outside a wagered match */
   function bountyLamports() {
-    return session.active && lobby.wager && !lobby.wager.done ? lobby.wager.perKill : null;
+    /* a team match's money follows only its result */
+    if (!session.active || !lobby.wager || lobby.wager.done || lobby.wager.mode === "team") return null;
+    return lobby.wager.perKill || null;
   }
   var killPops = { last: -1, lastDeath: -1, active: [] };
 

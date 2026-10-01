@@ -33,7 +33,54 @@ type gameEvents interface {
 	gameFrame(address uint32, reliable bool, frame []byte)
 	gameStatus(status gameStatus)
 	gameKill(killer, victim string)
+	gameResult(result matchResult)
 	gameDrop(address uint32)
+}
+
+// matchResult is a match's result as it ended (the game's 'E' message):
+// each player's team, score and whether they quit, and Halo's team scores.
+type matchResult struct {
+	Teams      bool           `json:"teams"`
+	TeamScores [2]int         `json:"teamScores"`
+	Players    []resultPlayer `json:"players"`
+}
+
+type resultPlayer struct {
+	Name  string `json:"name"`
+	Team  int    `json:"team"`
+	Score int    `json:"score"`
+	Quit  bool   `json:"quit"`
+}
+
+// parseResult reads port/linux/game/network_lobby.c's result layout.
+func parseResult(packet []byte) (matchResult, bool) {
+	const rowSize = 12 + 1 + 4 + 1
+	if len(packet) < 10 {
+		return matchResult{}, false
+	}
+	count := int(packet[9])
+	if len(packet) < 10+count*rowSize {
+		return matchResult{}, false
+	}
+	result := matchResult{
+		Teams:      packet[0] != 0,
+		TeamScores: [2]int{int(int32(binary.LittleEndian.Uint32(packet[1:]))), int(int32(binary.LittleEndian.Uint32(packet[5:])))},
+		Players:    make([]resultPlayer, 0, count),
+	}
+	for index := 0; index < count; index++ {
+		row := packet[10+index*rowSize:]
+		name := cString(row[:12])
+		if name == "" {
+			continue
+		}
+		result.Players = append(result.Players, resultPlayer{
+			Name:  name,
+			Team:  int(int8(row[12])),
+			Score: int(int32(binary.LittleEndian.Uint32(row[13:]))),
+			Quit:  row[17] != 0,
+		})
+	}
+	return result, true
 }
 
 type gameLink struct {
@@ -104,6 +151,10 @@ func (link *gameLink) run() error {
 		case 'K':
 			if length == 1+24 {
 				link.events.gameKill(cString(packet[1:13]), cString(packet[13:25]))
+			}
+		case 'E':
+			if result, ok := parseResult(packet[1:length]); ok {
+				link.events.gameResult(result)
 			}
 		}
 	}

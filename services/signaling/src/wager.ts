@@ -31,8 +31,15 @@ import { SolanaRpc, SolanaRpcError, base58Encode, keypairFromSecret, type Keypai
    amount (or what the victim has left, if less) from the victim's balance to
    the killer's; suicides and betrayals move nothing. A player whose balance
    is spent plays on for nothing. At the end each player is paid their
-   balance, less the fee on what they won; a void (the server lost, or the
-   match never went live) returns every stake.
+   balance, less the fee on what they won.
+
+   Team rules: pot against pot. The team Halo scores the winner (the
+   dedicated server's result at the end) splits every stake among its
+   players who did not quit; the losers' stakes are gone. A tie, or no
+   result, is void.
+
+   A void (the server lost, or the match never went live) returns every
+   stake.
 
    Every chain step reads the match's account first, so a retry after an
    unknown outcome never does anything twice. */
@@ -46,6 +53,16 @@ export interface WagerPlayer {
   deaths: number;
 }
 
+export type WagerMode = "bounty" | "team";
+
+/* A dedicated server's result for a match as it ended
+   (services/game-server/gateway, matchResult). */
+export interface MatchResult {
+  teams: boolean;
+  teamScores: [number, number];
+  players: Array<{ name: string; team: number; score: number; quit: boolean }>;
+}
+
 export type WagerState = "locking" | "locked" | "failed" | "settling" | "voiding" | "settled" | "void";
 
 interface WagerRecord {
@@ -54,10 +71,16 @@ interface WagerRecord {
   escrowId: string;
   stake: number;
   perKill: number;
+  /* absent on wagers from before team matches: bounty */
+  mode?: WagerMode;
   feeBps: number;
   state: WagerState;
   /* an end that arrived while the stakes were still locking */
   ending: "settle" | "void" | null;
+  /* a team match's payouts, decided from the server's result at the end */
+  teamPayouts?: number[] | null;
+  /* the winning team (0 red, 1 blue), for the lobby */
+  winningTeam?: number | null;
   players: WagerPlayer[];
   /* the match's account has been closed (its rent refunded) */
   closed: boolean;
@@ -72,6 +95,8 @@ interface WagerRecord {
 export interface WagerView {
   matchId: string;
   state: WagerState;
+  mode: WagerMode;
+  winningTeam: number | null;
   stake: number;
   perKill: number;
   feeBps: number;
@@ -86,6 +111,7 @@ export interface WagerStart {
   matchId: string;
   stake: number;
   perKill: number;
+  mode?: WagerMode;
   wallets: string[];
 }
 
@@ -112,6 +138,41 @@ export function bountyPayouts(stake: number, balances: number[], feeBps: number)
   });
   const fee = stake * balances.length - payouts.reduce((sum, payout) => sum + payout, 0);
   return { payouts, fee };
+}
+
+/* A team match's payouts, in the order of `names` (the players as they
+   joined): the winning team's players who did not quit split the whole pot,
+   each less the fee on what they won; everyone else gets nothing. Null when
+   it must be void: no team result, a tie, or no winner left. A player
+   missing from the result counts as having quit. */
+export function teamPayouts(
+  stake: number,
+  names: string[],
+  result: MatchResult | null,
+  feeBps: number,
+): { payouts: number[]; fee: number; winningTeam: number } | null {
+  if (!result || !result.teams) return null;
+  const [red, blue] = result.teamScores;
+  if (red === blue) return null;
+  const winningTeam = red > blue ? 0 : 1;
+  const byName = new Map(result.players.map((player) => [player.name, player]));
+  const winners = names.map((name) => {
+    const player = byName.get(name);
+    return player !== undefined && player.team === winningTeam && !player.quit;
+  });
+  const count = winners.filter(Boolean).length;
+  if (count === 0) return null;
+  const pot = stake * names.length;
+  /* an even share (the odd lamports go to the fee), less the fee on its
+     winnings */
+  const share = Math.floor(pot / count);
+  const payouts = winners.map((winner) => {
+    if (!winner) return 0;
+    const won = share - stake;
+    return won > 0 ? share - Math.floor((won * feeBps) / 10_000) : share;
+  });
+  const fee = pot - payouts.reduce((sum, payout) => sum + payout, 0);
+  return { payouts, fee, winningTeam };
 }
 
 /* ---------- configuration */
@@ -196,6 +257,7 @@ export class Wager extends DurableObject<Env> {
       escrowId: hex(await escrowMatchId(input.matchId)),
       stake: input.stake,
       perKill: input.perKill,
+      mode: input.mode ?? "bounty",
       feeBps: setup?.feeBps ?? 500,
       state: "locking",
       ending: null,
@@ -221,7 +283,8 @@ export class Wager extends DurableObject<Env> {
     const victim = record.players.findIndex((player) => player.name === victimName);
     if (victim >= 0) record.players[victim]!.deaths += 1;
     if (killer >= 0 && killer !== victim) record.players[killer]!.kills += 1;
-    const moved = killTransfer(record.players, killer, victim, record.perKill);
+    /* a team match's money follows only its result */
+    const moved = record.mode === "team" ? 0 : killTransfer(record.players, killer, victim, record.perKill);
     if (moved > 0) {
       record.players[victim]!.balance -= moved;
       record.players[killer]!.balance += moved;
@@ -230,11 +293,21 @@ export class Wager extends DurableObject<Env> {
     return { moved, view: this.view(record) };
   }
 
-  /* The match is over: finished pays it out, anything else voids it. */
-  async end(finished: boolean): Promise<void> {
+  /* The match is over: finished pays it out (a team match by the server's
+     result), anything else voids it. */
+  async end(finished: boolean, result: MatchResult | null = null): Promise<void> {
     const record = this.read();
     if (!record) return;
-    const outcome = finished && record.players.some((player) => player.balance !== record.stake) ? "settle" : "void";
+    let outcome: "settle" | "void";
+    if (record.mode === "team") {
+      const team = finished ?
+        teamPayouts(record.stake, record.players.map((player) => player.name), result, record.feeBps) : null;
+      record.teamPayouts = team?.payouts ?? null;
+      record.winningTeam = team?.winningTeam ?? null;
+      outcome = team ? "settle" : "void";
+    } else {
+      outcome = finished && record.players.some((player) => player.balance !== record.stake) ? "settle" : "void";
+    }
     if (record.state === "locking") {
       record.ending = outcome;
     } else if (record.state === "locked") {
@@ -252,12 +325,20 @@ export class Wager extends DurableObject<Env> {
     return record ? this.view(record) : null;
   }
 
+  /* The payouts a settle pays: the team result's, or the bounty balances'. */
+  private payoutsFor(record: WagerRecord): number[] {
+    if (record.mode === "team") return record.teamPayouts ?? record.players.map(() => record.stake);
+    return bountyPayouts(record.stake, record.players.map((player) => player.balance), record.feeBps).payouts;
+  }
+
   private view(record: WagerRecord): WagerView {
     const payouts = record.payouts ?? (record.state === "settling" || record.state === "settled" ?
-      bountyPayouts(record.stake, record.players.map((player) => player.balance), record.feeBps).payouts : null);
+      this.payoutsFor(record) : null);
     return {
       matchId: record.matchId,
       state: record.state,
+      mode: record.mode ?? "bounty",
+      winningTeam: record.winningTeam ?? null,
       stake: record.stake,
       perKill: record.perKill,
       feeBps: record.feeBps,
@@ -358,7 +439,7 @@ export class Wager extends DurableObject<Env> {
       }
       let instruction: Instruction;
       if (record.state === "settling") {
-        const { payouts } = bountyPayouts(record.stake, record.players.map((player) => player.balance), record.feeBps);
+        const payouts = this.payoutsFor(record);
         record.payouts = payouts;
         const summary = new TextEncoder().encode(JSON.stringify(
           record.players.map((player) => [player.wallet, player.kills, player.deaths, player.balance]),

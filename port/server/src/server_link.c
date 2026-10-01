@@ -31,6 +31,9 @@ game to gateway
   'M' match:u8 countdown:i16 players:u16 client:i8 online:u8
                                  the lobby's state, on a change and each second
   'K' killer:12 victim:12        a kill on the server, by player name
+  'E' result                     the match's result as it ended, sent before
+                                 the postgame 'M' (port/linux/game/
+                                 network_lobby.c, network_lobby_capture_result)
   'D' address:u32                the game cannot take this peer's traffic: drop it
 
 Frames the game cannot take yet (a stream's buffer is full) wait in a
@@ -78,6 +81,9 @@ int platform_web_online_get_client_state(void);
 int platform_web_online_get_state(void);
 int platform_web_host_kill_sequence(void);
 void const *platform_web_host_kills(void);
+/* port/linux/game/network_lobby.c */
+long network_lobby_result_sequence(void);
+void const *network_lobby_result(long *size);
 
 enum
 {
@@ -407,6 +413,7 @@ static void *link_reporter(void *unused)
 	unsigned char last[9] = { 0 };
 	int ticks = 0;
 	int kills_seen = platform_web_host_kill_sequence();
+	long results_seen = network_lobby_result_sequence();
 
 	(void)unused;
 	for (;;)
@@ -424,6 +431,22 @@ static void *link_reporter(void *unused)
 		status[6] = (unsigned char)(signed char)platform_web_online_get_client_state();
 		status[7] = (unsigned char)platform_web_online_get_state();
 		status[8] = 0;
+		/* the match's result before the postgame it was captured for: read
+		after the state, which the game publishes after capturing it */
+		if (network_lobby_result_sequence() != results_seen)
+		{
+			long size;
+			const unsigned char *result = network_lobby_result(&size);
+			unsigned char message[1 + 400];
+
+			results_seen = network_lobby_result_sequence();
+			if (size > 0 && size < (long)sizeof(message) - 1)
+			{
+				message[0] = 'E';
+				memcpy(message + 1, result, (size_t)size);
+				link_send(message, (size_t)size + 1);
+			}
+		}
 		if (memcmp(status, last, sizeof(status)) || ++ticks >= LINK_STATUS_REPEAT_TICKS)
 		{
 			link_send(status, 8);

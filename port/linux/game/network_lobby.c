@@ -263,3 +263,78 @@ void network_lobby_kill_on_screen(
 	*y = 0.5f - 0.5f * ndc_y;
 	*on_screen = *x > 0.02f && *x < 0.98f && *y > 0.02f && *y < 0.98f;
 }
+
+/* ---------- a finished match's result, for the gateway (a dedicated host)
+
+When its match ends, the dedicated server reports who played for which team,
+their scores, who quit, and the team scores Halo itself compares for the
+winner (game_engine_get_team_score), so the game's service can pay a wagered
+team match by Halo's own result. Captured on the game thread at the start of
+postgame; port/server/src/server_link.c sends it as its 'E' message.
+
+The layout, little-endian: teams:u8 team0:i32 team1:i32 count:u8, then count
+rows of name:12 team:i8 score:i32 quit:u8. */
+
+#define RESULT_MAXIMUM_PLAYERS 16
+#define RESULT_ROW_SIZE (HOST_KILL_NAME + 1 + 4 + 1)
+#define RESULT_SIZE (1 + 4 + 4 + 1 + RESULT_MAXIMUM_PLAYERS * RESULT_ROW_SIZE)
+
+static unsigned char lobby_result[RESULT_SIZE];
+static long lobby_result_sequence;
+
+static void result_put_long(unsigned char *out, long value)
+{
+	unsigned long bits = (unsigned long)value;
+
+	out[0] = (unsigned char)bits;
+	out[1] = (unsigned char)(bits >> 8);
+	out[2] = (unsigned char)(bits >> 16);
+	out[3] = (unsigned char)(bits >> 24);
+}
+
+void network_lobby_capture_result(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	unsigned char *row = lobby_result + 10;
+	long count = 0;
+	boolean teams = game_engine && game_engine_get_variant()->universal_variant.teams;
+
+	memset(lobby_result, 0, sizeof(lobby_result));
+	lobby_result[0] = teams ? 1 : 0;
+	result_put_long(lobby_result + 1, teams ? game_engine_get_team_score(0) : 0);
+	result_put_long(lobby_result + 5, teams ? game_engine_get_team_score(1) : 0);
+	if (game_engine)
+	{
+		data_iterator_new(&iterator, player_data);
+		player = (struct player_datum *)data_iterator_next(&iterator);
+		while (player && count < RESULT_MAXIMUM_PLAYERS)
+		{
+			lobby_name((char *)row, player);
+			row[HOST_KILL_NAME] = (unsigned char)(signed char)player->team_index;
+			result_put_long(row + HOST_KILL_NAME + 1,
+				game_engine->get_player_score(iterator.datum_index, _get_score_individual));
+			row[HOST_KILL_NAME + 5] = player->quit_out_of_game ? 1 : 0;
+			row += RESULT_ROW_SIZE;
+			count++;
+			player = (struct player_datum *)data_iterator_next(&iterator);
+		}
+	}
+	lobby_result[9] = (unsigned char)count;
+	lobby_result_sequence++;
+	platform_log("network lobby: match result captured, %ld players, teams %d", count, teams ? 1 : 0);
+}
+
+long network_lobby_result_sequence(
+	void)
+{
+	return lobby_result_sequence;
+}
+
+void const *network_lobby_result(
+	long *size)
+{
+	*size = 10 + lobby_result[9] * RESULT_ROW_SIZE;
+	return lobby_result;
+}

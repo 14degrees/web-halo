@@ -74,7 +74,9 @@ def main() -> int:
         machine = existing.get(name)
         if machine:
             print(f"updating {name} ({machine['id']})", flush=True)
-            fly("machine", "update", machine["id"], "--machine-config", path, "--yes")
+            # a stopped machine stays stopped: the autoscaler starts it
+            skip = ["--skip-start"] if machine.get("state") == "stopped" else []
+            fly("machine", "update", machine["id"], "--machine-config", path, "--yes", *skip)
             machine_id = machine["id"]
         else:
             print(f"creating {name}", flush=True)

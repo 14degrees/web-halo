@@ -1,8 +1,9 @@
 # Playing for SOL
 
-The browser game has wagered playlists, Bounty Duel and Bounty Rumble.
-Players stake SOL, each kill moves a bounty from the victim to the killer,
-and the match pays out on Solana when it ends. It runs on **Solana devnet**
+The browser game has wagered playlists: Bounty Duel and Bounty Rumble, where
+each kill moves a bounty from the victim to the killer, and Team Stakes,
+where the winning team takes the pot. The match pays out on Solana when it
+ends. It runs on **Solana devnet**
 (test SOL) for now; nothing here moves real money until the program is
 deployed to mainnet.
 
@@ -29,11 +30,13 @@ Production Money System". This page describes what is built.
 
 ## The rules
 
-| | Bounty Duel | Bounty Rumble |
-| --- | --- | --- |
-| Players | 2 | 2 to 4, free-for-all |
-| Buy-in | 0.05 SOL | 0.05 SOL |
-| Bounty | 0.01 SOL a kill | 0.01 SOL a kill |
+| | Bounty Duel | Bounty Rumble | Team Stakes |
+| --- | --- | --- | --- |
+| Players | 2 | 2 to 4, free-for-all | exactly 4, two on two Team Slayer |
+| Buy-in | 0.05 SOL | 0.05 SOL | 0.05 SOL |
+| Pays | 0.01 SOL a kill | 0.01 SOL a kill | the winning team takes the pot |
+
+**Bounty** (Bounty Duel, Bounty Rumble):
 
 - Each kill moves the bounty, or what the victim has left if that is less,
   from the victim's match balance to the killer's. Suicides and betrayals
@@ -41,14 +44,40 @@ Production Money System". This page describes what is built.
 - At the end each player is paid their balance, less a 5% fee on what they
   won. Nobody pays a fee on their own stake, and a match nobody won anything
   in costs nothing.
+
+**Team Stakes** (pot against pot):
+
+- The playlist waits for a full two on two; an uneven match at equal stakes
+  isn't fair.
+- Halo's own scoring decides the winner: the dedicated server reports the
+  team scores and each player's team when the match ends.
+- The winning team's players who did not quit split the whole pot, each less
+  the 5% fee on what they won (a 2v2 winner gets 0.1 SOL less 0.0025). A
+  quitter's stake stays in the pot and they get nothing, even if their team
+  wins; a teammate who stays takes it all.
+- A tie is void, and so is a match without a team result.
+
+**Every playlist:**
+
 - If a match does not finish (the server is lost, everyone leaves, it never
   starts), it is void and every stake goes back in full.
 - If the game never settles a match, each player can take their stake back
   themselves after 24 hours (the program's `reclaim`).
 
-The playlists are `bountyduel` and `bounty` in
+The playlists are `bountyduel`, `bounty` and `teamstakes` in
 `services/signaling/src/matchmaker.ts` (`PLAYLISTS`); the rules are
-`killTransfer` and `bountyPayouts` in `services/signaling/src/wager.ts`.
+`killTransfer`, `bountyPayouts` and `teamPayouts` in
+`services/signaling/src/wager.ts`.
+
+### The match result
+
+When a dedicated server's match enters postgame, the game captures its
+result (`network_lobby_capture_result`, `port/linux/game/network_lobby.c`):
+each player's name, team, score and whether they quit, and the two team
+scores Halo itself compares for the winner. The server link sends it to the
+gateway as its `'E'` message (`port/server/src/server_link.c`), and the
+gateway sends it to the Worker with the match's end report
+(`services/game-server/gateway/pool.go`).
 
 ## How it fits together
 
@@ -175,7 +204,7 @@ wallets.
   program does not give it back). Approving a new session is one click.
 - The old house ledger (`src/bank.ts` and the `/v1/wallet` deposit,
   faucet and withdraw routes) is unused and still in the code.
-- Kills only: Bounty is Slayer. There is no team or objective wagering.
+- Team Stakes is Team Slayer only; there is no objective (CTF) wagering.
 - Before real money: an audit of the program, hardware or multisig keys for
   the upgrade authority and operator, legal advice, and a mainnet deploy of
   the program (about 1.3 SOL of refundable rent).

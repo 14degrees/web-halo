@@ -65,6 +65,7 @@ void network_lobby_kill_on_screen(long *sequence, float *x, float *y, unsigned c
 long network_lobby_death_sequence(void);
 long network_lobby_host_kill_sequence(void);
 void const *network_lobby_host_kills(void);
+void network_lobby_capture_result(void);
 long halo_screen_width(void);
 
 enum
@@ -190,6 +191,8 @@ static struct
 	int restore_pending;
 	float restore_seconds;
 	int last_client_state;
+	/* this postgame's result is captured (a dedicated host) */
+	int result_captured;
 } web_online;
 
 static void publish_state(int state)
@@ -742,6 +745,13 @@ static void update_dedicated(float seconds)
 
 	case _network_client_postgame:
 		web_online.game_seconds = 0.0f;
+		/* the result, once, before the postgame is reported (the gateway
+		pays a wagered team match by it) */
+		if (!web_online.result_captured)
+		{
+			network_lobby_capture_result();
+			web_online.result_captured = WEB_TRUE;
+		}
 		publish_match(_web_online_match_postgame);
 		web_online.postgame_shown_seconds += seconds;
 		if (web_online.postgame_shown_seconds >= web_online.postgame_seconds)
@@ -765,6 +775,8 @@ static void update_dedicated(float seconds)
 		publish_match(_web_online_match_none);
 		break;
 	}
+	if (client_state != _network_client_postgame)
+		web_online.result_captured = WEB_FALSE;
 	web_online.last_client_state = client_state;
 }
 

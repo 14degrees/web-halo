@@ -46,7 +46,7 @@ import { generateIceServersWithFallback, revokeTurnCredential } from "./turn";
 import { enforceTurnBandwidthCaps, turnIsDisabled, turnUsageSummary } from "./turn_cap";
 import { requireHumanVerification } from "./turnstile";
 import { handleEscrowRequest } from "./vault";
-import { stakeProblem } from "./wager";
+import { type MatchResult, stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
 
 export { Bank } from "./bank";
@@ -78,6 +78,29 @@ const RENEW_ROUTE = /^\/v1\/rooms\/([^/]+)\/renew$/u;
 const WEBSOCKET_ROUTE = /^\/v1\/rooms\/([^/]+)\/ws$/u;
 const ADMIN_BAN_ROUTE = /^\/v1\/admin\/bans\/([0-9a-f]{32})$/u;
 const QUEUE_TICKET_ROUTE = /^\/v1\/queue\/([A-Za-z0-9_-]{16,64})$/u;
+/* A dedicated server's match result (services/game-server/gateway,
+   matchResult), as far as it is well formed; null otherwise. */
+function parseMatchResult(value: unknown): MatchResult | null {
+  if (typeof value !== "object" || value === null) return null;
+  const result = value as Record<string, unknown>;
+  const scores = result.teamScores;
+  if (typeof result.teams !== "boolean" || !Array.isArray(scores) || scores.length !== 2 ||
+      !scores.every((score) => Number.isSafeInteger(score)) || !Array.isArray(result.players)) {
+    return null;
+  }
+  const players: MatchResult["players"] = [];
+  for (const entry of result.players.slice(0, 16)) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const player = entry as Record<string, unknown>;
+    if (typeof player.name !== "string" || player.name.length > 12 || !Number.isSafeInteger(player.team) ||
+        !Number.isSafeInteger(player.score) || typeof player.quit !== "boolean") {
+      return null;
+    }
+    players.push({ name: player.name, team: player.team as number, score: player.score as number, quit: player.quit });
+  }
+  return { teams: result.teams, teamScores: [scores[0] as number, scores[1] as number], players };
+}
+
 const WAGER_ROUTE = /^\/v1\/wagers\/([A-Za-z0-9_-]{8,64})$/u;
 const POOL_HEARTBEAT_ROUTE = /^\/v1\/pool\/servers\/([A-Za-z0-9_-]{16,64})\/heartbeat$/u;
 const POOL_MATCH_ROUTE =
@@ -972,7 +995,7 @@ async function handleMatchmaking(
       ok = await matchmaker(env).matchReady(serverId!, matchId!, body.roomId, body.inviteCode, now);
     } else {
       const reason = typeof body.reason === "string" ? body.reason.slice(0, 64) : "finished";
-      ok = await matchmaker(env).matchEnded(serverId!, matchId!, reason, now);
+      ok = await matchmaker(env).matchEnded(serverId!, matchId!, reason, now, parseMatchResult(body.result));
     }
     if (!ok) throw new HttpError(409, "MATCH_NOT_ASSIGNED", "That match is not this server's.");
     return withCors(jsonResponse({ ok, v: SIGNALING_PROTOCOL_VERSION }), origin);

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -156,7 +157,15 @@ func (s *server) runPool(ctx context.Context, identifier string, gameDone, linkD
 		}
 		match.endReason = reason
 		match.endedAt = time.Now()
-		if err := s.poolReport(serverID, match.MatchID, "end", map[string]any{"reason": reason}); err != nil {
+		body := map[string]any{"reason": reason}
+		// a finished match carries the game's result from this match (a
+		// wagered team match is paid by it)
+		s.mu.Lock()
+		if strings.HasPrefix(reason, "finished") && s.result != nil && s.resultAt.After(match.readyAt) {
+			body["result"] = s.result
+		}
+		s.mu.Unlock()
+		if err := s.poolReport(serverID, match.MatchID, "end", body); err != nil {
 			log.Printf("report the end: %v", err)
 		}
 		log.Printf("match %s ended: %s", shortID(match.MatchID), reason)

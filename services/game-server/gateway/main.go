@@ -194,6 +194,9 @@ type server struct {
 	sentMatchAt   time.Time
 	started       time.Time
 	kills         int
+	// the last match result the game reported, and when
+	result   *matchResult
+	resultAt time.Time
 }
 
 func (s *server) gameHello(identifier string) {
@@ -219,6 +222,14 @@ func (s *server) gameKill(killer, victim string) {
 	if !s.room.send(map[string]any{"type": "kill", "killer": killer, "victim": victim}) {
 		log.Printf("kill not reported: the room link is down")
 	}
+}
+
+func (s *server) gameResult(result matchResult) {
+	s.mu.Lock()
+	s.result = &result
+	s.resultAt = time.Now()
+	s.mu.Unlock()
+	log.Printf("match result: teams %v %v, %d players", result.Teams, result.TeamScores, len(result.Players))
 }
 
 func (s *server) gameStatus(status gameStatus) {

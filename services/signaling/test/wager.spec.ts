@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { bountyPayouts, killTransfer, type WagerPlayer } from "../src/wager";
+import { bountyPayouts, killTransfer, type MatchResult, teamPayouts, type WagerPlayer } from "../src/wager";
 
 const STAKE = 50_000_000;
 const PER_KILL = 10_000_000;
@@ -57,6 +57,47 @@ describe("bounty rules", () => {
   });
 });
 
+describe("team rules", () => {
+  const names = ["a", "b", "c", "d"];
+  const result = (red: number, blue: number, quit: string[] = [], missing: string[] = []): MatchResult => ({
+    teams: true,
+    teamScores: [red, blue],
+    players: [
+      { name: "a", team: 0, score: 9, quit: quit.includes("a") },
+      { name: "b", team: 0, score: 6, quit: quit.includes("b") },
+      { name: "c", team: 1, score: 7, quit: quit.includes("c") },
+      { name: "d", team: 1, score: 3, quit: quit.includes("d") },
+    ].filter((player) => !missing.includes(player.name)),
+  });
+
+  it("pays the winning team the pot, less the fee on what each won", () => {
+    const paid = teamPayouts(STAKE, names, result(15, 10), 500)!;
+    const share = 2 * STAKE;
+    expect(paid.winningTeam).toBe(0);
+    expect(paid.payouts).toEqual([share - STAKE / 20, share - STAKE / 20, 0, 0]);
+    expect(paid.fee).toBe(STAKE / 10);
+    expect(paid.payouts.reduce((sum, payout) => sum + payout, 0) + paid.fee).toBe(4 * STAKE);
+  });
+
+  it("leaves a quitter out: the teammate who stayed takes the whole pot", () => {
+    const paid = teamPayouts(STAKE, names, result(10, 15, ["d"]), 500)!;
+    expect(paid.winningTeam).toBe(1);
+    expect(paid.payouts).toEqual([0, 0, 4 * STAKE - (3 * STAKE) / 20, 0]);
+    expect(paid.fee).toBeLessThanOrEqual(Math.floor((4 * STAKE * 500) / 10_000));
+  });
+
+  it("counts a player missing from the result as having quit", () => {
+    expect(teamPayouts(STAKE, names, result(15, 10, [], ["b"]), 500)!.payouts[1]).toBe(0);
+  });
+
+  it("voids a tie, a match with no winner left, and one without a team result", () => {
+    expect(teamPayouts(STAKE, names, result(12, 12), 500)).toBeNull();
+    expect(teamPayouts(STAKE, names, result(15, 10, ["a", "b"]), 500)).toBeNull();
+    expect(teamPayouts(STAKE, names, null, 500)).toBeNull();
+    expect(teamPayouts(STAKE, names, { ...result(15, 10), teams: false }, 500)).toBeNull();
+  });
+});
+
 describe("wagered playlists", () => {
   it("need a wallet to queue", async () => {
     const response = await exports.default.fetch(new Request("http://signaling.test/v1/queue", {
@@ -80,7 +121,7 @@ describe("wagered playlists", () => {
     }
     const formed = tickets[1]!;
     expect(formed.state).toBe("assigning");
-    expect(formed.match?.wager).toEqual({ stake: STAKE, perKill: PER_KILL, escrow: "locking" });
+    expect(formed.match?.wager).toEqual({ stake: STAKE, perKill: PER_KILL, mode: "bounty", escrow: "locking" });
     expect(await matchmaker.matchReady(serverId, formed.match!.id, "room-for-wager-test", "INVITE1", now)).toBe(true);
     const ready = await matchmaker.poll(formed.id, now);
     expect(ready?.state).toBe("ready");
