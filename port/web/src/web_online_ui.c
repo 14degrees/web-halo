@@ -56,6 +56,8 @@ void network_lobby_start_now(void);
 void network_lobby_end_game(void);
 unsigned char network_lobby_return_to_pregame(void);
 unsigned char network_lobby_restore_pregame_screen(void);
+void network_lobby_kill_on_screen(long *sequence, float *x, float *y, unsigned char *on_screen);
+long halo_screen_width(void);
 
 enum
 {
@@ -133,6 +135,13 @@ static atomic_int web_online_player_count = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_headless = ATOMIC_VAR_INIT(0);
 /* a player is waiting to join: end the match so the next one includes them */
 static atomic_int web_online_restart_requested = ATOMIC_VAR_INIT(0);
+/* the latest kill by this machine's player and where its body is on the
+screen, in ten-thousandths of the picture (game thread writes, page reads) */
+static atomic_int web_online_kill_sequence = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_kill_x = ATOMIC_VAR_INIT(5000);
+static atomic_int web_online_kill_y = ATOMIC_VAR_INIT(4000);
+static atomic_int web_online_kill_on_screen = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_screen_width = ATOMIC_VAR_INIT(640);
 /* seconds until the match starts while counting down, else -1 */
 static atomic_int web_online_countdown_remaining = ATOMIC_VAR_INIT(-1);
 
@@ -267,6 +276,32 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_set_next_game(
 EMSCRIPTEN_KEEPALIVE void platform_web_online_request_restart(void)
 {
 	atomic_store_explicit(&web_online_restart_requested, 1, memory_order_release);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_kill_sequence(void)
+{
+	return atomic_load_explicit(&web_online_kill_sequence, memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_kill_x(void)
+{
+	return atomic_load_explicit(&web_online_kill_x, memory_order_relaxed);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_kill_y(void)
+{
+	return atomic_load_explicit(&web_online_kill_y, memory_order_relaxed);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_kill_on_screen(void)
+{
+	return atomic_load_explicit(&web_online_kill_on_screen, memory_order_relaxed);
+}
+
+/* the game picture's columns (480 lines), for placing overlays on it */
+EMSCRIPTEN_KEEPALIVE int platform_web_screen_width(void)
+{
+	return atomic_load_explicit(&web_online_screen_width, memory_order_relaxed);
 }
 
 EMSCRIPTEN_KEEPALIVE int platform_web_online_get_countdown_remaining(void)
@@ -862,6 +897,22 @@ static void update_join(float seconds)
 		fail_session(_web_online_error_join_failed);
 }
 
+/* every frame: where the latest kill's body is on the screen */
+static void publish_kill(void)
+{
+	long sequence;
+	float x;
+	float y;
+	unsigned char on_screen;
+
+	network_lobby_kill_on_screen(&sequence, &x, &y, &on_screen);
+	atomic_store_explicit(&web_online_kill_x, (int)(x * 10000.0f), memory_order_relaxed);
+	atomic_store_explicit(&web_online_kill_y, (int)(y * 10000.0f), memory_order_relaxed);
+	atomic_store_explicit(&web_online_kill_on_screen, on_screen ? 1 : 0, memory_order_relaxed);
+	atomic_store_explicit(&web_online_kill_sequence, (int)sequence, memory_order_release);
+	atomic_store_explicit(&web_online_screen_width, (int)halo_screen_width(), memory_order_relaxed);
+}
+
 void web_online_ui_update(int main_menu_loaded, float seconds)
 {
 	int request = atomic_exchange_explicit(
@@ -875,6 +926,7 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 	/* Browser calls only publish atomics.  Apply the selected identity here,
 	 * before host/join can build its network_player from the active profile. */
 	apply_requested_player_customization();
+	publish_kill();
 
 	if (command == _web_online_command_cancel)
 	{

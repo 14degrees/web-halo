@@ -582,6 +582,7 @@ symbols in this file:
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
 /* port/linux/game/network_distributed.c's */
+void network_lobby_note_kill(long killing_player_index, long dead_player_index, boolean friendly_fire);
 void network_distributed_player_killed(long *killing_player_index, long *killing_object_index,
 	long dead_player_index, boolean *friendly_fire);
 #endif
@@ -4070,6 +4071,10 @@ void game_engine_player_killed(
 	killer (port/linux/game/network_distributed.c) */
 	network_distributed_player_killed(&killing_player_index, &killing_object_index, dead_player_index,
 		&friendly_fire);
+#endif
+#ifdef HALO_WEB
+	/* the browser's reward popup (port/linux/game/network_lobby.c) */
+	network_lobby_note_kill(killing_player_index, dead_player_index, friendly_fire);
 #endif
 	dead_player->death_time = game_time_get();
 	if (game_engine->player_killed_player)

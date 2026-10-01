@@ -17,6 +17,10 @@ headers, so it calls these through plain prototypes.
 #include "networking/network_game_globals.h"
 #include "networking/network_game_manager.h"
 #include "networking/network_server_manager.h"
+#include "objects/objects.h"
+#include "camera/observer.h"
+
+#include <math.h>
 
 /* the platform layer's */
 void platform_log(char const *format, ...);
@@ -103,4 +107,100 @@ boolean network_lobby_restore_pregame_screen(
 	}
 	network_game_server_pause_countdown(server, FALSE);
 	return TRUE;
+}
+
+/* ---------- kills, for the browser's reward popup
+
+When this machine's player kills another, the page shows a reward over the
+body. The game records where the body was and, every frame, where that
+point falls on the screen (web_online_ui.c publishes it to the page). */
+
+/* world units above a body's origin where the popup sits: about its head */
+#define KILL_POPUP_HEIGHT 0.45f
+/* how long a popup follows its body, in ticks (the page fades it) */
+#define KILL_POPUP_TICKS (2 * TICKS_PER_SECOND)
+
+static struct
+{
+	real_point3d point;
+	long sequence;
+	long time;
+} lobby_kill;
+
+void network_lobby_note_kill(
+	long killing_player_index,
+	long dead_player_index,
+	boolean friendly_fire)
+{
+	struct player_datum *killer;
+	struct player_datum *dead;
+	long unit_index;
+
+	if (friendly_fire || killing_player_index == NONE || dead_player_index == NONE ||
+		killing_player_index == dead_player_index)
+	{
+		return;
+	}
+	killer = player_try_and_get(killing_player_index);
+	dead = player_try_and_get(dead_player_index);
+	if (!killer || !dead || killer->local_player_index == NONE)
+		return;
+	unit_index = dead->unit_index != NONE ? dead->unit_index : dead->dead_unit_index;
+	if (unit_index == NONE || !object_try_and_get(unit_index))
+		return;
+	lobby_kill.point = object_get(unit_index)->object.position;
+	lobby_kill.point.z += KILL_POPUP_HEIGHT;
+	lobby_kill.time = game_time_get();
+	lobby_kill.sequence++;
+}
+
+/* The latest kill's point on the screen, as fractions of the picture
+(0,0 top left), for the page: the sequence names the kill (0 for none);
+on_screen is false behind the camera or past the edges, or once the popup
+is over. */
+void network_lobby_kill_on_screen(
+	long *sequence,
+	real *x,
+	real *y,
+	boolean *on_screen)
+{
+	struct observer_result const *camera;
+	real_vector3d delta;
+	real_vector3d right;
+	real depth;
+	real tangent_vertical;
+	real aspect;
+	real ndc_x;
+	real ndc_y;
+
+	*sequence = lobby_kill.sequence;
+	*x = 0.5f;
+	*y = 0.4f;
+	*on_screen = FALSE;
+	if (!lobby_kill.sequence || !game_in_progress() ||
+		game_time_get() - lobby_kill.time > KILL_POPUP_TICKS)
+	{
+		return;
+	}
+	camera = observer_get_camera(0);
+	if (!camera)
+		return;
+	delta.i = lobby_kill.point.x - camera->position.x;
+	delta.j = lobby_kill.point.y - camera->position.y;
+	delta.k = lobby_kill.point.z - camera->position.z;
+	depth = delta.i * camera->forward.i + delta.j * camera->forward.j + delta.k * camera->forward.k;
+	if (depth < 0.05f)
+		return;
+	/* right = forward x up (x forward, y left, z up) */
+	right.i = camera->forward.j * camera->up.k - camera->forward.k * camera->up.j;
+	right.j = camera->forward.k * camera->up.i - camera->forward.i * camera->up.k;
+	right.k = camera->forward.i * camera->up.j - camera->forward.j * camera->up.i;
+	/* the vertical field of view as main.c derives it */
+	tangent_vertical = 0.75f * tanf(camera->field_of_view * 0.5f) * 0.85f;
+	aspect = (real)halo_screen_width() / 480.0f;
+	ndc_x = (delta.i * right.i + delta.j * right.j + delta.k * right.k) / depth / (tangent_vertical * aspect);
+	ndc_y = (delta.i * camera->up.i + delta.j * camera->up.j + delta.k * camera->up.k) / depth / tangent_vertical;
+	*x = 0.5f + 0.5f * ndc_x;
+	*y = 0.5f - 0.5f * ndc_y;
+	*on_screen = *x > 0.02f && *x < 0.98f && *y > 0.02f && *y < 0.98f;
 }

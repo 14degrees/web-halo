@@ -2773,6 +2773,80 @@
     }
   }
 
+  /* ---------- Kill rewards: "+0.1 SOL" over the body of each kill this
+     player makes. Display only for now; the amount is a placeholder. */
+
+  var KILL_REWARD_TEXT = "+0.1";
+  var KILL_REWARD_UNIT = "SOL";
+  var KILL_POP_MILLISECONDS = 1700;
+  var killPops = { last: -1, active: [] };
+
+  function wasmNumber(name, fallback) {
+    try {
+      var fn = global.Module && global.Module["_" + name];
+      return typeof fn === "function" ? fn() : fallback;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  /* Where the game's picture is on the page: it is drawn at its own shape,
+     centered in the canvas. */
+  function gamePictureRect() {
+    var canvas = byId("canvas");
+    if (!canvas || typeof canvas.getBoundingClientRect !== "function") return null;
+    var box = canvas.getBoundingClientRect();
+    var aspect = wasmNumber("platform_web_screen_width", 640) / 480;
+    var width = Math.min(box.width, box.height * aspect);
+    var height = width / aspect;
+    return { left: box.left + (box.width - width) / 2, top: box.top + (box.height - height) / 2, width: width, height: height };
+  }
+
+  function placeKillPop(pop, now) {
+    var rect = gamePictureRect();
+    if (!rect) return;
+    /* The body while it is on screen; otherwise above the crosshair. */
+    var onScreen = wasmNumber("platform_web_kill_sequence", 0) === pop.sequence &&
+      wasmNumber("platform_web_kill_on_screen", 0) === 1;
+    if (onScreen) {
+      pop.x = wasmNumber("platform_web_kill_x", 5000) / 10000;
+      pop.y = wasmNumber("platform_web_kill_y", 4000) / 10000;
+    } else if (pop.x === undefined) {
+      pop.x = 0.5;
+      pop.y = 0.4;
+    }
+    pop.element.style.left = (rect.left + pop.x * rect.width) + "px";
+    pop.element.style.top = (rect.top + pop.y * rect.height) + "px";
+  }
+
+  function tickKillPops(now) {
+    var sequence = wasmNumber("platform_web_kill_sequence", 0);
+    var container = byId("kill-pops");
+    if (killPops.last < 0) killPops.last = sequence;
+    if (sequence !== killPops.last && container && typeof document.createElement === "function") {
+      killPops.last = sequence;
+      var element = document.createElement("div");
+      element.className = "kill-pop";
+      var label = document.createElement("span");
+      label.textContent = KILL_REWARD_TEXT;
+      var unit = document.createElement("small");
+      unit.textContent = KILL_REWARD_UNIT;
+      label.appendChild(unit);
+      element.appendChild(label);
+      container.appendChild(element);
+      killPops.active.push({ element: element, sequence: sequence, born: now });
+    }
+    killPops.active = killPops.active.filter(function(pop) {
+      if (now - pop.born > KILL_POP_MILLISECONDS) {
+        if (pop.element.parentNode) pop.element.parentNode.removeChild(pop.element);
+        return false;
+      }
+      placeKillPop(pop, now);
+      return true;
+    });
+    if (typeof global.requestAnimationFrame === "function") global.requestAnimationFrame(tickKillPops);
+  }
+
   function installLobby() {
     var root = lobbyElement("lobby");
     if (!root || lobby.installed) return;
@@ -2823,6 +2897,7 @@
     setLobbyVisible(true);
     tickLobby();
     global.setInterval(tickLobby, LOBBY_TICK_MILLISECONDS);
+    if (typeof global.requestAnimationFrame === "function") global.requestAnimationFrame(tickKillPops);
   }
 
   function initialize() {

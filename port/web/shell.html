@@ -563,6 +563,24 @@
     #lobby-deploy[hidden] { display: none; }
     #lobby-deploy small { display: block; margin-top: .6rem; font-size: .9rem; letter-spacing: .05em; color: #9fd4ff; text-transform: none; }
     body[data-lobby="open"] #loading { display: none; }
+    /* Rewards over the game: "+0.1 SOL" where a kill's body is. */
+    #kill-pops { position: fixed; inset: 0; z-index: 6; pointer-events: none; overflow: hidden; }
+    .kill-pop { position: absolute; transform: translate(-50%, -100%); will-change: left, top; }
+    .kill-pop span {
+      display: block; white-space: nowrap;
+      font: 800 clamp(1.1rem, 2.2vw, 1.9rem)/1 "Arial Narrow", "Avenir Next Condensed", "Segoe UI", sans-serif;
+      letter-spacing: .04em; color: #ffd65a;
+      text-shadow: 0 0 .6rem rgba(255, 190, 40, .75), 0 2px 2px rgba(0, 0, 0, .8);
+      animation: kill-pop-rise 1.7s cubic-bezier(.2, .8, .3, 1) forwards;
+    }
+    .kill-pop span small { margin-left: .2em; font-size: .62em; color: #fff3c4; }
+    @keyframes kill-pop-rise {
+      0% { opacity: 0; transform: translateY(.6rem) scale(.6); }
+      12% { opacity: 1; transform: translateY(0) scale(1.15); }
+      25% { transform: translateY(-.2rem) scale(1); }
+      75% { opacity: 1; }
+      100% { opacity: 0; transform: translateY(-2.6rem) scale(1); }
+    }
     @media (max-width: 900px) {
       #lobby { grid-template-columns: 1fr; overflow: auto; align-content: start; }
       .lobby-center { display: none; }
@@ -1608,6 +1626,7 @@
       <ul id="lobby-players"><li class="empty">Nobody here yet — press Play</li></ul>
     </div>
   </section>
+  <div id="kill-pops" aria-live="polite"></div>
   <div id="lobby-deploy" role="button" tabindex="0" hidden>Match found<small>Click to play · Esc to release the mouse</small></div>
   <dialog id="about-dialog" aria-labelledby="about-title">
     <article class="about-card">
