@@ -23,6 +23,8 @@ gateway to game
   'm' minimum:u8                 the players the lobby waits for from now on
   'T' address:u32 team:u8        the team this peer's players join (a
                                  matchmade team match keeps a party together)
+  'o' persistent:u8              a public server's game (1): it starts with one
+                                 player and goes on as players come and go
   'X'                            end the match for players waiting to join
   'Q'                            stop the server
 
@@ -83,6 +85,9 @@ int platform_web_online_get_client_state(void);
 int platform_web_online_get_state(void);
 int platform_web_host_kill_sequence(void);
 void const *platform_web_host_kills(void);
+/* a public server's game: drop-in, drop-out (server_link_game_persistent) */
+static volatile int link_persistent;
+
 /* the match's team plan, below */
 static void clear_teams(void);
 static void set_team(uint32_t address, int team);
@@ -404,6 +409,13 @@ static void *link_reader(void *unused)
 			if (length == 2)
 				platform_web_online_set_minimum_players(packet[1]);
 			break;
+		case 'o':
+			if (length == 2)
+			{
+				link_persistent = packet[1] != 0;
+				fprintf(stderr, "server link: the game is %s\n", link_persistent ? "persistent (public)" : "a match");
+			}
+			break;
 		case 'T':
 			if (length == 6)
 			{
@@ -466,6 +478,14 @@ static void set_team(uint32_t address, int team)
 	}
 	pthread_mutex_unlock(&link_team_mutex);
 	fprintf(stderr, "server link: the peer at %08x plays on team %d\n", (unsigned)address, team);
+}
+
+/* Whether this server's game is a public, persistent one: it starts with a
+single player and does not end when players leave (the game engine's
+"one team left" rule), only at its score or time limit. */
+int server_link_game_persistent(void)
+{
+	return link_persistent;
 }
 
 /* the team planned for a machine by its address (either byte order, as the

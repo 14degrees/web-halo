@@ -23,9 +23,12 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+// the machines a room admits, this server's included (HALO_ROOM_CAPACITY:
+// a public server's player cap, plus one)
+var roomCapacity = 128
+
 const (
 	protocolVersion = 1
-	roomCapacity    = 128
 	heartbeatEvery  = 15 * time.Second // the room's lease on this server (lobby.ts DEDICATED_HOST_LEASE_MS)
 	renewEvery      = 50 * time.Minute
 )

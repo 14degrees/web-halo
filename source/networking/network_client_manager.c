@@ -1730,6 +1730,21 @@ boolean network_game_client_handle_game_update(
 	}
 #endif
 
+#ifdef HALO_LINUX
+	/* the distributed netcode keeps no lockstep: a gap in the numbering is
+	only a gap, so the client takes up the server's numbering again */
+	if (network_game_distributed() && message_packet->update_number != client->next_update_number &&
+		message_packet->update_number > client->next_update_number)
+	{
+		network_event(
+			"skipping to server update #%ld (expected #%ld)",
+			message_packet->update_number,
+			client->next_update_number);
+		client->next_update_number = message_packet->update_number;
+		update_client_join_in_progress(message_packet->update_number);
+	}
+#endif
+
 	if (message_packet->update_number != client->next_update_number)
 	{
 		network_event(

@@ -407,17 +407,23 @@ describe("public lobby", () => {
     expect(offered).toEqual(["leased-room"]);
   });
 
-  it("offers a server in its lobby before one mid-match, and lists both", async () => {
+  it("offers the fullest server with places to spare, mid-match or not, and lists both", async () => {
     const buildId = freshBuild();
     const directory = env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME);
     const now = Date.now();
-    /* the busy server is fuller and older, which would otherwise rank it first */
+    /* a server mid-match takes players in progress: the fuller one first */
     await directory.upsert({ ...dedicatedEntry(buildId, "busy-room", now, now - 900_000),
       matchState: "ingame", players: 4 }, now);
     await directory.upsert({ ...dedicatedEntry(buildId, "idle-room", now, now),
       matchState: "lobby", colo: "LAX" }, now);
     const offered = (await directory.candidates(buildId, 1, now)).map(({ roomId }) => roomId);
-    expect(offered).toEqual(["idle-room", "busy-room"]);
+    expect(offered).toEqual(["busy-room", "idle-room"]);
+    /* nearly full (within the spare places): the other one first */
+    await directory.upsert({ ...dedicatedEntry(buildId, "busy-room", now, now - 900_000),
+      matchState: "ingame", players: 12 }, now);
+    expect((await directory.candidates(buildId, 1, now)).map(({ roomId }) => roomId)).toEqual(["idle-room", "busy-room"]);
+    await directory.upsert({ ...dedicatedEntry(buildId, "busy-room", now, now - 900_000),
+      matchState: "ingame", players: 4 }, now);
 
     const response = await exports.default.fetch(new Request(`${API_ORIGIN}/v1/servers`, {
       headers: { Origin: GAME_ORIGIN, "CF-Connecting-IP": "203.0.113.77" },

@@ -2243,6 +2243,12 @@
 
   function fail(error) {
     var message = error && error.message ? error.message : "Online play failed.";
+    if (lobby.quickPlay) {
+      lobby.quickPlay = false;
+      telemetry("online_error", "online");
+      leave(false).then(function() { setLandingStatus(message, "error"); });
+      return;
+    }
     if (lobby.wantsPlay) {
       telemetry("online_error", "online");
       if (message === GAME_ERRORS[5]) lobby.rejoinAttempts = 0;
@@ -2702,6 +2708,134 @@
     }
     lobbyElement("playlist-dialog-select").textContent =
       focused.id === selectedPlaylist().id ? "Selected" : "Select " + focused.label;
+  }
+
+  /* ---------- the landing: click to play (Quick Play)
+
+     The site opens here. A click anywhere drops the player into the fullest
+     public server's game in progress (services/game-server, open mode: it
+     runs Slayer on a rotation and takes players while it plays), with no
+     dialog and no queue. Matchmaking, Custom Games and Play for SOL lead to
+     the Halo 3 lobby. Leaving a Quick Play game comes back here. */
+
+  function setLandingVisible(visible) {
+    var element = lobbyElement("landing");
+    if (!element || element.hidden === !visible) return;
+    element.hidden = !visible;
+    if (visible) {
+      document.body.dataset.lobby = "open";
+      if (document.pointerLockElement && typeof document.exitPointerLock === "function") document.exitPointerLock();
+    }
+  }
+
+  /* the landing, or the lobby: a party or a search in progress is the lobby's */
+  function homeScreen() {
+    if (partyView() || lobby.pendingParty || (lobby.queue && !lobby.quickPlay)) return "lobby";
+    return lobby.screen || "landing";
+  }
+
+  function setLandingStatus(text, tone) {
+    lobby.landingStatus = { text: text || "", tone: tone || null };
+  }
+
+  function renderLanding() {
+    var setText = function(id, text) {
+      var element = lobbyElement(id);
+      if (element && element.textContent !== text) element.textContent = text;
+    };
+    var root = lobbyElement("landing");
+    if (!root) return;
+    var busy = lobby.quickPlay && (session.active || lobby.joining);
+    if (busy) root.dataset.busy = "true";
+    else delete root.dataset.busy;
+    setText("landing-play-text", busy ? "Dropping in…" : session.runtimeReady ? "Click to play" : "Loading Halo…");
+    var status = lobby.landingStatus || { text: "" };
+    var statusText = status.text || (lobby.pendingQuickPlay && !session.runtimeReady ?
+      "You'll drop in as soon as Halo has loaded." : "");
+    var statusElement = lobbyElement("landing-status");
+    if (statusElement) {
+      if (statusElement.textContent !== statusText) statusElement.textContent = statusText;
+      if (status.tone) statusElement.dataset.tone = status.tone;
+      else delete statusElement.dataset.tone;
+    }
+    /* what the fullest public server is playing */
+    var servers = (lobby.listing || []).filter(function(room) { return room.dedicated; });
+    var room = servers[0];
+    if (room) {
+      var mapName = selectedLabel(elements.map, Number(room.mapIndex)) || "Blood Gulch";
+      var modeName = selectedLabel(elements.mode, Number(room.modeIndex)) || "Slayer";
+      setText("landing-now", "Now playing: " + modeName + " on " + mapName);
+      var playing = servers.reduce(function(sum, entry) { return sum + (entry.players || 0); }, 0);
+      setText("landing-now-detail", playing === 0 ? "Servers ready, be the first in" :
+        playing + (playing === 1 ? " player" : " players") + " online");
+    } else {
+      setText("landing-now", "Now playing: Slayer");
+      setText("landing-now-detail", "");
+    }
+    var profile = currentProfile();
+    setText("landing-name", profile.name);
+    var emblem = lobbyElement("landing-emblem");
+    var key = profile.style + ":" + profile.emblem;
+    if (emblem && emblem.dataset.key !== key) {
+      emblem.dataset.key = key;
+      emblem.dataset.style = profile.style;
+      emblem.replaceChildren(emblemElement(validEmblem(profile.emblem) ? profile.emblem : textHash(profile.name) % EMBLEM_COUNT));
+    }
+  }
+
+  /* Click to play: once Halo has loaded, into a server's game in progress. */
+  function landingQuickPlay() {
+    if (session.active || lobby.joining) return;
+    setLandingStatus("");
+    lobby.screen = "landing";
+    if (!session.runtimeReady) {
+      lobby.pendingQuickPlay = true;
+      return;
+    }
+    lobby.pendingQuickPlay = false;
+    seamlessQuickJoin();
+  }
+
+  async function seamlessQuickJoin() {
+    if (session.active || lobby.joining) return;
+    lobby.joining = true;
+    lobby.quickPlay = true;
+    cancelQueue();
+    lobby.wantsPlay = false;
+    var operation;
+    try {
+      var profile = readPlayerProfile();
+      savePlayerProfile(profile);
+      await leave(false);
+      operation = ++session.operationGeneration;
+      session.active = true;
+      session.role = "guest";
+      session.publicLobby = true;
+      session.closing = false;
+      session.profile = profile;
+      writePlayerProfile(profile);
+      syncTelemetryContext();
+      var request = {
+        protocolVersion: PROTOCOL_VERSION,
+        buildId: buildId(),
+        identifier: localIdentifier(),
+        serversOnly: true,
+      };
+      if (wallet.token) request.walletToken = wallet.token;
+      var result = await fetchJson("/v1/quickjoin", { method: "POST", body: JSON.stringify(request) });
+      requireCurrentOperation(operation);
+      session.roomTicket = null;
+      await completeGuestJoin(result, operation);
+      telemetry("quick_play", "online");
+    } catch (error) {
+      if (operation === undefined || operation === session.operationGeneration) {
+        lobby.quickPlay = false;
+        await leave(false).catch(function() {});
+        setLandingStatus((error && error.message) || "Couldn't find a game.", "error");
+      }
+    } finally {
+      lobby.joining = false;
+    }
   }
 
   /* ---------- parties (services/signaling/src/party.ts)
@@ -3440,8 +3574,12 @@
     if (session.active) lobby.started = false;
 
     var prompt = lobbyElement("lobby-deploy");
+    if (lobby.pendingQuickPlay && session.runtimeReady && !session.active) landingQuickPlay();
+    /* a Quick Play game that has ended (left, or lost) is over: home again */
+    if (lobby.quickPlay && !session.active && !lobby.joining) lobby.quickPlay = false;
     if (!publicPlay) {
       setLobbyVisible(false);
+      setLandingVisible(false);
       if (prompt) prompt.hidden = true;
       return;
     }
@@ -3450,6 +3588,7 @@
     renderLobbyKind();
     if (inMatch) {
       setLobbyVisible(false);
+      setLandingVisible(false);
       /* Whenever the mouse is free during a match, one click takes it back. */
       if (prompt) {
         var free = !mouseCaptured();
@@ -3461,13 +3600,24 @@
           prompt.firstChild.textContent = "Match found";
         }
         prompt.hidden = !free;
+        var leaveGame = lobbyElement("lobby-leave-game");
+        if (leaveGame) leaveGame.hidden = !free;
       }
       return;
     }
     lobby.deployed = false;
     if (prompt) prompt.hidden = true;
-    setLobbyVisible(true);
+    var leaveButton = lobbyElement("lobby-leave-game");
+    if (leaveButton) leaveButton.hidden = true;
     if (!session.active) refreshListing();
+    if (homeScreen() === "landing") {
+      setLobbyVisible(false);
+      setLandingVisible(true);
+      renderLanding();
+      return;
+    }
+    setLandingVisible(false);
+    setLobbyVisible(true);
 
     var countdown = lobbyElement("lobby-countdown");
     var seconds = countdownSeconds();
@@ -4557,6 +4707,42 @@
     });
     lobbyElement("lobby-wallet-withdraw").addEventListener("click", function() { withdrawVault(); });
     lobbyElement("lobby-wallet-signout").addEventListener("click", signOutWallet);
+    /* the landing */
+    var showLobby = function(kind) {
+      lobby.screen = "lobby";
+      if (kind) lobby.kind = kind;
+      setLandingStatus("");
+    };
+    lobbyElement("landing").addEventListener("click", function(event) {
+      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize")) return;
+      landingQuickPlay();
+    });
+    lobbyElement("landing-quick").addEventListener("click", function() { landingQuickPlay(); });
+    lobbyElement("landing-matchmaking").addEventListener("click", function() { showLobby("matchmaking"); });
+    lobbyElement("landing-custom").addEventListener("click", function() {
+      showLobby("custom");
+      if (!partyView()) {
+        setPartyStatus("Custom games are for parties: start one and invite your friends.");
+        openPartyDialog();
+      }
+    });
+    lobbyElement("landing-sol").addEventListener("click", function() {
+      showLobby("matchmaking");
+      if (!selectedPlaylist().wager) choosePlaylist("bountyduel");
+    });
+    lobbyElement("landing-customize").addEventListener("click", function() {
+      lobbyElement("lobby-spartan-toggle").click();
+    });
+    lobbyElement("lobby-home").addEventListener("click", function() {
+      if (session.active || lobby.queue || partyView()) return;
+      lobby.screen = "landing";
+    });
+    lobbyElement("lobby-leave-game").addEventListener("click", function() {
+      lobby.wantsPlay = false;
+      cancelQueue();
+      leave(false);
+    });
+    lobbyElement("landing").addEventListener("keydown", function(event) { event.stopPropagation(); });
     lobbyElement("lobby-friends").addEventListener("click", function() {
       setPartyStatus("");
       openPartyDialog();

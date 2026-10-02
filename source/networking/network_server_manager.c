@@ -1761,6 +1761,7 @@ void network_game_server_handle_client_update_packet(
 #ifdef HALO_SERVER
 /* port/server/src/server_link.c */
 int server_link_team_for_address(unsigned long address);
+int server_link_game_persistent(void);
 #endif
 
 boolean network_game_server_add_player_to_game(
@@ -2201,10 +2202,18 @@ boolean server_has_enough_machines(
 boolean server_ok_to_countdown(
 	struct network_game_server *server)
 {
+	long minimum_players = server->game.minimum_players;
+
+#ifdef HALO_SERVER
+	/* a public server's game starts with whoever is there: the others join
+	it in progress */
+	if (server_link_game_persistent())
+		minimum_players = 1;
+#endif
 	if (server_has_enough_machines(server) &&
 		server_has_a_player_on_each_machine(server) &&
 		!server_needs_more_teams(server) &&
-		server->game.player_count >= server->game.minimum_players)
+		server->game.player_count >= minimum_players)
 	{
 		return TRUE;
 	}

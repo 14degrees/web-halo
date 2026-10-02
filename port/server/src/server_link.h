@@ -11,6 +11,9 @@ void server_link_start(void);
 display to pace it) */
 void server_link_frame(void);
 
+/* a public server's game: starts with one player, goes on as players leave */
+int server_link_game_persistent(void);
+
 /* the team the matchmaker planned for a machine, by its address, or -1 */
 int server_link_team_for_address(unsigned long address);
 

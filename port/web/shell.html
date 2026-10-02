@@ -678,6 +678,76 @@
     .lobby-info [hidden] { display: none; }
     .lobby-pick::after { content: "  ▸"; color: #ffb069; }
     #lobby-play:disabled { opacity: 1; color: #9aa6bd; cursor: default; animation: none; background: rgba(30, 44, 92, .55); }
+    /* ---------- the landing: click anywhere to drop into a game in progress
+       (Quick Play); the other ways to play underneath */
+    #landing {
+      position: fixed; inset: 0; z-index: 30; isolation: isolate; overflow: hidden; cursor: pointer;
+      display: grid; grid-template-rows: auto 1fr auto; padding: clamp(1rem, 3vh, 2rem) clamp(1rem, 4vw, 3rem);
+      color: #eef2f8; background: #02040a;
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif;
+    }
+    #landing[hidden] { display: none; }
+    #landing::after {
+      content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+      background: radial-gradient(ellipse at 50% 55%, transparent 30%, rgba(0, 0, 0, .55) 100%),
+        linear-gradient(0deg, rgba(0, 0, 0, .65), transparent 35%);
+    }
+    .landing-brand { grid-row: 1; display: grid; justify-items: center; gap: .1rem; text-transform: uppercase; pointer-events: none; }
+    .landing-brand strong { font-size: clamp(2.6rem, 6vw, 4.6rem); font-weight: 500; letter-spacing: .32em; margin-right: -.32em; text-shadow: 0 0 2rem rgba(80, 170, 255, .45); }
+    .landing-brand span { font-size: clamp(.85rem, 1.4vw, 1.1rem); letter-spacing: .3em; color: #9fb4d6; }
+    .landing-play {
+      grid-row: 2; align-self: center; justify-self: center; padding: 1rem 2rem; border: 0; background: none; cursor: pointer;
+      color: rgba(238, 242, 248, .82); font-family: inherit; font-weight: 500; text-transform: uppercase;
+      font-size: clamp(2.4rem, 7vw, 5.4rem); letter-spacing: .08em;
+      text-shadow: 0 0 2.4rem rgba(255, 176, 105, .35), 0 3px 6px rgba(0, 0, 0, .7);
+      animation: landing-breathe 2.6s ease-in-out infinite;
+    }
+    .landing-play:hover, .landing-play:focus-visible { color: #fff; outline: none; }
+    #landing[data-busy] .landing-play { animation: none; color: #ffb069; }
+    @keyframes landing-breathe { 0%, 100% { opacity: .78; } 50% { opacity: 1; } }
+    .landing-status {
+      position: absolute; left: 0; right: 0; top: 62%; margin: 0; text-align: center; pointer-events: none;
+      font-size: clamp(1rem, 1.6vw, 1.25rem); color: #c7d1e6; text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+    }
+    .landing-status[data-tone="error"] { color: #ffb3a8; }
+    .landing-bar { grid-row: 3; align-self: end; display: grid; gap: .6rem; justify-self: center; width: min(58rem, 100%); }
+    .landing-now { display: flex; justify-content: space-between; gap: 1rem; font-size: clamp(1.05rem, 1.7vw, 1.45rem); }
+    .landing-now-detail { color: #9fb4d6; white-space: nowrap; }
+    .landing-modes { display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: auto; align-items: stretch; gap: .6rem; }
+    .landing-mode {
+      padding: .7rem .4rem; border: 2px solid var(--tone); background: rgba(6, 10, 26, .72); color: #f2f5fa; cursor: pointer;
+      font-family: inherit; font-size: clamp(1.05rem, 1.7vw, 1.5rem); font-weight: 500; letter-spacing: .02em;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .4);
+    }
+    .landing-mode:hover, .landing-mode:focus-visible { background: color-mix(in srgb, var(--tone) 28%, rgba(6, 10, 26, .8)); outline: none; }
+    .landing-mode[data-tone="quick"] { --tone: #ffb069; }
+    .landing-mode[data-tone="matchmaking"] { --tone: #5fb4ff; }
+    .landing-mode[data-tone="custom"] { --tone: #8fd1a6; }
+    .landing-mode[data-tone="sol"] { --tone: #ffd65a; }
+    .landing-spartan {
+      position: absolute; right: clamp(1rem, 3vw, 2.4rem); bottom: calc(clamp(1rem, 3vh, 2rem) + 7.2rem);
+      display: grid; grid-template-columns: auto auto; align-items: center; gap: .2rem .6rem; text-align: right;
+    }
+    #landing-emblem .emblem { --emblem-size: 2.4rem; }
+    #landing-name { font-size: 1.35rem; }
+    .landing-customize {
+      grid-column: 1 / -1; padding: .35rem .8rem; border: 1px solid rgba(143, 209, 166, .6); background: rgba(6, 10, 26, .6);
+      color: #e9ecf2; font-family: inherit; font-size: 1.05rem; cursor: pointer;
+    }
+    .landing-customize:hover { border-color: #8fd1a6; }
+    @media (max-width: 700px) {
+      .landing-modes { grid-template-columns: repeat(2, 1fr); }
+      .landing-spartan { position: static; justify-self: end; }
+      #landing { grid-template-rows: auto 1fr auto auto; }
+    }
+    /* in a game with the mouse free: the way out, under the resume prompt */
+    #lobby-leave-game {
+      position: fixed; left: 50%; bottom: 12vh; z-index: 26; transform: translateX(-50%);
+      padding: .5rem 1.4rem; border: 1px solid rgba(255, 255, 255, .35); background: rgba(6, 10, 26, .75);
+      color: #e9ecf2; font: 500 1.15rem/1.2 "Barlow Semi Condensed", "Arial Narrow", sans-serif; cursor: pointer;
+    }
+    #lobby-leave-game[hidden] { display: none; }
+    #lobby-leave-game:hover { border-color: #ffb069; color: #fff; }
     /* Halo 3's small dialogs: friends, and the game and map choosers */
     .h3-dialog {
       position: fixed; inset: 0; margin: auto; height: fit-content; width: min(30rem, calc(100vw - 2rem)); padding: 0;
@@ -2037,6 +2107,34 @@
       <p class="diagnostics-shortcut">⌘/Ctrl + Shift + L</p>
     </section>
   </main>
+  <section id="landing" aria-label="Halo" hidden>
+    <video class="lobby-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
+    <div class="landing-brand">
+      <strong>Halo</strong>
+      <span>Combat Evolved · Online</span>
+    </div>
+    <button id="landing-play" class="landing-play" type="button">
+      <span id="landing-play-text">Click to play</span>
+    </button>
+    <p id="landing-status" class="landing-status" role="status" aria-live="polite"></p>
+    <div class="landing-bar">
+      <div class="landing-now">
+        <span id="landing-now">Now playing: Slayer</span>
+        <span id="landing-now-detail" class="landing-now-detail"></span>
+      </div>
+      <nav class="landing-modes" aria-label="Ways to play">
+        <button id="landing-quick" class="landing-mode" data-tone="quick" type="button">Quick Play</button>
+        <button id="landing-matchmaking" class="landing-mode" data-tone="matchmaking" type="button">Matchmaking</button>
+        <button id="landing-custom" class="landing-mode" data-tone="custom" type="button">Custom Games</button>
+        <button id="landing-sol" class="landing-mode" data-tone="sol" type="button">Play for SOL</button>
+      </nav>
+    </div>
+    <aside class="landing-spartan">
+      <span id="landing-emblem"></span>
+      <span id="landing-name">Spartan</span>
+      <button id="landing-customize" class="landing-customize" type="button">Customize</button>
+    </aside>
+  </section>
   <section id="lobby" aria-label="Matchmaking lobby" hidden>
     <video class="lobby-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
     <div class="lobby-left">
@@ -2068,6 +2166,7 @@
         <button id="lobby-spartan-toggle" class="lobby-foot" type="button">Spartan</button>
         <button id="lobby-sound" class="lobby-foot" type="button">Sound: <span id="lobby-sound-state">On</span></button>
         <button id="lobby-friends" class="lobby-foot" type="button">Friends</button>
+        <button id="lobby-home" class="lobby-foot" type="button">Home</button>
       </footer>
       <section class="lobby-card" aria-label="Playlist" hidden>
         <figure class="lobby-map">
@@ -2218,6 +2317,7 @@
   <div id="kill-pops" aria-live="polite"></div>
   <div id="hud-balance" hidden>◎ <span id="hud-balance-amount">0.000</span> SOL <small id="hud-balance-note"></small></div>
   <div id="lobby-deploy" role="button" tabindex="0" hidden>Match found<small>Click to play · Esc to release the mouse</small></div>
+  <button id="lobby-leave-game" type="button" hidden>Leave game</button>
   <dialog id="about-dialog" aria-labelledby="about-title">
     <article class="about-card">
       <button id="about-close" class="icon-button" type="button" aria-label="Close">✕</button>

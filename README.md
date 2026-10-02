@@ -170,7 +170,10 @@ The game can play system link games on a local network and on the internet:
   gameplay travels directly between each friend and the host when their
   networks permit it.
 - Native builds can use an invite link without a server from this project.
-- The browser build has matchmaking on dedicated servers, including
+- The browser build opens on **click to play**: one click drops you into the
+  fullest public server's Slayer game in progress (always-on servers that
+  take players mid-match; `services/game-server`, open mode). It also has
+  matchmaking on dedicated servers, including
   playlists played for SOL on Solana devnet
   ([docs/wagers.md](docs/wagers.md)), and parties: friends join by a code
   or link, then search together or play a custom game on a server of their

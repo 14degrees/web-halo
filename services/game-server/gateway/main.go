@@ -152,6 +152,9 @@ func loadConfig() (*config, error) {
 	if c.MinimumPlayers, err = integer("HALO_LOBBY_MIN_PLAYERS", 1, 1, 127); err != nil {
 		return nil, err
 	}
+	if roomCapacity, err = integer("HALO_ROOM_CAPACITY", 128, 2, 128); err != nil {
+		return nil, err
+	}
 	if c.CountdownSeconds, err = integer("HALO_LOBBY_COUNTDOWN_SECONDS", 20, 0, 255); err != nil {
 		return nil, err
 	}
@@ -505,6 +508,11 @@ func run() error {
 
 	first := c.Rotation[0]
 	if err := s.link.hostDedicated(first.MapIndex, first.ModeIndex, c.MinimumPlayers, c.CountdownSeconds, c.PostgameSeconds); err != nil {
+		return err
+	}
+	/* a public server's game: it starts with one player and goes on as
+	players drop in and out (they join it in progress) */
+	if err := s.link.setPersistent(true); err != nil {
 		return err
 	}
 	openContext, cancel := context.WithTimeout(ctx, 30*time.Second)

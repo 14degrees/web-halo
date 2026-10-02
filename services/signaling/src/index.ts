@@ -759,6 +759,7 @@ async function quickJoin(
   );
   const wallet = await walletForToken(env, parsed.value.walletToken);
   for (const candidate of candidates) {
+    if (parsed.value.serversOnly && !candidate.dedicated) continue;
     const result = await mintSession(env, candidate.roomId, parsed.value, wallet);
     if (result.ok) {
       const body: QuickJoinResponse = {
@@ -780,6 +781,11 @@ async function quickJoin(
       await directory.remove(candidate.roomId);
     }
     /* Full, or a build the directory mislisted: try the next room. */
+  }
+
+  /* click to play never makes a browser the host: the servers are busy */
+  if (parsed.value.serversOnly) {
+    throw new HttpError(503, "NO_PUBLIC_SERVER", "Every server is full right now. Try again in a moment.");
   }
 
   /* Nobody to join: the caller hosts. Creating a room counts against the

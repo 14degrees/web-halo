@@ -230,6 +230,16 @@ func (link *gameLink) setMinimumPlayers(minimum int) error {
 	return link.write([]byte{'m', byte(minimum)})
 }
 
+// setPersistent makes the game a public one: it starts with one player and
+// goes on as players come and go.
+func (link *gameLink) setPersistent(persistent bool) error {
+	value := byte(0)
+	if persistent {
+		value = 1
+	}
+	return link.write([]byte{'o', value})
+}
+
 // setTeam tells the game which team a peer's players join.
 func (link *gameLink) setTeam(address uint32, team int) error {
 	packet := make([]byte, 6)

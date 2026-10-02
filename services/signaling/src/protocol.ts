@@ -92,6 +92,8 @@ export interface QuickJoinInput {
   protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
   turnstileToken?: string;
   walletToken?: string;
+  /* click to play: a dedicated server's game only, never hosting one */
+  serversOnly?: boolean;
 }
 
 export interface SessionDescriptor {
@@ -402,6 +404,7 @@ export function parseQuickJoinInput(
       protocolVersion: value.protocolVersion,
       ...(verifiedToken === undefined ? {} : { turnstileToken: verifiedToken }),
       ...walletTokenField(value.walletToken),
+      ...(value.serversOnly === true ? { serversOnly: true } : {}),
     },
   };
 }

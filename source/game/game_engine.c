@@ -4659,11 +4659,22 @@ void game_engine_playlist_next(
 	return;
 }
 
+#ifdef HALO_SERVER
+/* port/server/src/server_link.c */
+int server_link_game_persistent(void);
+#endif
+
 boolean game_engine_should_end_game(
 	void)
 {
 	boolean should_end_game = FALSE;
 
+#ifdef HALO_SERVER
+	/* a public server's game goes on as players come and go: it ends at its
+	score or time limit */
+	if (server_link_game_persistent())
+		return FALSE;
+#endif
 	if (game_engine && !multiple_teams_alive())
 		should_end_game = TRUE;
 

@@ -20,6 +20,9 @@ const STALE_ENTRY_MS = 3 * 60 * 60 * 1_000;
 /* A dedicated server holds its place in the directory as a lease: its
    gateway pings the room every 15 seconds, and a server not heard from in
    this long is gone (a crashed machine never closes its WebSocket). */
+/* quick join fills the fullest game but this many places short of full,
+   while another game has room (friends who follow still fit) */
+export const QUICK_JOIN_SPARE_PLACES = 5;
 export const DEDICATED_HOST_LEASE_MS = 60_000;
 
 /* Who is in a room, for the public lobby's player list: display names and
@@ -195,6 +198,7 @@ export class LobbyDirectory extends DurableObject<Env> {
   /* Open rooms for this build, best first: a dedicated host before a player's
      browser, one not mid-match before one that is, then the fullest, then the
      oldest. */
+  /* places quick join leaves in a game before preferring another */
   async candidates(
     buildId: string,
     protocolVersion: number,
@@ -213,15 +217,19 @@ export class LobbyDirectory extends DurableObject<Env> {
             AND (host_connected = 1 OR created_at > ?)
             AND (dedicated = 0 OR host_seen_at > ?)
           ORDER BY dedicated DESC,
-                   /* a server mid-match cannot take anyone until it ends:
-                      one in its lobby first */
-                   CASE WHEN match_state = 'ingame' THEN 1 ELSE 0 END ASC,
+                   /* a browser's game mid-match cannot take anyone until it
+                      ends (a dedicated server's takes players in progress) */
+                   CASE WHEN dedicated = 0 AND match_state = 'ingame' THEN 1 ELSE 0 END ASC,
+                   /* the fullest game with room to spare, so games feel
+                      alive; a nearly full one only when no other has room */
+                   CASE WHEN players >= capacity - ? THEN 1 ELSE 0 END ASC,
                    players DESC, created_at ASC
           LIMIT ?`,
         buildId,
         protocolVersion,
         now - HOST_CONNECT_GRACE_MS,
         now - DEDICATED_HOST_LEASE_MS,
+        QUICK_JOIN_SPARE_PLACES,
         Math.max(1, Math.min(limit, 32)),
       )
       .toArray()
