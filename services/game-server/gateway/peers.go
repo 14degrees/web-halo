@@ -71,6 +71,8 @@ type peerSet struct {
 	changed   func()
 	// which machines may connect (a matchmade match's roster); nil: any
 	allowed func(identifier string) bool
+	// machines put out of this match (out of SOL), refused until the next
+	barred map[string]bool
 	// the team the matchmaker planned for a machine (a party together)
 	teams map[string]int
 }
@@ -78,7 +80,26 @@ type peerSet struct {
 func (set *peerSet) setAllowed(allowed func(string) bool) {
 	set.mu.Lock()
 	set.allowed = allowed
+	set.barred = nil
 	set.mu.Unlock()
+}
+
+// bar puts a player out of the match: their connection closes, and their
+// machine may not connect again until the next match.
+func (set *peerSet) bar(id, why string) {
+	set.mu.Lock()
+	transport := set.resolveLocked(id)
+	if p, ok := set.byID[transport]; ok {
+		if set.barred == nil {
+			set.barred = map[string]bool{}
+		}
+		set.barred[p.identifier] = true
+	}
+	removed := set.removeLocked(transport, why)
+	set.mu.Unlock()
+	if removed {
+		set.changed()
+	}
 }
 
 // setTeams sets a team match's plan: the team each machine joins.
@@ -156,6 +177,11 @@ func (set *peerSet) ensure(id, identifier string) {
 	if set.allowed != nil && !set.allowed(identifier) {
 		set.mu.Unlock()
 		log.Printf("peer %s (%s) refused: not in this match", id, identifier)
+		return
+	}
+	if set.barred[identifier] {
+		set.mu.Unlock()
+		log.Printf("peer %s (%s) refused: out of this match", id, identifier)
 		return
 	}
 	if _, exists := set.byID[set.resolveLocked(id)]; exists {

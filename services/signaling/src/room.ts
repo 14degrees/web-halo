@@ -1,3 +1,4 @@
+import type { WagerView } from "./wager";
 import { DurableObject } from "cloudflare:workers";
 
 import {
@@ -1157,9 +1158,40 @@ export class SignalingRoom extends DurableObject<Env> {
         victim: victimName,
         wager: result.view,
       }));
+      this.outOfSol(socket, result.moved, victimName, result.view);
       return;
     }
     /* a free match's kills move nothing */
+  }
+
+  /* A bounty match: a player whose stake is spent is out. Once only one
+     player has SOL left the match ends there (a duel at its first such
+     kill), and pays out as any finished match; otherwise the broke player
+     leaves and the others play on. Max kills and the time limit still end
+     it as usual. */
+  private outOfSol(host: WebSocket, moved: number, victimName: string, view: WagerView): void {
+    if (moved <= 0 || view.mode === "team") return;
+    const victim = view.players.find((player) => player.name === victimName);
+    if (!victim || victim.balance > 0) return;
+    const funded = view.players.filter((player) => player.balance > 0).length;
+    const end = funded <= 1;
+    const out = end ? [] : this.connections("guest")
+      .filter(({ attachment }) => attachment.profile?.name === victimName)
+      .map(({ attachment }) => attachment.peerId);
+    for (const peerId of out) {
+      for (const target of this.ctx.getWebSockets(`peer:${peerId}`)) {
+        try {
+          target.send(jsonMessage({ type: "out_of_sol", v: SIGNALING_PROTOCOL_VERSION }));
+        } catch {
+          /* closing anyway */
+        }
+      }
+    }
+    try {
+      host.send(jsonMessage({ end, out, type: "wager_out", v: SIGNALING_PROTOCOL_VERSION }));
+    } catch {
+      /* the host is gone; the match ends without it */
+    }
   }
 
   private broadcastAll(encoded: string): void {

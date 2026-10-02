@@ -100,6 +100,9 @@ type roomMessage struct {
 	Signal  json.RawMessage `json:"signal,omitempty"`
 	Code    string          `json:"code,omitempty"`
 	Message string          `json:"message,omitempty"`
+	// wager_out: the players out of SOL, and whether the match ends there
+	Out []string `json:"out,omitempty"`
+	End bool     `json:"end,omitempty"`
 }
 
 type room struct {
@@ -355,6 +358,19 @@ func (r *room) handle(message roomMessage) {
 		if err := r.peers.handleSignal(message.From, signal); err != nil {
 			log.Printf("peer %s: bad signal: %v", message.From, err)
 			r.peers.remove(message.From, "invalid connection data")
+		}
+	case "wager_out":
+		// a bounty match: the players out of SOL leave it, and may not come
+		// back; when only one player has SOL left, the match ends (and pays
+		// out as any finished match)
+		for _, id := range message.Out {
+			r.peers.bar(id, "out of SOL")
+		}
+		if message.End {
+			log.Printf("a player is out of SOL: ending the match")
+			if err := r.peers.link.requestRestart(); err != nil {
+				log.Printf("could not end the match: %v", err)
+			}
 		}
 	case "waiting":
 		if message.From != "" {

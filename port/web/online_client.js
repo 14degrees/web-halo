@@ -1401,6 +1401,15 @@
       applyWagerView(message.wager);
       return;
     }
+    if (message.type === "out_of_sol") {
+      /* a bounty match: this player's stake is spent, so they are out; the
+         others play on, and it pays out when it ends */
+      lobby.wantsPlay = false;
+      lobby.error = "You ran out of SOL, so you're out of this match. It pays out when it ends.";
+      cancelQueue();
+      leave(false).catch(function() {});
+      return;
+    }
     if (message.type === "pings") {
       /* the server's measure of everyone's ping, by name (the scoreboard) */
       if (message.pings && typeof message.pings === "object") session.pings = message.pings;

@@ -40,7 +40,13 @@ Production Money System". This page describes what is built.
 
 - Each kill moves the bounty, or what the victim has left if that is less,
   from the victim's match balance to the killer's. Suicides and betrayals
-  move nothing. A player whose stake is spent plays on for nothing.
+  move nothing.
+- A player whose stake is spent is out. When only one player has SOL left
+  the match ends there and pays out (a duel ends at the first such kill);
+  otherwise the broke player is removed from the match, can't rejoin it,
+  and the others play on. The kill limit and time limit still end a match
+  as usual. (`outOfSol` in `services/signaling/src/room.ts`; the gateway's
+  `wager_out` in `services/game-server/gateway/room.go`.)
 - At the end each player is paid their balance, less a 5% fee on what they
   won. Nobody pays a fee on their own stake, and a match nobody won anything
   in costs nothing.
