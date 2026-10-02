@@ -695,15 +695,6 @@
     /* the live map behind (the game's canvas): the page lets it show */
     #landing { transition: background-color 1s ease; }
     #landing[data-live] { background-color: transparent; }
-    /* which public servers click to play drops into */
-    .landing-kinds { position: absolute; left: 0; right: 0; top: calc(50% + clamp(4.2rem, 11vh, 6.5rem)); z-index: 1; display: flex; justify-content: center; gap: .5rem; flex-wrap: wrap; padding: 0 1rem; }
-    .landing-kind {
-      padding: .4rem 1rem; border: 2px solid rgba(242, 245, 250, .35); background: rgba(6, 10, 26, .6); color: #c9d3e6;
-      font-family: inherit; font-size: clamp(.95rem, 1.4vw, 1.15rem); font-weight: 500; cursor: pointer;
-    }
-    .landing-kind:hover, .landing-kind:focus-visible { border-color: #ffb069; color: #fff; outline: none; }
-    .landing-kind[aria-pressed="true"] { border-color: #ffb069; background: rgba(255, 176, 105, .22); color: #fff; }
-    .landing-kind:disabled { opacity: .45; cursor: default; }
     /* the pause menu (Esc in a game): the game shows through, dimmed */
     #landing[data-pause] { background-color: rgba(0, 0, 0, .38); }
     #landing[data-pause] .landing-film { opacity: 0; }
@@ -731,7 +722,7 @@
     #landing[data-busy] .landing-play { animation: none; color: #ffb069; }
     @keyframes landing-breathe { 0%, 100% { opacity: .78; } 50% { opacity: 1; } }
     .landing-status {
-      position: absolute; left: 0; right: 0; top: calc(50% + clamp(7rem, 18vh, 10.5rem)); margin: 0; text-align: center; pointer-events: none;
+      position: absolute; left: 0; right: 0; top: 62%; margin: 0; text-align: center; pointer-events: none;
       font-size: clamp(1rem, 1.6vw, 1.25rem); color: #c7d1e6; text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
     }
     .landing-status[data-tone="error"] { color: #ffb3a8; }
@@ -2151,11 +2142,6 @@
     <button id="landing-play" class="landing-play" type="button">
       <span id="landing-play-text">Click to play</span>
     </button>
-    <div class="landing-kinds" role="group" aria-label="Kind of game">
-      <button class="landing-kind" data-kind="ffa" type="button" aria-pressed="true">Free for All</button>
-      <button class="landing-kind" data-kind="team" type="button" aria-pressed="false">Team Slayer</button>
-      <button class="landing-kind" data-kind="objective" type="button" aria-pressed="false">Objective</button>
-    </div>
     <p id="landing-status" class="landing-status" role="status" aria-live="polite"></p>
     <div class="landing-bar">
       <div class="landing-now">
