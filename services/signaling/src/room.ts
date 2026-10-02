@@ -701,6 +701,21 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
+    if (message.type === "pings") {
+      if (sender.role !== "host") {
+        this.sendError(socket, "PINGS_FORBIDDEN", "Only the host measures pings.");
+        return;
+      }
+      /* by the name each plays under (the scoreboard's) */
+      const byName: Record<string, number> = {};
+      for (const { attachment } of this.connections("guest")) {
+        const ping = message.pings[attachment.peerId];
+        if (ping !== undefined && attachment.profile?.name) byName[attachment.profile.name] = ping;
+      }
+      this.broadcastToRole({ pings: byName, type: "pings", v: SIGNALING_PROTOCOL_VERSION }, "guest");
+      return;
+    }
+
     if (message.type === "kill") {
       this.ctx.waitUntil(this.settleKill(socket, sender, message.killer, message.victim));
       return;

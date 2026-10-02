@@ -200,6 +200,13 @@ export type ClientMessage =
       victim: string;
     }
   | {
+      /* A dedicated host's measure of each player's ping (milliseconds, by
+         peer ID); the room passes it on to everyone by name. */
+      pings: Record<string, number>;
+      type: "pings";
+      v: typeof SIGNALING_PROTOCOL_VERSION;
+    }
+  | {
       /* A guest trying to join a running match, relayed to the host, which
          wraps the match up so the next one includes them. */
       type: "waiting";
@@ -570,6 +577,16 @@ export function parseClientMessage(value: unknown): ValidationResult<ClientMessa
 
   if (value.type === "waiting") {
     return { ok: true, value: { type: "waiting", v: SIGNALING_PROTOCOL_VERSION } };
+  }
+
+  if (value.type === "pings") {
+    if (!isRecord(value.pings)) return { ok: false, message: "Pings are invalid." };
+    const entries = Object.entries(value.pings);
+    if (entries.length > 64 || !entries.every(([peerId, ping]) =>
+      PEER_ID_PATTERN.test(peerId) && Number.isInteger(ping) && (ping as number) >= 0 && (ping as number) <= 60_000)) {
+      return { ok: false, message: "Pings are invalid." };
+    }
+    return { ok: true, value: { pings: Object.fromEntries(entries) as Record<string, number>, type: "pings", v: SIGNALING_PROTOCOL_VERSION } };
   }
 
   if (value.type === "match") {

@@ -29,6 +29,7 @@ var roomCapacity = 128
 
 const (
 	protocolVersion = 1
+	pingsEvery = 2 * time.Second
 	heartbeatEvery  = 15 * time.Second // the room's lease on this server (lobby.ts DEDICATED_HOST_LEASE_MS)
 	renewEvery      = 50 * time.Minute
 )
@@ -277,6 +278,9 @@ func (r *room) connect(ctx context.Context, socketURL string) error {
 		"name": r.config.HostName, "style": "white",
 	}})
 	heartbeat := time.NewTicker(heartbeatEvery)
+	// each player's ping, for everyone's scoreboard
+	roundTrips := time.NewTicker(pingsEvery)
+	defer roundTrips.Stop()
 	defer heartbeat.Stop()
 	readErr := make(chan error, 1)
 	go func() {
@@ -300,6 +304,12 @@ func (r *room) connect(ctx context.Context, socketURL string) error {
 			return err
 		case <-heartbeat.C:
 			r.send(map[string]any{"type": "ping", "nonce": fmt.Sprint(time.Now().UnixMilli())})
+		case <-roundTrips.C:
+			if r.peers != nil {
+				if trips := r.peers.roundTrips(); len(trips) > 0 {
+					r.send(map[string]any{"type": "pings", "pings": trips})
+				}
+			}
 		case <-ctx.Done():
 			socket.Close(websocket.StatusNormalClosure, "server stopping")
 			return ctx.Err()

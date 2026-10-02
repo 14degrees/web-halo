@@ -561,3 +561,31 @@ func (set *peerSet) closeAll() {
 func addressText(address uint32) string {
 	return fmtIPv4(address)
 }
+
+// roundTrips is each connected player's round trip to this server, in
+// milliseconds, by their signaling peer ID: what WebRTC measured on the
+// connection's chosen candidate pair. The scoreboard shows it (the room
+// passes it on by name).
+func (set *peerSet) roundTrips() map[string]int {
+	set.mu.Lock()
+	connections := map[string]*webrtc.PeerConnection{}
+	for alias, transport := range set.aliases {
+		if p, ok := set.byID[transport]; ok && p.connected && !p.removed && p.pc != nil {
+			connections[alias] = p.pc
+		}
+	}
+	set.mu.Unlock()
+	trips := map[string]int{}
+	for id, pc := range connections {
+		for _, stats := range pc.GetStats() {
+			pair, ok := stats.(webrtc.ICECandidatePairStats)
+			if !ok || !pair.Nominated || pair.State != webrtc.StatsICECandidatePairStateSucceeded {
+				continue
+			}
+			if pair.CurrentRoundTripTime > 0 {
+				trips[id] = int(pair.CurrentRoundTripTime*1000 + 0.5)
+			}
+		}
+	}
+	return trips
+}

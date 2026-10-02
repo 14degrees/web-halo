@@ -1104,7 +1104,7 @@
     #scoreboard[hidden] { display: none; }
     .sb-title { margin: 0 0 .15rem .15rem; font-size: 1.15em; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: #e6e9ee; }
     .sb-row {
-      display: grid; grid-template-columns: 2.1em 1.7em minmax(0, 1fr) 5.2em 4.2em; align-items: center;
+      display: grid; grid-template-columns: 2.1em 1.7em minmax(0, 1fr) 5.2em 4.2em 3.4em; align-items: center;
       min-height: 1.6em; padding: 0 .1rem; margin-top: 2px; border: 1px solid transparent;
     }
     .sb-row > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -1124,6 +1124,10 @@
     .sb-team { font-size: 1.05em; }
     .sb-gap { height: .9em; }
     .sb-self { border-color: rgba(230, 236, 245, .75); }
+    .sb-ping { text-align: center; font-size: .82em; color: #cfd6e2; }
+    .sb-ping[data-tone="good"] { color: #8fe3a0; }
+    .sb-ping[data-tone="fair"] { color: #ffd65a; }
+    .sb-ping[data-tone="poor"] { color: #ff8a7a; }
     .sb-quit { color: rgba(241, 243, 246, .4); }
     .sb-quit .sb-tag { color: rgba(207, 214, 226, .35); }
     .kill-pop { position: absolute; transform: translate(-50%, -100%); will-change: left, top; }
@@ -2378,7 +2382,7 @@
   <div id="kill-pops" aria-live="polite"></div>
   <section id="scoreboard" aria-label="Scores" hidden>
     <h2 id="scoreboard-title" class="sb-title">Scores</h2>
-    <div class="sb-row sb-head"><span class="sb-place"></span><span class="sb-emblem"></span><span class="sb-name">Name</span><span id="scoreboard-tag-head" class="sb-tag">K/D</span><span class="sb-score">Score</span></div>
+    <div class="sb-row sb-head"><span class="sb-place"></span><span class="sb-emblem"></span><span class="sb-name">Name</span><span id="scoreboard-tag-head" class="sb-tag">K/D</span><span class="sb-score">Score</span><span class="sb-ping">Ping</span></div>
     <div id="scoreboard-rows"></div>
   </section>
   <div id="hud-balance" hidden>◎ <span id="hud-balance-amount">0.000</span> SOL <small id="hud-balance-note"></small></div>

@@ -1401,6 +1401,11 @@
       applyWagerView(message.wager);
       return;
     }
+    if (message.type === "pings") {
+      /* the server's measure of everyone's ping, by name (the scoreboard) */
+      if (message.pings && typeof message.pings === "object") session.pings = message.pings;
+      return;
+    }
     if (message.type === "waiting") {
       if (session.role === "host" && typeof message.from === "string") lobby.waitingPeers.set(message.from, Date.now());
       return;
@@ -4631,7 +4636,7 @@
     return money;
   }
 
-  function scoreboardRow(className, place, emblem, name, tag, score) {
+  function scoreboardRow(className, place, emblem, name, tag, score, ping) {
     var row = document.createElement("div");
     row.className = "sb-row " + className;
     var placeCell = document.createElement("span");
@@ -4649,7 +4654,13 @@
     var scoreCell = document.createElement("span");
     scoreCell.className = "sb-score";
     scoreCell.textContent = String(score);
-    row.append(placeCell, emblemCell, nameCell, tagCell, scoreCell);
+    var pingCell = document.createElement("span");
+    pingCell.className = "sb-ping";
+    if (typeof ping === "number") {
+      pingCell.textContent = String(ping);
+      pingCell.dataset.tone = ping < 80 ? "good" : ping < 150 ? "fair" : "poor";
+    }
+    row.append(placeCell, emblemCell, nameCell, tagCell, scoreCell, pingCell);
     return row;
   }
 
@@ -4665,7 +4676,8 @@
     root.style.opacity = String(Math.min(1, state.a));
     var emblems = scoreboardEmblems();
     var money = scoreboardMoney();
-    var key = JSON.stringify([state.over, state.teams, state.red, state.blue, state.title, state.self, state.players, money]);
+    var pings = session.pings || {};
+    var key = JSON.stringify([state.over, state.teams, state.red, state.blue, state.title, state.self, state.players, money, pings]);
     if (root.hidden) root.hidden = false;
     if (key === scoreboard.key) return;
     scoreboard.key = key;
@@ -4700,7 +4712,7 @@
           .sort(function(left, right) { return left.quit - right.quit || right.score - left.score || left.name.localeCompare(right.name); })
           .forEach(function(player) {
             rows.push(scoreboardRow("sb-" + team.tone + (player.quit ? " sb-quit" : "") + (player.name === state.self ? " sb-self" : ""),
-              team.place, emblems[player.name], player.name, tagFor(player), player.score));
+              team.place, emblems[player.name], player.name, tagFor(player), player.score, player.quit ? null : pings[player.name]));
           });
       });
     } else {
@@ -4709,7 +4721,7 @@
       players.forEach(function(player, index) {
         if (index === 0 || player.score !== players[index - 1].score) place = index + 1;
         rows.push(scoreboardRow("sb-solo" + (player.quit ? " sb-quit" : "") + (player.name === state.self ? " sb-self" : ""),
-          player.quit ? "–" : place, emblems[player.name], player.name, tagFor(player), player.score));
+          player.quit ? "–" : place, emblems[player.name], player.name, tagFor(player), player.score, player.quit ? null : pings[player.name]));
       });
     }
     body.replaceChildren.apply(body, rows);
