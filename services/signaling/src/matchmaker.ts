@@ -30,30 +30,45 @@ export const MATCHMAKER_NAME = "main";
 export const PLAYLISTS = {
   /* Halo joins players to red and blue in turn (the server, to the smaller
      team), and each match has a fresh server, so teams come out even */
+  /* maps by index (protocol.ts): 0 Battle Creek, 1 Sidewinder, 2 Damnation,
+     3 Rat Race, 4 Prisoner, 5 Hang 'Em High, 6 Chill Out, 7 Derelict,
+     8 Boarding Action, 9 Blood Gulch, 10 Wizard, 11 Chiron TL-34,
+     12 Longest; modes: 0 Slayer, 1 Team Slayer, 2 CTF, 3 Oddball, 4 King,
+     5 Race, 6 Team Oddball, 7 Team King */
   team: {
     label: "Team Doubles", minimum: 2, maximum: 4, fillMs: 10_000, teams: true,
     description: "Two on two Team Slayer. Bring a partner, or get one.",
-    rotation: [[0, 1], [6, 1], [4, 1]],
+    rotation: [[0, 1], [6, 1], [4, 1], [12, 1], [7, 1], [10, 1], [3, 1]],
   },
   bigteam: {
-    label: "Team Slayer", minimum: 2, maximum: 8, fillMs: 15_000, teams: true,
-    description: "Up to four on four Team Slayer on Halo's bigger maps.",
-    rotation: [[9, 1], [2, 1], [1, 1]],
+    label: "Big Team Battle", minimum: 2, maximum: 8, fillMs: 15_000, teams: true,
+    description: "Up to four on four Team Slayer on Halo's biggest maps, vehicles and all.",
+    rotation: [[9, 1], [1, 1], [2, 1], [8, 1], [0, 1]],
   },
   ctf: {
-    label: "Team Objective", minimum: 2, maximum: 8, fillMs: 15_000, teams: true,
+    label: "Capture the Flag", minimum: 2, maximum: 8, fillMs: 15_000, teams: true,
     description: "Capture the Flag, up to four on four. Take theirs, keep yours.",
-    rotation: [[0, 2], [2, 2], [9, 2]],
+    rotation: [[0, 2], [9, 2], [2, 2], [1, 2], [8, 2]],
+  },
+  objective: {
+    label: "Team Objective", minimum: 2, maximum: 8, fillMs: 15_000, teams: true,
+    description: "Team Oddball and Team King of the Hill. Hold the ball, hold the hill.",
+    rotation: [[6, 6], [5, 7], [7, 6], [3, 7], [4, 6], [0, 7]],
   },
   ffa: {
     label: "Rumble Pit", minimum: 2, maximum: 8, fillMs: 10_000, teams: false,
     description: "Free-for-all Slayer. Every Spartan for themselves.",
-    rotation: [[5, 0], [4, 0], [3, 0], [6, 0]],
+    rotation: [[5, 0], [4, 0], [3, 0], [6, 0], [7, 0], [10, 0], [12, 0], [11, 0]],
+  },
+  oddball: {
+    label: "Oddball & King", minimum: 2, maximum: 8, fillMs: 10_000, teams: false,
+    description: "Free-for-all Oddball and King of the Hill. Everyone against the ball carrier.",
+    rotation: [[6, 3], [5, 4], [7, 3], [4, 4], [3, 3]],
   },
   duel: {
     label: "Head to Head", minimum: 2, maximum: 2, fillMs: 0, teams: false,
     description: "One on one Slayer. No excuses.",
-    rotation: [[4, 0], [6, 0], [10, 0]],
+    rotation: [[4, 0], [6, 0], [10, 0], [11, 0], [12, 0]],
   },
   /* Wagered (src/wager.ts): everyone stakes the buy-in, and each kill takes
      the bounty from the victim's stake */

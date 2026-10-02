@@ -2203,16 +2203,20 @@ boolean server_ok_to_countdown(
 	struct network_game_server *server)
 {
 	long minimum_players = server->game.minimum_players;
+	boolean needs_more_teams = server_needs_more_teams(server);
 
 #ifdef HALO_SERVER
-	/* a public server's game starts with whoever is there: the others join
-	it in progress */
+	/* a public server's game starts with whoever is there, even all on one
+	team: the others join it in progress, onto the smaller team */
 	if (server_link_game_persistent())
+	{
 		minimum_players = 1;
+		needs_more_teams = FALSE;
+	}
 #endif
 	if (server_has_enough_machines(server) &&
 		server_has_a_player_on_each_machine(server) &&
-		!server_needs_more_teams(server) &&
+		!needs_more_teams &&
 		server->game.player_count >= minimum_players)
 	{
 		return TRUE;

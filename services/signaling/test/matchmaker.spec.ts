@@ -179,7 +179,7 @@ describe("matchmaker", () => {
     const result = await call("GET", "/v1/playlists");
     expect(result.status).toBe(200);
     const ctf = result.body.playlists.find((playlist: { id: string }) => playlist.id === "ctf");
-    expect(ctf).toMatchObject({ label: "Team Objective", teams: true, maximum: 8 });
+    expect(ctf).toMatchObject({ label: "Capture the Flag", teams: true, maximum: 8 });
     expect(ctf.modes.every((mode: number) => mode === 2)).toBe(true);
     expect(ctf.searching).toBeGreaterThanOrEqual(1);
   });

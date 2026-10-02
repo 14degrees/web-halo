@@ -11,7 +11,7 @@ const BUILD_ID_PATTERN = /^[A-Za-z0-9._:+-]{1,96}$/u;
 /* The 13 stock multiplayer maps and 6 game modes the browser lobby offers, in
    the order of port/web/src/web_online_ui.h. */
 export const LOBBY_MAP_COUNT = 13;
-export const LOBBY_MODE_COUNT = 6;
+export const LOBBY_MODE_COUNT = 8;
 
 export const PLAYER_STYLES = [
   "white",
@@ -94,6 +94,8 @@ export interface QuickJoinInput {
   walletToken?: string;
   /* click to play: a dedicated server's game only, never hosting one */
   serversOnly?: boolean;
+  /* ... playing one of these game types (LOBBY_MODE_COUNT) */
+  modes?: number[];
 }
 
 export interface SessionDescriptor {
@@ -396,6 +398,14 @@ export function parseQuickJoinInput(
   }
   const verifiedToken = turnstileToken(value.turnstileToken);
   if (verifiedToken === null) return { ok: false, message: "turnstileToken is malformed." };
+  let modes: number[] | undefined;
+  if (value.modes !== undefined) {
+    if (!Array.isArray(value.modes) || value.modes.length === 0 || value.modes.length > LOBBY_MODE_COUNT ||
+        !value.modes.every((mode) => isLobbyIndex(mode, LOBBY_MODE_COUNT))) {
+      return { ok: false, message: "modes must list game types." };
+    }
+    modes = value.modes as number[];
+  }
   return {
     ok: true,
     value: {
@@ -405,6 +415,7 @@ export function parseQuickJoinInput(
       ...(verifiedToken === undefined ? {} : { turnstileToken: verifiedToken }),
       ...walletTokenField(value.walletToken),
       ...(value.serversOnly === true ? { serversOnly: true } : {}),
+      ...(modes ? { modes } : {}),
     },
   };
 }

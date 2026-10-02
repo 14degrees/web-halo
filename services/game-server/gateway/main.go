@@ -30,7 +30,7 @@ var mapNames = []string{
 	"hangemhigh", "chillout", "carousel", "boardingaction", "bloodgulch",
 	"wizard", "putput", "longest",
 }
-var modeNames = []string{"slayer", "team_slayer", "ctf", "oddball", "king", "race"}
+var modeNames = []string{"slayer", "team_slayer", "ctf", "oddball", "king", "race", "team_oddball", "team_king"}
 var matchStateNames = []string{"none", "lobby", "countdown", "ingame", "postgame"}
 
 const (

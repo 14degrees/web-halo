@@ -46,6 +46,8 @@ enum web_online_game_mode
 	_web_online_game_mode_oddball,
 	_web_online_game_mode_king,
 	_web_online_game_mode_race,
+	_web_online_game_mode_team_oddball,
+	_web_online_game_mode_team_king,
 	_web_online_game_mode_count,
 };
 

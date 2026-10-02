@@ -48,7 +48,7 @@ assert.deepEqual(modeOptions.map(option => option.value),
   Array.from({ length: 6 }, (_, index) => String(index)));
 assert.deepEqual(modeOptions.map(option => option.textContent), [
   'Slayer', 'Team Slayer', 'Capture the Flag', 'Oddball',
-  'King of the Hill', 'Race',
+  'King of the Hill', 'Race', 'Team Oddball', 'Team King of the Hill',
 ]);
 
 function element(overrides) {

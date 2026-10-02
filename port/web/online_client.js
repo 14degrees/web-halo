@@ -2773,8 +2773,15 @@
       else delete statusElement.dataset.tone;
     }
     /* what the fullest public server is playing; paused, your own game */
-    var servers = (lobby.listing || []).filter(function(room) { return room.dedicated; });
+    var servers = publicServers();
     var room = servers[0];
+    var kindButtons = document.querySelectorAll ? document.querySelectorAll(".landing-kind") : [];
+    for (var kindIndex = 0; kindIndex < kindButtons.length; kindIndex++) {
+      var kindButton = kindButtons[kindIndex];
+      var picked = kindButton.dataset.kind === publicKind();
+      if ((kindButton.getAttribute("aria-pressed") === "true") !== picked) kindButton.setAttribute("aria-pressed", String(picked));
+      kindButton.disabled = !!lobby.paused;
+    }
     if (lobby.paused && session.room && session.room.lobby) room = session.room.lobby;
     if (room) {
       var mapName = selectedLabel(elements.map, Number(room.mapIndex)) || "Blood Gulch";
@@ -2825,9 +2832,46 @@
     }
     if (!session.runtimeReady || state !== 0 || Date.now() - (lobby.backdropAskedAt || 0) < 4000) return;
     if (wasmNumber("platform_web_online_get_state", 0) !== 0) return;
-    var room = (lobby.listing || []).filter(function(entry) { return entry.dedicated; })[0];
+    var room = publicServers()[0];
     lobby.backdropAskedAt = Date.now();
     start(room ? Number(room.mapIndex) : 5);
+  }
+
+  /* The public servers by kind of game: click to play drops into the kind
+     picked on the landing (remembered in this browser). */
+  var PUBLIC_KINDS = {
+    ffa: { label: "Free for All", modes: [0] },
+    team: { label: "Team Slayer", modes: [1] },
+    objective: { label: "Objective", modes: [2, 3, 4, 6, 7] },
+  };
+  var PUBLIC_KIND_KEY = "halo-public-kind";
+
+  function publicKind() {
+    if (!lobby.publicKind) {
+      var saved = null;
+      try { saved = global.localStorage.getItem(PUBLIC_KIND_KEY); } catch (error) { saved = null; }
+      lobby.publicKind = PUBLIC_KINDS[saved] ? saved : "ffa";
+    }
+    return lobby.publicKind;
+  }
+
+  function setPublicKind(kind) {
+    if (!PUBLIC_KINDS[kind] || kind === publicKind()) return;
+    lobby.publicKind = kind;
+    try { global.localStorage.setItem(PUBLIC_KIND_KEY, kind); } catch (error) { /* only remembered */ }
+    /* the backdrop shows the new kind's map */
+    var stop = global.Module && global.Module._platform_web_background_stop;
+    if (typeof stop === "function" && backdropState() !== 0 && !session.active && !lobby.joining) stop();
+    lobby.backdropAskedAt = 0;
+    renderLanding();
+  }
+
+  /* the public servers playing the picked kind, fullest first */
+  function publicServers() {
+    var modes = PUBLIC_KINDS[publicKind()].modes;
+    return (lobby.listing || []).filter(function(room) {
+      return room.dedicated && modes.indexOf(Number(room.modeIndex) || 0) >= 0;
+    });
   }
 
   /* Click to play: once Halo has loaded, into a server's game in progress. */
@@ -2867,6 +2911,7 @@
         buildId: buildId(),
         identifier: localIdentifier(),
         serversOnly: true,
+        modes: PUBLIC_KINDS[publicKind()].modes,
       };
       if (wallet.token) request.walletToken = wallet.token;
       var result = await fetchJson("/v1/quickjoin", { method: "POST", body: JSON.stringify(request) });
@@ -4790,9 +4835,13 @@
       setLandingStatus("");
     };
     lobbyElement("landing").addEventListener("click", function(event) {
-      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave")) return;
+      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave, .landing-kinds")) return;
       if (lobby.paused) resumeGame();
       else landingQuickPlay();
+    });
+    var kindButtons = lobbyElement("landing").querySelectorAll(".landing-kind");
+    Array.prototype.forEach.call(kindButtons, function(button) {
+      button.addEventListener("click", function() { setPublicKind(button.dataset.kind); });
     });
     lobbyElement("landing-quick").addEventListener("click", function() {
       if (lobby.paused) resumeGame();

@@ -682,6 +682,10 @@ boolean player_ui_configure_network_server_game(
 		"oddball",
 		"king",
 		"race",
+		/* (added for the browser's lobbies: Oddball and King of the Hill
+		above are free-for-all) */
+		"team_oddball",
+		"team_king",
 	};
 	struct network_game_server *server;
 	struct game_variant variant;

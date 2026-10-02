@@ -64,7 +64,7 @@ const mapOptions = [
 ].map((textContent, index) => ({ value: String(index), textContent }));
 const modeOptions = [
   'Slayer', 'Team Slayer', 'Capture the Flag', 'Oddball',
-  'King of the Hill', 'Race',
+  'King of the Hill', 'Race', 'Team Oddball', 'Team King of the Hill',
 ].map((textContent, index) => ({ value: String(index), textContent }));
 elements['online-map'].options = mapOptions;
 elements['online-map'].value = '0';

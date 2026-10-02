@@ -12,7 +12,7 @@ export const MAP_ALIASES = Object.freeze({
   "chiron-tl-34": 11, chiron: 11,
 });
 export const MODE_NAMES = Object.freeze([
-  "slayer", "team_slayer", "ctf", "oddball", "king", "race",
+  "slayer", "team_slayer", "ctf", "oddball", "king", "race", "team_oddball", "team_king",
 ]);
 export const MODE_ALIASES = Object.freeze({
   "team-slayer": 1, teamslayer: 1, "capture-the-flag": 2, "king-of-the-hill": 4, koth: 4,

@@ -756,10 +756,13 @@ async function quickJoin(
     parsed.value.buildId,
     parsed.value.protocolVersion,
     Date.now(),
+    /* (more to choose from when only some game types will do) */
+    parsed.value.modes ? 32 : 8,
   );
   const wallet = await walletForToken(env, parsed.value.walletToken);
   for (const candidate of candidates) {
     if (parsed.value.serversOnly && !candidate.dedicated) continue;
+    if (parsed.value.modes && !parsed.value.modes.includes(candidate.modeIndex ?? 0)) continue;
     const result = await mintSession(env, candidate.roomId, parsed.value, wallet);
     if (result.ok) {
       const body: QuickJoinResponse = {
