@@ -68,6 +68,11 @@ void const *network_lobby_host_kills(void);
 void network_lobby_capture_result(void);
 #ifdef HALO_WEB
 void network_lobby_preview(float up, float back, float pitch, float yaw);
+long network_lobby_background_state(void);
+unsigned char network_lobby_background_active(void);
+unsigned char network_lobby_background_start(long map_index);
+void network_lobby_background_update(float seconds);
+void network_lobby_background_stop(void);
 #endif
 long halo_screen_width(void);
 
@@ -558,6 +563,16 @@ static void begin_request(int command, int map_index, int mode_index)
 
 	platform_log("web online: request %s",
 		dedicated ? "dedicated host" : command == _web_online_command_host ? "host" : "join");
+#ifdef HALO_WEB
+	/* the landing's backdrop first goes back to the main menu, where the
+	request is set up (it waits for the menu) */
+	if (network_lobby_background_active())
+	{
+		network_lobby_background_stop();
+		web_online.wait_frames = 2;
+	}
+	else
+#endif
 	if (web_online.command || web_online.setup)
 	{
 		reset_owned_game();
@@ -985,6 +1000,27 @@ static void publish_kill(void)
 /* ---------- map previews: the page asks, the game thread places the camera */
 
 static atomic_int web_preview_request = ATOMIC_VAR_INIT(0);
+/* the landing's backdrop: a map index + 1 to show, -1 to stop, 0 nothing */
+static atomic_int web_background_request = ATOMIC_VAR_INIT(0);
+static atomic_int web_background_state = ATOMIC_VAR_INIT(0);
+
+/* (the page) play this multiplayer map offline behind the landing */
+EMSCRIPTEN_KEEPALIVE void platform_web_background_start(int map_index)
+{
+	if (map_index >= 0 && map_index < 13)
+		atomic_store_explicit(&web_background_request, map_index + 1, memory_order_release);
+}
+
+EMSCRIPTEN_KEEPALIVE void platform_web_background_stop(void)
+{
+	atomic_store_explicit(&web_background_request, -1, memory_order_release);
+}
+
+/* 0: none, 1: loading, 2: showing */
+EMSCRIPTEN_KEEPALIVE int platform_web_background_state(void)
+{
+	return atomic_load_explicit(&web_background_state, memory_order_acquire);
+}
 static float web_preview_settings[4];
 
 EMSCRIPTEN_KEEPALIVE void platform_web_preview(float up, float back, float pitch, float yaw)
@@ -1001,6 +1037,23 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 #ifdef HALO_WEB
 	if (atomic_exchange_explicit(&web_preview_request, 0, memory_order_acq_rel))
 		network_lobby_preview(web_preview_settings[0], web_preview_settings[1], web_preview_settings[2], web_preview_settings[3]);
+	{
+		int request = atomic_load_explicit(&web_background_request, memory_order_acquire);
+
+		if (request < 0)
+		{
+			atomic_store_explicit(&web_background_request, 0, memory_order_release);
+			network_lobby_background_stop();
+		}
+		/* only from the idle main menu, with nothing else asked of it */
+		else if (request > 0 && main_menu_loaded && !web_online.command && !web_online.setup)
+		{
+			atomic_store_explicit(&web_background_request, 0, memory_order_release);
+			network_lobby_background_start(request - 1);
+		}
+		network_lobby_background_update(seconds);
+		atomic_store_explicit(&web_background_state, (int)network_lobby_background_state(), memory_order_release);
+	}
 #endif
 	int request = atomic_exchange_explicit(
 		&web_online_requested_request,

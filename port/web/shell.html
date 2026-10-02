@@ -692,17 +692,9 @@
       background: radial-gradient(ellipse at 50% 55%, transparent 30%, rgba(0, 0, 0, .55) 100%),
         linear-gradient(0deg, rgba(0, 0, 0, .65), transparent 35%);
     }
-    /* the map you'll drop into, from Halo's own map-select pictures, drifting */
-    .landing-map {
-      position: absolute; inset: -4%; z-index: -1; opacity: 0; pointer-events: none;
-      background: center / cover no-repeat; filter: saturate(1.08) brightness(.78);
-      transition: opacity 1.2s ease; animation: landing-drift 38s ease-in-out infinite alternate;
-    }
-    .landing-map[data-ready] { opacity: 1; }
-    @keyframes landing-drift {
-      0% { transform: scale(1.04) translate(-1.5%, -1%); }
-      100% { transform: scale(1.12) translate(1.5%, 1%); }
-    }
+    /* the live map behind (the game's canvas): the page lets it show */
+    #landing { transition: background-color 1s ease; }
+    #landing[data-live] { background-color: transparent; }
     .landing-brand { grid-row: 1; display: grid; justify-items: center; gap: .1rem; text-transform: uppercase; pointer-events: none; }
     .landing-brand strong { font-size: clamp(2.6rem, 6vw, 4.6rem); font-weight: 500; letter-spacing: .32em; margin-right: -.32em; text-shadow: 0 0 2rem rgba(80, 170, 255, .45); }
     .landing-brand span { font-size: clamp(.85rem, 1.4vw, 1.1rem); letter-spacing: .3em; color: #9fb4d6; }
@@ -2128,8 +2120,6 @@
     </section>
   </main>
   <section id="landing" aria-label="Halo" hidden>
-    <video class="lobby-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
-    <div id="landing-map" class="landing-map" aria-hidden="true"></div>
     <div class="landing-brand">
       <strong>Halo</strong>
       <span>Combat Evolved · Online</span>

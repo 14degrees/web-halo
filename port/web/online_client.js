@@ -2720,12 +2720,15 @@
 
   function setLandingVisible(visible) {
     var element = lobbyElement("landing");
-    if (!element || element.hidden === !visible) return;
-    element.hidden = !visible;
+    if (!element) return;
     if (visible) {
-      document.body.dataset.lobby = "open";
+      /* the page owns the mouse and keys while the landing shows, even with
+         the live backdrop's map running behind it */
+      if (document.body.dataset.lobby !== "open") document.body.dataset.lobby = "open";
       if (document.pointerLockElement && typeof document.exitPointerLock === "function") document.exitPointerLock();
     }
+    if (element.hidden === !visible) return;
+    element.hidden = !visible;
   }
 
   /* the landing, or the lobby: a party or a search in progress is the lobby's */
@@ -2745,6 +2748,10 @@
     };
     var root = lobbyElement("landing");
     if (!root) return;
+    /* the live map shows through once the game has it up */
+    var live = backdropState() === 2 && !session.active && !lobby.joining;
+    if (live) root.dataset.live = "true";
+    else delete root.dataset.live;
     var busy = lobby.quickPlay && (session.active || lobby.joining);
     if (busy) root.dataset.busy = "true";
     else delete root.dataset.busy;
@@ -2761,20 +2768,6 @@
     /* what the fullest public server is playing */
     var servers = (lobby.listing || []).filter(function(room) { return room.dedicated; });
     var room = servers[0];
-    /* behind it all, the map a click drops you into */
-    var backdrop = lobbyElement("landing-map");
-    var slug = room ? MAP_SLUGS[Number(room.mapIndex)] : null;
-    if (backdrop && slug && backdrop.dataset.slug !== slug) {
-      backdrop.dataset.slug = slug;
-      delete backdrop.dataset.ready;
-      var picture = new global.Image();
-      picture.onload = function() {
-        if (backdrop.dataset.slug !== slug) return;
-        backdrop.style.backgroundImage = "url(\"" + picture.src + "\")";
-        backdrop.dataset.ready = "true";
-      };
-      picture.src = "assets/ui/maps/preview/" + slug + "-large.jpg";
-    }
     if (room) {
       var mapName = selectedLabel(elements.map, Number(room.mapIndex)) || "Blood Gulch";
       var modeName = selectedLabel(elements.mode, Number(room.modeIndex)) || "Slayer";
@@ -2800,6 +2793,33 @@
       emblem.dataset.style = profile.style;
       emblem.replaceChildren(emblemElement(validEmblem(profile.emblem) ? profile.emblem : textHash(profile.name) % EMBLEM_COUNT));
     }
+  }
+
+  /* The live backdrop: the game plays the map behind the landing offline,
+     a camera turning over it (port/linux/game/network_lobby.c). It asks
+     once Halo is idle at its menu; joining a game ends it on its own. */
+  function backdropState() {
+    return wasmNumber("platform_web_background_state", 0);
+  }
+
+  function tickBackdrop(onLanding) {
+    var start = global.Module && global.Module._platform_web_background_start;
+    var stop = global.Module && global.Module._platform_web_background_stop;
+    if (typeof start !== "function") return;
+    var state = backdropState();
+    if (!onLanding || session.active || lobby.joining) {
+      if (state !== 0 && !session.active && !lobby.joining && typeof stop === "function" &&
+          Date.now() - (lobby.backdropStoppedAt || 0) > 3000) {
+        lobby.backdropStoppedAt = Date.now();
+        stop();
+      }
+      return;
+    }
+    if (!session.runtimeReady || state !== 0 || Date.now() - (lobby.backdropAskedAt || 0) < 4000) return;
+    if (wasmNumber("platform_web_online_get_state", 0) !== 0) return;
+    var room = (lobby.listing || []).filter(function(entry) { return entry.dedicated; })[0];
+    lobby.backdropAskedAt = Date.now();
+    start(room ? Number(room.mapIndex) : 5);
   }
 
   /* Click to play: once Halo has loaded, into a server's game in progress. */
@@ -3614,9 +3634,9 @@
         if (free && lobby.deployed && prompt.dataset.mode !== "resume") {
           prompt.dataset.mode = "resume";
           prompt.firstChild.textContent = "Click to resume";
-        } else if (!lobby.deployed && prompt.dataset.mode !== "start") {
-          prompt.dataset.mode = "start";
-          prompt.firstChild.textContent = "Match found";
+        } else if (!lobby.deployed && prompt.dataset.mode !== "start" + (lobby.quickPlay ? "-quick" : "")) {
+          prompt.dataset.mode = "start" + (lobby.quickPlay ? "-quick" : "");
+          prompt.firstChild.textContent = lobby.quickPlay ? "Click to play" : "Match found";
         }
         prompt.hidden = !free;
         var leaveGame = lobbyElement("lobby-leave-game");
@@ -3632,9 +3652,11 @@
     if (homeScreen() === "landing") {
       setLobbyVisible(false);
       setLandingVisible(true);
+      tickBackdrop(true);
       renderLanding();
       return;
     }
+    tickBackdrop(false);
     setLandingVisible(false);
     setLobbyVisible(true);
 

@@ -533,8 +533,19 @@ void platform_video_swap(void)
 #endif
 }
 
+#ifdef HALO_WEB
+/* port/linux/game/network_lobby.c: the landing's live backdrop */
+unsigned char network_lobby_background_active(void);
+#endif
+
 void platform_mouse_capture(BOOL capture)
 {
+#ifdef HALO_WEB
+	/* the backdrop plays a map behind the page's landing: the mouse is the
+	page's, so a click reaches the landing instead of locking to the game */
+	if (network_lobby_background_active())
+		capture = FALSE;
+#endif
 	if (platform_window)
 		SDL_SetWindowRelativeMouseMode(platform_window, capture ? true : false);
 }

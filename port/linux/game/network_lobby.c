@@ -20,6 +20,11 @@ headers, so it calls these through plain prototypes.
 #include "objects/objects.h"
 #include "camera/observer.h"
 #include "camera/director.h"
+#ifdef HALO_WEB
+#include "main/main.h"
+#include "game/game.h"
+#include "physics/collisions.h"
+#endif
 
 #include <math.h>
 
@@ -389,5 +394,177 @@ void network_lobby_preview(
 	scripted_show_hud(FALSE);
 	scripted_show_hud_help_text(FALSE);
 	lobby_preview_active = TRUE;
+}
+#endif
+
+#ifdef HALO_WEB
+/* ---------- the landing's live backdrop
+
+While the page shows its landing, the game plays a multiplayer map offline,
+the way the map_name script command loads one (main_set_map_name: no
+network, one local player, held still), and a camera at a spawn point turns
+slowly over it with no HUD. Joining a game first goes back to the main menu
+(network_lobby_background_stop), where the join is set up as always. */
+
+/* the multiplayer maps, in the page's order (player_ui.c's table) */
+static char const *const background_maps[] =
+{
+	"levels\\test\\beavercreek\\beavercreek",
+	"levels\\test\\sidewinder\\sidewinder",
+	"levels\\test\\damnation\\damnation",
+	"levels\\test\\ratrace\\ratrace",
+	"levels\\test\\prisoner\\prisoner",
+	"levels\\test\\hangemhigh\\hangemhigh",
+	"levels\\test\\chillout\\chillout",
+	"levels\\test\\carousel\\carousel",
+	"levels\\test\\boardingaction\\boardingaction",
+	"levels\\test\\bloodgulch\\bloodgulch",
+	"levels\\test\\wizard\\wizard",
+	"levels\\test\\putput\\putput",
+	"levels\\test\\longest\\longest",
+};
+
+/* the camera sweeps this far either side of the most open view, a sweep
+taking this long */
+#define BACKGROUND_SWEEP_RADIANS 0.7f
+#define BACKGROUND_SWEEP_SECONDS 26.0f
+/* how far it looks for the most open view, in world units */
+#define BACKGROUND_PROBE_DISTANCE 60.0f
+/* the camera waits this long after the map is up (the player spawns) */
+#define BACKGROUND_SETTLE_SECONDS 0.6f
+
+static struct
+{
+	boolean active;
+	boolean anchored;
+	float settle;
+	real_point3d position;
+	real heading;
+	real seconds;
+} lobby_background;
+
+/* how far the camera can see from its point in a heading (to the first
+wall), level and a little down */
+static real background_open_distance(
+	real_point3d const *position,
+	real heading)
+{
+	struct collision_result collision;
+	real_vector3d vector;
+	unsigned long flags = FLAG(_collision_test_structure_bit) | FLAG(_collision_test_front_facing_surfaces_bit);
+
+	vector.i = (real)cos(heading) * BACKGROUND_PROBE_DISTANCE;
+	vector.j = (real)sin(heading) * BACKGROUND_PROBE_DISTANCE;
+	vector.k = -0.06f * BACKGROUND_PROBE_DISTANCE;
+	if (collision_test_vector(flags, position, &vector, NONE, &collision))
+		return collision.t * BACKGROUND_PROBE_DISTANCE;
+	return BACKGROUND_PROBE_DISTANCE;
+}
+
+/* 0: none, 1: loading, 2: showing */
+long network_lobby_background_state(
+	void)
+{
+	if (!lobby_background.active)
+		return 0;
+	return lobby_background.anchored ? 2 : 1;
+}
+
+boolean network_lobby_background_active(
+	void)
+{
+	return lobby_background.active;
+}
+
+boolean network_lobby_background_start(
+	long map_index)
+{
+	struct game_variant variant;
+
+	if (map_index < 0 || map_index >= (long)NUMBEROF(background_maps) ||
+		!main_menu_is_active() || global_network_game_client_get() || global_network_game_server_get())
+	{
+		return FALSE;
+	}
+	game_engine_get_variant_by_name(&variant, "slayer");
+	game_set_game_variant(&variant);
+	player_spawn_count = 1;
+	main_set_multiplayer_map_name(background_maps[map_index]);
+	main_set_map_name(background_maps[map_index]);
+	main_disallow_persistent_storage();
+	csmemset(&lobby_background, 0, sizeof(lobby_background));
+	lobby_background.active = TRUE;
+	platform_log("network lobby: backdrop %s", background_maps[map_index]);
+	return TRUE;
+}
+
+/* each frame: once the map is up, the camera turns over it from a spawn */
+void network_lobby_background_update(
+	float seconds)
+{
+	real_vector3d forward;
+
+	if (!lobby_background.active || main_menu_is_active() || !game_engine_running())
+		return;
+	player_input_enable(FALSE);
+	if (!lobby_background.anchored)
+	{
+		struct observer_result const *camera;
+
+		lobby_background.settle += seconds;
+		camera = observer_get_camera(0);
+		if (lobby_background.settle < BACKGROUND_SETTLE_SECONDS || !camera)
+			return;
+		/* above the spawned Spartan's eyes, so its own body stays out of view */
+		lobby_background.position = camera->position;
+		lobby_background.position.z += 0.45f;
+		/* toward the most open view: the heading whose sweep sees farthest */
+		{
+			real best = -1.0f;
+			long step;
+
+			for (step = 0; step < 24; step++)
+			{
+				real heading = (real)step * (real)(2.0 * 3.14159265358979 / 24.0);
+				real open = background_open_distance(&lobby_background.position, heading) +
+					0.5f * background_open_distance(&lobby_background.position, heading - BACKGROUND_SWEEP_RADIANS) +
+					0.5f * background_open_distance(&lobby_background.position, heading + BACKGROUND_SWEEP_RADIANS);
+
+				if (open > best)
+				{
+					best = open;
+					lobby_background.heading = heading;
+				}
+			}
+		}
+		lobby_background.anchored = TRUE;
+	}
+	lobby_background.seconds += seconds;
+	{
+		real sweep = BACKGROUND_SWEEP_RADIANS *
+			(real)sin(lobby_background.seconds * (real)(2.0 * 3.14159265358979 / BACKGROUND_SWEEP_SECONDS));
+
+		forward.i = (real)cos(lobby_background.heading + sweep);
+		forward.j = (real)sin(lobby_background.heading + sweep);
+	}
+	forward.k = -0.06f;
+	director_preview_camera(&lobby_background.position, &forward);
+	scripted_show_hud(FALSE);
+	scripted_show_hud_help_text(FALSE);
+	lobby_preview_active = TRUE;
+}
+
+void network_lobby_background_stop(
+	void)
+{
+	if (!lobby_background.active)
+		return;
+	csmemset(&lobby_background, 0, sizeof(lobby_background));
+	lobby_preview_active = FALSE;
+	player_input_enable(TRUE);
+	scripted_show_hud(TRUE);
+	scripted_show_hud_help_text(TRUE);
+	main_goto_main_menu();
+	platform_log("network lobby: backdrop over, back to the menu");
 }
 #endif
