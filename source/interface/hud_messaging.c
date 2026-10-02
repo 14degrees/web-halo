@@ -147,6 +147,11 @@ symbols in this file:
 
 #include <stddef.h>
 
+#ifdef HALO_WEB
+/* port/linux/game/network_lobby.c */
+boolean network_lobby_preview_active(void);
+#endif
+
 /* ---------- constants */
 
 enum
@@ -1335,6 +1340,10 @@ void hud_messaging_update(
 {
 	if (!cinematic_in_progress() &&
 		local_player_index != NONE &&
+#ifdef HALO_WEB
+		/* port: a map preview shows the map alone (network_lobby.c) */
+		!network_lobby_preview_active() &&
+#endif
 		game_engine_hud_draw_messages(local_player_get_player_index(local_player_index)))
 	{
 		long font_index = hud_get_font_index();

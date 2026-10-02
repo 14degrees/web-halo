@@ -2696,7 +2696,7 @@
       maps.replaceChildren.apply(maps, focused.maps.map(function(mapIndex, index) {
         var figure = document.createElement("figure");
         var image = document.createElement("img");
-        image.src = "assets/ui/maps/" + (MAP_SLUGS[mapIndex] || "blood-gulch") + ".png";
+        image.src = "assets/ui/maps/preview/" + (MAP_SLUGS[mapIndex] || "blood-gulch") + ".png";
         image.alt = "";
         var caption = document.createElement("figcaption");
         caption.textContent = (selectedLabel(elements.map, mapIndex) || "") + " · " +
@@ -2761,6 +2761,20 @@
     /* what the fullest public server is playing */
     var servers = (lobby.listing || []).filter(function(room) { return room.dedicated; });
     var room = servers[0];
+    /* behind it all, the map a click drops you into */
+    var backdrop = lobbyElement("landing-map");
+    var slug = room ? MAP_SLUGS[Number(room.mapIndex)] : null;
+    if (backdrop && slug && backdrop.dataset.slug !== slug) {
+      backdrop.dataset.slug = slug;
+      delete backdrop.dataset.ready;
+      var picture = new global.Image();
+      picture.onload = function() {
+        if (backdrop.dataset.slug !== slug) return;
+        backdrop.style.backgroundImage = "url(\"" + picture.src + "\")";
+        backdrop.dataset.ready = "true";
+      };
+      picture.src = "assets/ui/maps/preview/" + slug + "-large.jpg";
+    }
     if (room) {
       var mapName = selectedLabel(elements.map, Number(room.mapIndex)) || "Blood Gulch";
       var modeName = selectedLabel(elements.mode, Number(room.modeIndex)) || "Slayer";
@@ -2774,6 +2788,11 @@
     }
     var profile = currentProfile();
     setText("landing-name", profile.name);
+    var art = lobbyElement("landing-spartan-art");
+    if (art && art.dataset.style !== profile.style) {
+      art.dataset.style = profile.style;
+      art.src = "assets/ui/spartan/" + profile.style + ".png?art=2";
+    }
     var emblem = lobbyElement("landing-emblem");
     var key = profile.style + ":" + profile.emblem;
     if (emblem && emblem.dataset.key !== key) {
@@ -3378,7 +3397,7 @@
       mapLabel.textContent = mapName;
       lobbyElement("lobby-mode").textContent = modeName;
       lobbyElement("lobby-map-caption").textContent = modeName + " on " + mapName;
-      lobbyElement("lobby-map-image").src = "assets/ui/maps/" + (MAP_SLUGS[mapIndex] || "blood-gulch") + ".png";
+      lobbyElement("lobby-map-image").src = "assets/ui/maps/preview/" + (MAP_SLUGS[mapIndex] || "blood-gulch") + ".png";
     }
     var plate = lobbyElement("lobby-nameplate");
     var profile = currentProfile();

@@ -152,6 +152,11 @@ void director_set_mode(
 	short mode);
 void director_save_camera(
 	void);
+#ifdef HALO_WEB
+void director_preview_camera(
+	real_point3d const *position,
+	real_vector3d const *forward);
+#endif
 void director_load_camera(
 	void);
 void director_initialize_for_new_map(

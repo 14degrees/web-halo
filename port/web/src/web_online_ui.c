@@ -66,6 +66,9 @@ long network_lobby_death_sequence(void);
 long network_lobby_host_kill_sequence(void);
 void const *network_lobby_host_kills(void);
 void network_lobby_capture_result(void);
+#ifdef HALO_WEB
+void network_lobby_preview(float up, float back, float pitch, float yaw);
+#endif
 long halo_screen_width(void);
 
 enum
@@ -979,8 +982,26 @@ static void publish_kill(void)
 	atomic_store_explicit(&web_online_host_kill_sequence, (int)network_lobby_host_kill_sequence(), memory_order_release);
 }
 
+/* ---------- map previews: the page asks, the game thread places the camera */
+
+static atomic_int web_preview_request = ATOMIC_VAR_INIT(0);
+static float web_preview_settings[4];
+
+EMSCRIPTEN_KEEPALIVE void platform_web_preview(float up, float back, float pitch, float yaw)
+{
+	web_preview_settings[0] = up;
+	web_preview_settings[1] = back;
+	web_preview_settings[2] = pitch;
+	web_preview_settings[3] = yaw;
+	atomic_store_explicit(&web_preview_request, 1, memory_order_release);
+}
+
 void web_online_ui_update(int main_menu_loaded, float seconds)
 {
+#ifdef HALO_WEB
+	if (atomic_exchange_explicit(&web_preview_request, 0, memory_order_acq_rel))
+		network_lobby_preview(web_preview_settings[0], web_preview_settings[1], web_preview_settings[2], web_preview_settings[3]);
+#endif
 	int request = atomic_exchange_explicit(
 		&web_online_requested_request,
 		_web_online_command_none,

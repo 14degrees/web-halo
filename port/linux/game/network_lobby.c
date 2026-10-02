@@ -19,6 +19,7 @@ headers, so it calls these through plain prototypes.
 #include "networking/network_server_manager.h"
 #include "objects/objects.h"
 #include "camera/observer.h"
+#include "camera/director.h"
 
 #include <math.h>
 
@@ -338,3 +339,55 @@ void const *network_lobby_result(
 	*size = 10 + lobby_result[9] * RESULT_ROW_SIZE;
 	return lobby_result;
 }
+
+#ifdef HALO_WEB
+/* ---------- map previews (the landing's backdrops)
+
+The camera rises above and behind where local player 0 stands and looks out
+over the map, tilted down, turned by yaw; the HUD goes. A tool for capturing
+the landing's map pictures (port/web/online_client.js). */
+
+boolean scripted_show_hud(boolean show);
+boolean scripted_show_hud_help_text(boolean show);
+
+static boolean lobby_preview_active;
+
+/* in a map preview: the game's own text (the score hint) stays off too */
+boolean network_lobby_preview_active(
+	void)
+{
+	return lobby_preview_active;
+}
+
+void network_lobby_preview(
+	float up,
+	float back,
+	float pitch,
+	float yaw)
+{
+	struct observer_result const *camera = observer_get_camera(0);
+	real_point3d position;
+	real_vector3d forward;
+	real heading;
+	real length;
+
+	if (!camera)
+		return;
+	heading = (real)atan2(camera->forward.j, camera->forward.i) + yaw;
+	forward.i = (real)cos(heading);
+	forward.j = (real)sin(heading);
+	forward.k = 0.0f;
+	position.x = camera->position.x - forward.i * back;
+	position.y = camera->position.y - forward.j * back;
+	position.z = camera->position.z + up;
+	forward.k = -(real)tan(pitch);
+	length = (real)sqrt(forward.i * forward.i + forward.j * forward.j + forward.k * forward.k);
+	forward.i /= length;
+	forward.j /= length;
+	forward.k /= length;
+	director_preview_camera(&position, &forward);
+	scripted_show_hud(FALSE);
+	scripted_show_hud_help_text(FALSE);
+	lobby_preview_active = TRUE;
+}
+#endif

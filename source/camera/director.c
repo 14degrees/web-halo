@@ -422,6 +422,26 @@ static void director_set_camera(
 	return;
 }
 
+#ifdef HALO_WEB
+/* port: the landing's map previews (port/linux/game/network_lobby.c,
+network_lobby_preview): local player 0's camera flies at this point and
+heading, no weapon in view */
+void director_preview_camera(
+	real_point3d const *position,
+	real_vector3d const *forward)
+{
+	struct director *director = director_get(0);
+
+	flying_camera_new_from_point_and_vector(
+		(struct flying_camera *)director->camera_data,
+		(real_point3d *)position,
+		(real_vector3d *)forward);
+	director_set_camera(0, (director_camera_update_proc)flying_camera_update, FALSE);
+	director->camera_mode_index = _camera_flying;
+	return;
+}
+#endif
+
 void director_load_camera(
 	void)
 {
