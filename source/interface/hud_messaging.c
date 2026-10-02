@@ -486,6 +486,9 @@ static void render_state_text(
 	rectangle2d *cursor_bounds,
 	wchar_t const *text,
 	boolean custom);
+#ifdef HALO_WEB
+wchar_t const *web_keyboard_name(short icon_index);
+#endif
 static void render_state_bitmap(
 	rectangle2d *bounds,
 	rectangle2d *cursor_bounds,
@@ -1656,6 +1659,14 @@ void hud_messaging_update(
 								icon_index = element->data;
 							}
 
+#ifdef HALO_WEB
+							/* the keyboard's key, not the button (ui_widget.c) */
+							if (web_keyboard_name(icon_index))
+							{
+								render_state_text(&line_bounds, &line_cursor, web_keyboard_name(icon_index), FALSE);
+								break;
+							}
+#endif
 							if (icon_index < hud_globals->messaging.button_icons.count)
 							{
 								struct icon_hud_element_definition const *icon;

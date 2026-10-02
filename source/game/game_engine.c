@@ -7541,10 +7541,15 @@ static boolean internal_rasterize_score(
 			message_character_count);
 		break;
 	case 29:
+#ifdef HALO_WEB
+		/* the browser game's Back is Tab (port/linux/src/xinput_sdl.c) */
+		ustrncpy(message, L"Hold TAB for score", message_character_count);
+#else
 		ustrncpy(
 			message,
 			GET_GAME_ENGINE_HUD_FORMAT(0x64),
 			message_character_count);
+#endif
 		break;
 	default:
 		result = FALSE;

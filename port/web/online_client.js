@@ -3487,10 +3487,23 @@
     deploy();
   }
 
+  /* the keys, for ten seconds the first time this page drops into a game */
+  var KEY_TIPS_MILLISECONDS = 10000;
+  function showKeyTips() {
+    var tips = byId("key-tips");
+    if (!tips || lobby.keyTipsShown) return;
+    lobby.keyTipsShown = true;
+    delete tips.dataset.fading;
+    tips.hidden = false;
+    global.setTimeout(function() { tips.dataset.fading = "true"; }, KEY_TIPS_MILLISECONDS - 800);
+    global.setTimeout(function() { tips.hidden = true; }, KEY_TIPS_MILLISECONDS);
+  }
+
   function deploy() {
     var prompt = lobbyElement("lobby-deploy");
     if (prompt) prompt.hidden = true;
     lobby.deployed = true;
+    showKeyTips();
     /* Only the mouse: a fullscreen request would spend the click's user
        activation, and Chrome then refuses the pointer lock. The game already
        fills the window. */

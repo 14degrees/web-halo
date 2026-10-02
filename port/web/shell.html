@@ -1096,6 +1096,23 @@
     #playlist-options button small.wager { color: #ffd65a; }
     /* Rewards over the game: "+0.1 SOL" where a kill's body is. */
     #kill-pops { position: fixed; inset: 0; z-index: 6; pointer-events: none; overflow: hidden; }
+    /* the keys, for a few seconds when a player first drops in */
+    #key-tips {
+      position: fixed; z-index: 7; left: clamp(.8rem, 2vw, 1.6rem); top: 50%; transform: translateY(-50%);
+      pointer-events: none; padding: .55rem .8rem; background: rgba(6, 10, 26, .62); border-left: 3px solid #5fd0ff;
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif; color: #e9eef6;
+      font-size: clamp(.85rem, 1.25vw, 1.05rem); transition: opacity .8s ease;
+    }
+    #key-tips[hidden] { display: none; }
+    #key-tips[data-fading] { opacity: 0; }
+    #key-tips dl { display: grid; gap: .22rem; margin: 0; }
+    #key-tips dl > div { display: grid; grid-template-columns: 6.2em auto; gap: .6rem; align-items: baseline; }
+    #key-tips dt {
+      justify-self: start; padding: 0 .4em; border: 1px solid rgba(233, 238, 246, .55); border-radius: .25em;
+      font-weight: 500; font-size: .9em; letter-spacing: .03em; background: rgba(255, 255, 255, .08);
+    }
+    #key-tips dd { margin: 0; color: #c9d3e6; }
+    @media (max-width: 700px) { #key-tips { display: none; } }
     /* the scoreboard (Back, Tab, F1; and at game over), as Halo 3 drew it */
     #scoreboard {
       position: fixed; z-index: 7; left: 50%; top: 12vh; transform: translateX(-50%); pointer-events: none;
@@ -2382,6 +2399,23 @@
     </div>
   </div>
   <div id="kill-pops" aria-live="polite"></div>
+  <aside id="key-tips" aria-label="Controls" hidden>
+    <dl>
+      <div><dt>WASD</dt><dd>Move</dd></div>
+      <div><dt>Click</dt><dd>Fire</dd></div>
+      <div><dt>Right click</dt><dd>Throw grenade</dd></div>
+      <div><dt>Space</dt><dd>Jump</dd></div>
+      <div><dt>F</dt><dd>Melee</dd></div>
+      <div><dt>E</dt><dd>Reload · hold to pick up</dd></div>
+      <div><dt>Q</dt><dd>Switch weapon</dd></div>
+      <div><dt>X</dt><dd>Switch grenades</dd></div>
+      <div><dt>C</dt><dd>Crouch</dd></div>
+      <div><dt>Z</dt><dd>Zoom</dd></div>
+      <div><dt>T</dt><dd>Flashlight</dd></div>
+      <div><dt>Tab</dt><dd>Scores</dd></div>
+      <div><dt>Esc</dt><dd>Menu</dd></div>
+    </dl>
+  </aside>
   <section id="scoreboard" aria-label="Scores" hidden>
     <h2 id="scoreboard-title" class="sb-title">Scores</h2>
     <div class="sb-row sb-head"><span class="sb-place"></span><span class="sb-emblem"></span><span class="sb-name">Name</span><span id="scoreboard-tag-head" class="sb-tag">K/D</span><span class="sb-score">Score</span><span class="sb-ping">Ping</span></div>

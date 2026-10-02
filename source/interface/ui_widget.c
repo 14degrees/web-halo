@@ -3835,6 +3835,24 @@ static void render_state_bitmap(
 	return;
 }
 
+#ifdef HALO_WEB
+/* the browser game is played on a keyboard: its prompts name the keys
+(port/linux/src/xinput_sdl.c's keyboard_gamepad), not the controller's
+buttons; NULL for no button */
+wchar_t const *web_keyboard_name(
+	short icon_index)
+{
+	static wchar_t const *const names[] =
+	{
+		L"SPACE", L"F", L"E", L"Q", L"X", L"T", L"RIGHT CLICK", L"CLICK",
+		L"UP", L"DOWN", L"LEFT", L"RIGHT", L"ESC", L"TAB", L"C", L"Z",
+		L"WASD", L"MOUSE",
+	};
+
+	return icon_index >= _icon_a_button && icon_index <= _icon_right_stick ? names[icon_index] : NULL;
+}
+#endif
+
 void draw_string_and_hack_in_icons(
 	rectangle2d *bounds,
 	rectangle2d *clip,
@@ -3920,6 +3938,13 @@ void draw_string_and_hack_in_icons(
 				icon_index = remapped_icon_type;
 			}
 
+#ifdef HALO_WEB
+			if (web_keyboard_name(icon_index))
+			{
+				render_state_text(bounds, &cursor_bounds, web_keyboard_name(icon_index));
+				continue;
+			}
+#endif
 			{
 				struct icon_hud_element_definition *icon = TAG_BLOCK_GET_ELEMENT(
 					&hud_globals->messaging.button_icons,
