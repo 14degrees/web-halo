@@ -582,6 +582,8 @@ symbols in this file:
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
 /* port/linux/game/network_distributed.c's */
+/* port/linux/game/network_lobby.c's: the browser's scoreboard */
+void network_lobby_scoreboard_shown(real alpha, boolean over);
 void network_lobby_note_kill(long killing_player_index, long dead_player_index, boolean friendly_fire);
 void network_distributed_player_killed(long *killing_player_index, long *killing_object_index,
 	long dead_player_index, boolean *friendly_fire);
@@ -2016,6 +2018,11 @@ void game_engine_post_rasterize_post_game(
 
 	if (!game_engine)
 		return;
+#ifdef HALO_WEB
+	/* (the browser's scoreboard: game over) */
+	network_lobby_scoreboard_shown(1.0f, TRUE);
+	return;
+#endif
 
 	tab_stops[0] = 50;
 	tab_stops[1] = 125;
@@ -3339,7 +3346,13 @@ static void game_engine_post_rasterize_in_game(
 	if (fade > 0.0f)
 	{
 		real alpha = (real)pow((double)fade, 1.9f);
+#ifdef HALO_WEB
+		/* the browser draws the scores itself, Halo 3's way
+		(network_lobby_scoreboard_json, port/web/online_client.js) */
+		network_lobby_scoreboard_shown(alpha, game_engine_globals.postgame_state == 1);
+#else
 		game_engine_rasterize_in_game_score(player_index, alpha);
+#endif
 	}
 
 result:

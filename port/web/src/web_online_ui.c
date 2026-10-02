@@ -1137,6 +1137,18 @@ static atomic_int web_wager_sequence = ATOMIC_VAR_INIT(0);
 
 /* where the page writes the table: rows of a 12-byte name and a 12-byte
 label, then a 48-byte footer, each NUL-terminated */
+/* The scores, while the scoreboard shows (JSON: network_lobby.c); the page
+draws them (port/web/online_client.js) */
+long network_lobby_scoreboard_json(char *out, long size);
+
+EMSCRIPTEN_KEEPALIVE char const *platform_web_scoreboard(void)
+{
+	static char buffer[6144];
+
+	network_lobby_scoreboard_json(buffer, sizeof(buffer));
+	return buffer;
+}
+
 EMSCRIPTEN_KEEPALIVE void *platform_web_wager_staging(void)
 {
 	return &web_wager_staging;

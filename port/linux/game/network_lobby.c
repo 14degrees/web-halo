@@ -27,6 +27,7 @@ headers, so it calls these through plain prototypes.
 #endif
 
 #include <math.h>
+#include <stdio.h>
 
 /* the platform layer's */
 void platform_log(char const *format, ...);
@@ -604,5 +605,111 @@ void network_lobby_debug_spawn(
 			player->network_player_data.controller_index, player->local_player_index,
 			player->unit_index, player->quit_out_of_game, player->statistics.deaths, player->respawn_timer);
 	}
+}
+#endif
+
+#ifdef HALO_WEB
+/* ---------- the scoreboard (the browser draws it, Halo 3's way)
+
+While Back (Tab, F1) is held, and at the end of a match, the game marks the
+scoreboard shown (game_engine.c) instead of drawing its own; the page asks
+for the scores (platform_web_scoreboard) and draws them over the game. */
+
+static real scoreboard_alpha;
+static boolean scoreboard_over;
+static unsigned long scoreboard_at;
+
+void network_lobby_scoreboard_shown(
+	real alpha,
+	boolean over)
+{
+	scoreboard_alpha = alpha;
+	scoreboard_over = over;
+	scoreboard_at = system_milliseconds();
+}
+
+/* JSON: {"a":alpha,"over":0|1,"teams":0|1,"title":"","red":n,"blue":n,
+"self":"name","players":[["name",team,score,kills,deaths,quit],...]} */
+static long scoreboard_put(char *out, long size, long at, char const *text)
+{
+	while (*text && at < size - 1)
+		out[at++] = *text++;
+	out[at] = 0;
+	return at;
+}
+
+static long scoreboard_put_string(char *out, long size, long at, char const *text)
+{
+	at = scoreboard_put(out, size, at, "\"");
+	for (; *text && at < size - 3; text++)
+	{
+		char c = *text;
+
+		if (c == '"' || c == '\\')
+			out[at++] = '\\';
+		out[at++] = (c >= 32 && c < 127) ? c : '?';
+	}
+	out[at] = 0;
+	return scoreboard_put(out, size, at, "\"");
+}
+
+long network_lobby_scoreboard_json(
+	char *out,
+	long size)
+{
+	char number[64];
+	char name[HOST_KILL_NAME + 1];
+	char title[16];
+	struct data_iterator iterator;
+	struct player_datum *player;
+	struct game_variant const *variant;
+	boolean teams;
+	long local;
+	long at = 0;
+	long first = TRUE;
+	long index;
+
+	out[0] = 0;
+	if (!game_engine || system_milliseconds() - scoreboard_at > 250)
+		return scoreboard_put(out, size, 0, "{\"a\":0}");
+	variant = game_engine_get_variant();
+	teams = variant->universal_variant.teams;
+	for (index = 0; index < 11 && variant->human_readable_game_description[index]; index++)
+	{
+		wchar_t c = variant->human_readable_game_description[index];
+
+		title[index] = (c >= 32 && c < 127) ? (char)c : ' ';
+	}
+	title[index] = 0;
+	local = local_player_get_player_index(0);
+	name[0] = 0;
+	if (local != NONE)
+		lobby_name(name, player_get(local));
+	sprintf(number, "{\"a\":%.3f,\"over\":%d,\"teams\":%d,\"red\":%ld,\"blue\":%ld,\"title\":",
+		(double)scoreboard_alpha, scoreboard_over ? 1 : 0, teams ? 1 : 0,
+		teams ? (long)game_engine_get_team_score(0) : 0L, teams ? (long)game_engine_get_team_score(1) : 0L);
+	at = scoreboard_put(out, size, at, number);
+	at = scoreboard_put_string(out, size, at, title);
+	at = scoreboard_put(out, size, at, ",\"self\":");
+	at = scoreboard_put_string(out, size, at, name);
+	at = scoreboard_put(out, size, at, ",\"players\":[");
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL && at < size - 160)
+	{
+		long kills = 0;
+		short kind;
+
+		for (kind = 0; kind < 4; kind++)
+			kills += player->statistics.kills[kind];
+		lobby_name(name, player);
+		at = scoreboard_put(out, size, at, first ? "[" : ",[");
+		first = FALSE;
+		at = scoreboard_put_string(out, size, at, name);
+		sprintf(number, ",%d,%ld,%ld,%d,%d]", (int)player->team_index,
+			(long)game_engine->get_player_score(iterator.datum_index, _get_score_individual),
+			kills, (int)player->statistics.deaths, player->quit_out_of_game ? 1 : 0);
+		at = scoreboard_put(out, size, at, number);
+	}
+	return scoreboard_put(out, size, at, "]}");
 }
 #endif

@@ -4577,7 +4577,152 @@
       placeKillPop(pop, now);
       return true;
     });
+    tickScoreboard(now);
     if (typeof global.requestAnimationFrame === "function") global.requestAnimationFrame(tickKillPops);
+  }
+
+  /* ---------- the scoreboard, Halo 3's way
+
+     While Back (Tab, F1) is held, and when a match ends, the game hands the
+     scores over (platform_web_scoreboard: port/linux/game/network_lobby.c)
+     instead of drawing its own, and the page draws them: the teams and their
+     totals, then everyone by team and place, with their emblems; in a match
+     for SOL, each player's money where Halo 3 had the clan tag. */
+
+  var SCOREBOARD_POLL_MILLISECONDS = 100;
+  var scoreboard = { at: 0, key: "" };
+
+  function readScoreboard() {
+    var read = global.Module && global.Module._platform_web_scoreboard;
+    if (typeof read !== "function" || typeof HEAPU8 === "undefined") return null;
+    var pointer = read();
+    var end = pointer;
+    while (HEAPU8[end]) end++;
+    var text = "";
+    for (var index = pointer; index < end; index += 4096) {
+      text += String.fromCharCode.apply(null, HEAPU8.subarray(index, Math.min(end, index + 4096)));
+    }
+    try { return JSON.parse(text); } catch (error) { return null; }
+  }
+
+  /* each player's emblem, by the name they play under */
+  function scoreboardEmblems() {
+    var emblems = {};
+    if (session.roster) {
+      session.roster.forEach(function(entry) {
+        var profile = entry && entry.profile;
+        if (profile && profile.name && profile.emblem !== undefined && profile.emblem !== null) {
+          emblems[profile.name] = profile.emblem;
+        }
+      });
+    }
+    return emblems;
+  }
+
+  /* in a match for SOL: each player's money, by name */
+  function scoreboardMoney() {
+    var view = lobby.wager && !lobby.wager.done ? lobby.wager.view : null;
+    var money = {};
+    if (!view) return money;
+    view.players.forEach(function(player) {
+      money[player.name] = view.mode === "team" ? formatSol(view.stake) :
+        player.balance <= 0 ? "spent" : formatSigned(player.net);
+    });
+    return money;
+  }
+
+  function scoreboardRow(className, place, emblem, name, tag, score) {
+    var row = document.createElement("div");
+    row.className = "sb-row " + className;
+    var placeCell = document.createElement("span");
+    placeCell.className = "sb-place";
+    placeCell.textContent = place;
+    var emblemCell = document.createElement("span");
+    emblemCell.className = "sb-emblem";
+    if (emblem !== undefined && emblem !== null) emblemCell.appendChild(emblemElement(emblem));
+    var nameCell = document.createElement("span");
+    nameCell.className = "sb-name";
+    nameCell.textContent = name;
+    var tagCell = document.createElement("span");
+    tagCell.className = "sb-tag";
+    tagCell.textContent = tag;
+    var scoreCell = document.createElement("span");
+    scoreCell.className = "sb-score";
+    scoreCell.textContent = String(score);
+    row.append(placeCell, emblemCell, nameCell, tagCell, scoreCell);
+    return row;
+  }
+
+  function renderScoreboard(state) {
+    var root = byId("scoreboard");
+    if (!root) return;
+    var shown = !!(state && state.a > 0.02 && session.active);
+    if (!shown) {
+      if (!root.hidden) root.hidden = true;
+      scoreboard.key = "";
+      return;
+    }
+    root.style.opacity = String(Math.min(1, state.a));
+    var emblems = scoreboardEmblems();
+    var money = scoreboardMoney();
+    var key = JSON.stringify([state.over, state.teams, state.red, state.blue, state.title, state.self, state.players, money]);
+    if (root.hidden) root.hidden = false;
+    if (key === scoreboard.key) return;
+    scoreboard.key = key;
+
+    var players = (state.players || []).map(function(row) {
+      return { name: row[0], team: row[1], score: row[2], kills: row[3], deaths: row[4], quit: !!row[5] };
+    });
+    var tagFor = function(player) {
+      return money[player.name] !== undefined ? money[player.name] : player.kills + "/" + player.deaths;
+    };
+    var body = byId("scoreboard-rows");
+    var rows = [];
+    /* the game type: Halo's own name for it, or the room's */
+    var room = session.room && session.room.lobby;
+    var title = state.title || (room ? selectedLabel(elements.mode, Number(room.modeIndex)) : "") || "Scores";
+    byId("scoreboard-title").textContent = state.over ? "Game over" : title;
+    byId("scoreboard-tag-head").textContent = Object.keys(money).length ? "SOL" : "K/D";
+    if (state.teams) {
+      /* Halo's teams: 0 red, 1 blue; the leader first */
+      var teams = [{ index: 0, name: "Red Team", score: state.red, tone: "red" },
+        { index: 1, name: "Blue Team", score: state.blue, tone: "blue" }];
+      teams.sort(function(left, right) { return right.score - left.score || left.index - right.index; });
+      teams.forEach(function(team, order) {
+        team.place = order > 0 && team.score === teams[0].score ? 1 : order + 1;
+        rows.push(scoreboardRow("sb-team sb-" + team.tone, team.place, null, team.name, "", team.score));
+      });
+      var gap = document.createElement("div");
+      gap.className = "sb-gap";
+      rows.push(gap);
+      teams.forEach(function(team) {
+        players.filter(function(player) { return player.team === team.index; })
+          .sort(function(left, right) { return left.quit - right.quit || right.score - left.score || left.name.localeCompare(right.name); })
+          .forEach(function(player) {
+            rows.push(scoreboardRow("sb-" + team.tone + (player.quit ? " sb-quit" : "") + (player.name === state.self ? " sb-self" : ""),
+              team.place, emblems[player.name], player.name, tagFor(player), player.score));
+          });
+      });
+    } else {
+      players.sort(function(left, right) { return left.quit - right.quit || right.score - left.score || left.name.localeCompare(right.name); });
+      var place = 0;
+      players.forEach(function(player, index) {
+        if (index === 0 || player.score !== players[index - 1].score) place = index + 1;
+        rows.push(scoreboardRow("sb-solo" + (player.quit ? " sb-quit" : "") + (player.name === state.self ? " sb-self" : ""),
+          player.quit ? "–" : place, emblems[player.name], player.name, tagFor(player), player.score));
+      });
+    }
+    body.replaceChildren.apply(body, rows);
+  }
+
+  function tickScoreboard(now) {
+    if (!session.active) {
+      if (scoreboard.key !== "" || (byId("scoreboard") && !byId("scoreboard").hidden)) renderScoreboard(null);
+      return;
+    }
+    if (now - scoreboard.at < SCOREBOARD_POLL_MILLISECONDS) return;
+    scoreboard.at = now;
+    renderScoreboard(readScoreboard());
   }
 
   function installLobby() {
