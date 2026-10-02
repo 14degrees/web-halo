@@ -740,13 +740,17 @@
     .landing-mode[data-tone="matchmaking"] { --tone: #5fb4ff; }
     .landing-mode[data-tone="custom"] { --tone: #8fd1a6; }
     .landing-mode[data-tone="sol"] { --tone: #ffd65a; }
-    /* your Spartan, standing bottom right, as Krunker shows your character */
+    /* your Spartan, top right under your name and Customize, as Krunker
+       shows your character; the bar below keeps the whole width */
     .landing-spartan {
-      position: absolute; right: clamp(.6rem, 2.5vw, 2.4rem); bottom: clamp(1rem, 3vh, 2rem);
-      display: grid; justify-items: end; gap: .4rem; width: min(18rem, 22vw); cursor: default;
+      position: absolute; right: clamp(.6rem, 2.5vw, 2.4rem); top: clamp(1rem, 3vh, 2rem);
+      display: flex; flex-direction: column; align-items: flex-end; gap: .4rem; width: min(18rem, 22vw); cursor: default;
     }
+    .landing-spartan-plate { order: 1; }
+    .landing-customize { order: 2; }
+    .landing-spartan-art { order: 3; }
     .landing-spartan-art {
-      width: 100%; height: min(46vh, 26rem); object-fit: contain; object-position: bottom right;
+      width: 100%; height: min(40vh, 22rem); object-fit: contain; object-position: top right;
       filter: drop-shadow(0 1rem 1.6rem rgba(0, 0, 0, .65)); pointer-events: none;
     }
     .landing-spartan-plate { display: flex; align-items: center; gap: .6rem; }
@@ -757,8 +761,6 @@
       color: #f2f5fa; font-family: inherit; font-size: clamp(1.05rem, 1.6vw, 1.35rem); font-weight: 500; cursor: pointer;
     }
     .landing-customize:hover, .landing-customize:focus-visible { background: rgba(95, 208, 255, .2); outline: none; }
-    /* the bar leaves the Spartan its corner */
-    @media (min-width: 701px) { .landing-bar { margin-right: min(19rem, 23vw); justify-self: center; } }
     @media (max-width: 700px) {
       .landing-modes { grid-template-columns: repeat(2, 1fr); }
       .landing-spartan { position: static; justify-self: end; width: auto; grid-row: 4; }
