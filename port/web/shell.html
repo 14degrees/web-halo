@@ -695,6 +695,9 @@
     /* the live map behind (the game's canvas): the page lets it show */
     #landing { transition: background-color 1s ease; }
     #landing[data-live] { background-color: transparent; }
+    /* the globe while the live map loads, fading out once it is up */
+    .landing-film { transition: opacity 1s ease; }
+    #landing[data-live] .landing-film { opacity: 0; }
     .landing-brand { grid-row: 1; display: grid; justify-items: center; gap: .1rem; text-transform: uppercase; pointer-events: none; }
     .landing-brand strong { font-size: clamp(2.6rem, 6vw, 4.6rem); font-weight: 500; letter-spacing: .32em; margin-right: -.32em; text-shadow: 0 0 2rem rgba(80, 170, 255, .45); }
     .landing-brand span { font-size: clamp(.85rem, 1.4vw, 1.1rem); letter-spacing: .3em; color: #9fb4d6; }
@@ -2120,6 +2123,7 @@
     </section>
   </main>
   <section id="landing" aria-label="Halo" hidden>
+    <video class="lobby-film landing-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
     <div class="landing-brand">
       <strong>Halo</strong>
       <span>Combat Evolved · Online</span>
