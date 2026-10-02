@@ -740,10 +740,10 @@
     .landing-mode[data-tone="matchmaking"] { --tone: #5fb4ff; }
     .landing-mode[data-tone="custom"] { --tone: #8fd1a6; }
     .landing-mode[data-tone="sol"] { --tone: #ffd65a; }
-    /* your Spartan, top right under your name and Customize, as Krunker
+    /* your Spartan, middle right under your name and Customize, as Krunker
        shows your character; the bar below keeps the whole width */
     .landing-spartan {
-      position: absolute; right: clamp(.6rem, 2.5vw, 2.4rem); top: clamp(1rem, 3vh, 2rem);
+      position: absolute; right: clamp(.6rem, 2.5vw, 2.4rem); top: 50%; transform: translateY(-50%);
       display: flex; flex-direction: column; align-items: flex-end; gap: .4rem; width: min(18rem, 22vw); cursor: default;
     }
     .landing-spartan-plate { order: 1; }
@@ -763,7 +763,7 @@
     .landing-customize:hover, .landing-customize:focus-visible { background: rgba(95, 208, 255, .2); outline: none; }
     @media (max-width: 700px) {
       .landing-modes { grid-template-columns: repeat(2, 1fr); }
-      .landing-spartan { position: static; justify-self: end; width: auto; grid-row: 4; }
+      .landing-spartan { position: static; transform: none; justify-self: end; width: auto; grid-row: 4; }
       .landing-spartan-art { display: none; }
       #landing { grid-template-rows: auto 1fr auto auto; }
     }
