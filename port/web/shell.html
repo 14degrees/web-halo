@@ -2065,7 +2065,7 @@
           <dd>- F</dd>
         </div>
         <div class="duke-binding" aria-label="X button - E or R"><dt>X</dt><dd>- E / R</dd></div>
-        <div class="duke-binding" aria-label="Y button - Tab or mouse wheel"><dt>Y</dt><dd>- Tab / Wheel</dd></div>
+        <div class="duke-binding" aria-label="Y button - mouse wheel"><dt>Y</dt><dd>- Wheel</dd></div>
         <div class="duke-binding" aria-label="White button - Q"><dt>White</dt><dd>- Q</dd></div>
         <div class="duke-binding" aria-label="Black button - X"><dt>Black</dt><dd>- X</dd></div>
         <div class="duke-binding" aria-label="Left trigger - G or right mouse button"><dt>LT</dt><dd>- G / RMB</dd></div>
@@ -2076,7 +2076,7 @@
         <div class="duke-binding" aria-label="Right stick click - Z or middle mouse button"><dt>R3</dt><dd>- Z / MMB</dd></div>
         <div class="duke-binding" aria-label="Directional pad - arrow keys"><dt>D-pad</dt><dd>- Arrows</dd></div>
         <div class="duke-binding" aria-label="Start - Escape"><dt>Start</dt><dd>- Esc</dd></div>
-        <div class="duke-binding" aria-label="Back - F1"><dt>Back</dt><dd>- F1</dd></div>
+        <div class="duke-binding" aria-label="Back - Tab or F1"><dt>Back</dt><dd>- Tab / F1</dd></div>
       </dl>
     </aside>
     <aside id="player-sidebar" aria-label="Online multiplayer" data-online-active="false">
@@ -3260,7 +3260,7 @@
     document.addEventListener("keydown", event => {
       const gameOwnsKeyboard = document.pointerLockElement === canvas || document.activeElement === canvas;
       if (event.key === "Tab" && gameOwnsKeyboard && !webUiOwnsKeyboardFocus()) {
-        // Keep Tab available to SDL/Halo (weapon switch) while suppressing the
+        // Keep Tab available to SDL/Halo (the scores) while suppressing the
         // browser's default focus traversal. Do not stop propagation here.
         event.preventDefault();
       } else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "l") {
