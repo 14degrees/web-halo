@@ -42,6 +42,7 @@ same datum index (identifier and all), so that any message can name one:
 #include "items/items.h"
 #include "items/weapons.h"
 #include "network_distributed.h"
+#include "networking/network_messages.h"
 
 /* units.c's */
 void unit_network_add_weapon(long unit_index, long weapon_index, short slot);
@@ -479,6 +480,7 @@ void network_objects_client_ready(
 	}
 	distributed_send_to_machine_reliably(machine_index, &message, _distributed_message_objects_synchronized, 0,
 		(word)sizeof(message.header));
+	network_event("distributed: machine #%ld has the host's objects", machine_index);
 }
 
 /* where the moving objects are (not players' living units, which have
@@ -759,6 +761,7 @@ static void distributed_client_create(
 		if (header->identifier)
 		{
 			objects_statistics.create_failures++;
+			network_event("distributed: cannot make the host's object %lx: its place is still taken", change->object_index);
 			return;
 		}
 	}
@@ -781,6 +784,8 @@ static void distributed_client_create(
 	if (object_index != change->object_index)
 	{
 		objects_statistics.create_failures++;
+		network_event("distributed: the host's object %lx was made as %lx (definition %lx)",
+			change->object_index, object_index, change->definition_index);
 		if (object_index != NONE)
 		{
 			objects_client_deleting = TRUE;
@@ -837,6 +842,7 @@ void network_objects_handle_changes(
 void network_objects_handle_synchronized(
 	void)
 {
+	network_event("distributed: this machine has the host's objects");
 	objects_client_synchronized = TRUE;
 }
 

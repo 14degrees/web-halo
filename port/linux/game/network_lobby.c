@@ -736,6 +736,14 @@ static struct
 	boolean placed;
 	boolean hold_scores;
 	real_point3d position;
+	/* the one followed after the last two ticks: the camera blends them by
+	how far into the next tick the frame is, as the renderer blends the body
+	it draws (render_interpolation.c) */
+	long tick;
+	long tick_target;
+	real_point3d eye[2];
+	real_vector3d aim[2];
+	real heading;
 } lobby_spectator;
 
 boolean network_lobby_spectating(
@@ -831,7 +839,10 @@ void network_lobby_spectate_update(
 		network_lobby_scoreboard_shown(1.0f, FALSE);
 	scripted_show_hud(FALSE);
 	scripted_show_hud_help_text(FALSE);
-	player_input_enable(FALSE);
+	/* (never player_input_enable(FALSE), as the backdrop does: it holds every
+	player's controls still on this machine, and the players followed would
+	only slide where the host corrects them, never aim, turn or fire) */
+	player_input_enable(TRUE);
 	lobby_preview_active = TRUE;
 	/* the one followed died or left: hold the view a moment, then the next */
 	if (!spectate_followable(lobby_spectator.target))
@@ -866,6 +877,45 @@ void network_lobby_spectate_update(
 		aim.i /= length;
 		aim.j /= length;
 		aim.k /= length;
+	}
+	/* where they were after each of the last two ticks, blended to this
+	frame: the camera moves and turns with the body as it is drawn */
+	{
+		long tick = game_time_get();
+		real t = game_time_get_tick_fraction();
+
+		if (lobby_spectator.tick_target != lobby_spectator.target)
+		{
+			lobby_spectator.eye[0] = lobby_spectator.eye[1] = eye;
+			lobby_spectator.aim[0] = lobby_spectator.aim[1] = aim;
+			lobby_spectator.tick_target = lobby_spectator.target;
+			lobby_spectator.tick = tick;
+		}
+		else if (tick != lobby_spectator.tick)
+		{
+			lobby_spectator.eye[0] = lobby_spectator.eye[1];
+			lobby_spectator.aim[0] = lobby_spectator.aim[1];
+			lobby_spectator.eye[1] = eye;
+			lobby_spectator.aim[1] = aim;
+			lobby_spectator.tick = tick;
+		}
+		if (t < 0.0f)
+			t = 0.0f;
+		if (t > 1.0f)
+			t = 1.0f;
+		eye.x = lobby_spectator.eye[0].x + (lobby_spectator.eye[1].x - lobby_spectator.eye[0].x) * t;
+		eye.y = lobby_spectator.eye[0].y + (lobby_spectator.eye[1].y - lobby_spectator.eye[0].y) * t;
+		eye.z = lobby_spectator.eye[0].z + (lobby_spectator.eye[1].z - lobby_spectator.eye[0].z) * t;
+		aim.i = lobby_spectator.aim[0].i + (lobby_spectator.aim[1].i - lobby_spectator.aim[0].i) * t;
+		aim.j = lobby_spectator.aim[0].j + (lobby_spectator.aim[1].j - lobby_spectator.aim[0].j) * t;
+		aim.k = lobby_spectator.aim[0].k + (lobby_spectator.aim[1].k - lobby_spectator.aim[0].k) * t;
+		length = (real)sqrt(aim.i * aim.i + aim.j * aim.j + aim.k * aim.k);
+		if (length > 0.001f)
+		{
+			aim.i /= length;
+			aim.j /= length;
+			aim.k /= length;
+		}
 	}
 	flat.i = aim.i;
 	flat.j = aim.j;
@@ -903,7 +953,7 @@ void network_lobby_spectate_update(
 	}
 	else
 	{
-		real follow = seconds * 12.0f;
+		real follow = seconds * 30.0f;
 
 		if (follow > 1.0f)
 			follow = 1.0f;
@@ -922,6 +972,28 @@ void network_lobby_spectate_update(
 		forward.j /= length;
 		forward.k /= length;
 	}
+	lobby_spectator.heading = (real)atan2(forward.j, forward.i);
 	director_preview_camera(&lobby_spectator.position, &forward);
+}
+
+float network_lobby_player_heading(
+	long absolute_index)
+{
+	struct player_datum *player;
+	struct unit_datum *unit;
+
+	if (!player_data || absolute_index < 0 || absolute_index >= player_data->maximum_count)
+		return 99.0f;
+	player = (struct player_datum *)((byte *)player_data->data + absolute_index * player_data->size);
+	if (!player->identifier || player->unit_index == NONE || !object_try_and_get(player->unit_index))
+		return 99.0f;
+	unit = unit_get(player->unit_index);
+	return (real)atan2(unit->unit.aiming_vector.j, unit->unit.aiming_vector.i);
+}
+
+float network_lobby_spectate_heading(
+	void)
+{
+	return lobby_spectator.heading;
 }
 #endif

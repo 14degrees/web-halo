@@ -4843,14 +4843,15 @@
       var teams = [{ index: 0, name: "Red Team", score: state.red, tone: "red" },
         { index: 1, name: "Blue Team", score: state.blue, tone: "blue" }];
       teams.sort(function(left, right) { return right.score - left.score || left.index - right.index; });
+      /* each team, its total, then its players under it */
       teams.forEach(function(team, order) {
         team.place = order > 0 && team.score === teams[0].score ? 1 : order + 1;
+        if (order > 0) {
+          var gap = document.createElement("div");
+          gap.className = "sb-gap";
+          rows.push(gap);
+        }
         rows.push(scoreboardRow("sb-team sb-" + team.tone, team.place, null, team.name, "", team.score));
-      });
-      var gap = document.createElement("div");
-      gap.className = "sb-gap";
-      rows.push(gap);
-      teams.forEach(function(team) {
         players.filter(function(player) { return player.team === team.index; })
           .sort(function(left, right) { return left.quit - right.quit || right.score - left.score || left.name.localeCompare(right.name); })
           .forEach(function(player) {

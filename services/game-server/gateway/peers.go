@@ -59,6 +59,10 @@ type outFrame struct {
 // player (port/server/src/server_link.c)
 const spectatorTeam = 255
 
+// ... and a machine with no planned team: every new address is told one or
+// the other, so a mark left by the address's last machine never carries over
+const noTeam = 254
+
 // a peer this far behind on frames the game sent it is dropped
 const outQueueFrames = 1024
 
@@ -237,6 +241,8 @@ func (set *peerSet) ensure(id, identifier string, spectator bool) {
 		// the team table's mark for a spectator (port/server/src/server_link.c)
 		team, planned = spectatorTeam, true
 		log.Printf("peer %s (%s) watches", id, identifier)
+	} else if !planned {
+		team, planned = noTeam, true
 	}
 	if planned {
 		if err := set.link.setTeam(address, team); err != nil {

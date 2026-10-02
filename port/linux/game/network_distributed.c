@@ -321,6 +321,15 @@ static short distributed_host_from_local(
 	return local_index;
 }
 
+/* (a client) this machine's index for the host's player index: NONE when it
+is another of the host's players here (player_queues_new.c's relayed
+actions) */
+short network_distributed_local_player_index(
+	short host_index)
+{
+	return distributed_local_from_host(host_index);
+}
+
 /* this machine's player at an absolute index */
 static struct player_datum *distributed_local_player(
 	short player_index)

@@ -1131,6 +1131,28 @@ static void machine_add_player(
 
 	machine_player_list =
 		machine_to_player_table[DATUM_INDEX_TO_ABSOLUTE_INDEX(machine_index)];
+#ifdef HALO_LINUX
+	/* A machine number is given again after its machine leaves a game in
+	progress, and the players who left stay in the game (quit, for the
+	scores). Their places in the machine's list are the new machine's: the
+	server takes each machine's actions for the players in its list in turn
+	(update_server_handle_client_update), so a departed player left first in
+	the list would take the new player's actions, and the new player would
+	have none. */
+	for (machine_player_index = 0;
+		machine_player_index < MAXIMUM_LOCAL_PLAYERS;
+		machine_player_index++)
+	{
+		long listed = machine_player_list[machine_player_index];
+		struct player_datum *departed = listed != NONE ? player_try_and_get(listed) : NULL;
+
+		if (listed != NONE &&
+			(!departed || departed->quit_out_of_game || departed->quit_out_of_game_time != NONE))
+		{
+			machine_player_list[machine_player_index] = NONE;
+		}
+	}
+#endif
 	for (machine_player_index = 0;
 		machine_player_index < MAXIMUM_LOCAL_PLAYERS;
 		machine_player_index++)
@@ -1166,7 +1188,41 @@ long player_new(
 	wchar_t const *player_name;
 
 	if (player_index == NONE)
+	{
 		player_index = datum_new(player_data);
+#ifdef HALO_LINUX
+		/* Every place taken: a game in progress keeps the players who left
+		(quit, for the scores) until the map ends, and a busy public game
+		runs out. The one who left longest ago gives up theirs; the game
+		engine starts the new player's scores afresh (game_engine_player_added).
+		Machines number players their own way, so this needs no agreement
+		between them (port/linux/game/network_distributed.c). */
+		if (player_index == NONE)
+		{
+			struct data_iterator iterator;
+			struct player_datum *departed;
+			long oldest = NONE;
+			long oldest_time = 0;
+
+			data_iterator_new(&iterator, player_data);
+			while ((departed = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+			{
+				if (departed->quit_out_of_game && departed->local_player_index == NONE &&
+					departed->unit_index == NONE &&
+					(oldest == NONE || departed->quit_out_of_game_time < oldest_time))
+				{
+					oldest = iterator.datum_index;
+					oldest_time = departed->quit_out_of_game_time;
+				}
+			}
+			if (oldest != NONE)
+			{
+				player_delete(oldest);
+				player_index = datum_new(player_data);
+			}
+		}
+#endif
+	}
 	else
 		player_index = datum_new_at_index(player_data, player_index);
 

@@ -477,7 +477,8 @@ static void set_team(uint32_t address, int team)
 			link_team_count++;
 	}
 	pthread_mutex_unlock(&link_team_mutex);
-	fprintf(stderr, "server link: the peer at %08x plays on team %d\n", (unsigned)address, team);
+	if (team < 254)
+		fprintf(stderr, "server link: the peer at %08x plays on team %d\n", (unsigned)address, team);
 }
 
 /* Whether this server's game is a public, persistent one: it starts with a
@@ -529,6 +530,9 @@ int server_link_team_for_address(unsigned long address)
 		}
 	}
 	pthread_mutex_unlock(&link_team_mutex);
+	/* (254: no planned team; 255: a spectator) */
+	if (team >= 254)
+		return -1;
 	if (team >= 0)
 		fprintf(stderr, "server link: a player from %08lx joins team %d, as planned\n", address, team);
 	return team;

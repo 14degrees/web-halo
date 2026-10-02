@@ -1174,6 +1174,22 @@ EMSCRIPTEN_KEEPALIVE char const *platform_web_spectate_target(void)
 	return name;
 }
 
+/* (diagnosis) a player's aim heading as this machine has it (radians; 99:
+none) */
+float network_lobby_player_heading(long absolute_index);
+EMSCRIPTEN_KEEPALIVE float platform_web_debug_player_heading(int absolute_index)
+{
+	return network_lobby_player_heading(absolute_index);
+}
+
+/* the spectator camera's heading (radians), for measuring how smoothly it
+turns */
+float network_lobby_spectate_heading(void);
+EMSCRIPTEN_KEEPALIVE float platform_web_spectate_heading(void)
+{
+	return network_lobby_spectate_heading();
+}
+
 EMSCRIPTEN_KEEPALIVE void platform_web_spectate_scores(int hold)
 {
 	network_lobby_spectate_hold_scores(hold ? 1 : 0);
