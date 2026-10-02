@@ -3298,6 +3298,11 @@ static void game_engine_post_rasterize_in_game(
 
 	local_player_index = render.local_player_index;
 	player_index = local_player_get_player_index(local_player_index);
+#ifdef HALO_WEB
+	/* a spectator's view has no player (network_lobby.c) */
+	if (player_index == NONE)
+		return;
+#endif
 	player = player_get(player_index);
 
 	match_assert(

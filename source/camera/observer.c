@@ -1298,6 +1298,11 @@ static void observer_pass_time(
 	return;
 }
 
+#ifdef HALO_WEB
+/* port/linux/game/network_lobby.c */
+boolean network_lobby_spectating(void);
+#endif
+
 void observer_update(
 	real time_delta_sec)
 {
@@ -1308,7 +1313,12 @@ void observer_update(
 		local_player_index < MAXIMUM_NUMBER_OF_LOCAL_PLAYERS;
 		local_player_index++)
 	{
-		if (local_player_get_player_index(local_player_index) != NONE)
+		if (local_player_get_player_index(local_player_index) != NONE
+#ifdef HALO_WEB
+			/* a spectator's camera, with no player (network_lobby.c) */
+			|| (local_player_index == 0 && network_lobby_spectating())
+#endif
+			)
 		{
 			struct observer *observer = observer_get(local_player_index);
 

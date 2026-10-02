@@ -71,6 +71,8 @@ interface SocketAttachment {
   wallet?: string;
   /* matches this player has finished (the matchmaker's count): their rank */
   matches?: number;
+  /* watching the game, not in it */
+  spectator?: boolean;
 }
 
 interface PreparedSession {
@@ -113,6 +115,9 @@ export interface CreateSessionCommand {
   /* Absent: a guest of a public room. */
   ticket?: string;
   wallet?: string;
+  /* watching, not playing: no player in the game, and not counted against
+     the room's player places */
+  spectator?: boolean;
 }
 
 export type CreateSessionResult =
@@ -210,6 +215,8 @@ const ROOM_COLUMN_UPGRADES: ReadonlyArray<readonly [string, string]> = [
 ];
 
 const MAX_GUEST_WEBSOCKET_MESSAGES_PER_MINUTE = 240;
+/* watchers a room seats beyond its players */
+const MAXIMUM_SPECTATORS = 16;
 const MAX_HOST_WEBSOCKET_MESSAGES_PER_MINUTE = 16_384;
 
 export class SignalingRoom extends DurableObject<Env> {
@@ -370,7 +377,10 @@ export class SignalingRoom extends DurableObject<Env> {
     ) {
       return { code: "IDENTIFIER_IN_USE", ok: false };
     }
-    if (activeConnections.length + pendingSessions >= room.capacity) {
+    /* spectators have places of their own */
+    const watching = activeConnections.filter(({ attachment }) => attachment.spectator).length;
+    if (command.spectator ? watching >= MAXIMUM_SPECTATORS :
+        activeConnections.length - watching + pendingSessions >= room.capacity) {
       return { code: "ROOM_FULL", ok: false };
     }
 
@@ -383,7 +393,11 @@ export class SignalingRoom extends DurableObject<Env> {
       newSessionTokenHash,
     );
     this.insertSession(session);
-    this.rememberWallet(session.session.peerId, command.wallet);
+    if (command.spectator) {
+      this.ctx.storage.kv.put(`spectator:${session.session.peerId}`, true);
+    } else {
+      this.rememberWallet(session.session.peerId, command.wallet);
+    }
 
     return {
       ok: true,
@@ -500,7 +514,10 @@ export class SignalingRoom extends DurableObject<Env> {
     ) {
       return new Response("Host is already connected.", { status: 409 });
     }
-    if (existingConnections.length >= room.capacity) {
+    const spectator = this.ctx.storage.kv.get(`spectator:${session.peer_id}`) === true;
+    this.ctx.storage.kv.delete(`spectator:${session.peer_id}`);
+    const watching = existingConnections.filter(({ attachment }) => attachment.spectator).length;
+    if (spectator ? watching >= MAXIMUM_SPECTATORS : existingConnections.length - watching >= room.capacity) {
       return new Response("Room is full.", { status: 409 });
     }
 
@@ -521,6 +538,7 @@ export class SignalingRoom extends DurableObject<Env> {
       peerId: session.peer_id,
       role: session.role,
       ...(wallet === null ? {} : { wallet }),
+      ...(spectator ? { spectator: true } : {}),
     };
 
     this.ctx.acceptWebSocket(server, [
@@ -536,6 +554,7 @@ export class SignalingRoom extends DurableObject<Env> {
             identifier: peer.identifier,
             peerId: peer.peerId,
             role: peer.role,
+            ...(peer.spectator ? { spectator: true } : {}),
           })),
         room: roomDescriptor(room),
         self: {
@@ -554,6 +573,7 @@ export class SignalingRoom extends DurableObject<Env> {
           identifier: attachment.identifier,
           peerId: attachment.peerId,
           role: attachment.role,
+          ...(attachment.spectator ? { spectator: true } : {}),
         },
         type: "peer-joined",
         v: SIGNALING_PROTOCOL_VERSION,
@@ -710,6 +730,7 @@ export class SignalingRoom extends DurableObject<Env> {
       /* by the name each plays under (the scoreboard's) */
       const byName: Record<string, number> = {};
       for (const { attachment } of this.connections("guest")) {
+        if (attachment.spectator) continue;
         const ping = message.pings[attachment.peerId];
         if (ping !== undefined && attachment.profile?.name) byName[attachment.profile.name] = ping;
       }
@@ -858,7 +879,8 @@ export class SignalingRoom extends DurableObject<Env> {
     if (room === null || roomVisibility(room.visibility) !== "public") {
       return;
     }
-    const connections = this.connections();
+    /* the players: spectators watch, they do not fill places */
+    const connections = this.connections().filter(({ attachment }) => !attachment.spectator);
     const hostConnected = connections.some(({ attachment }) => attachment.role === "host");
     const guests = connections.length - (hostConnected ? 1 : 0);
     const entry: LobbyEntry = {
@@ -949,6 +971,7 @@ export class SignalingRoom extends DurableObject<Env> {
         profile: attachment.profile ?? null,
         role: attachment.role,
         matches: attachment.matches ?? null,
+        ...(attachment.spectator ? { spectator: true } : {}),
       })),
       type: "roster",
       v: SIGNALING_PROTOCOL_VERSION,
@@ -1176,7 +1199,7 @@ export class SignalingRoom extends DurableObject<Env> {
     const funded = view.players.filter((player) => player.balance > 0).length;
     const end = funded <= 1;
     const out = end ? [] : this.connections("guest")
-      .filter(({ attachment }) => attachment.profile?.name === victimName)
+      .filter(({ attachment }) => !attachment.spectator && attachment.profile?.name === victimName)
       .map(({ attachment }) => attachment.peerId);
     for (const peerId of out) {
       for (const target of this.ctx.getWebSockets(`peer:${peerId}`)) {

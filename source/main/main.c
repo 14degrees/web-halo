@@ -397,6 +397,8 @@ void server_link_frame(void);
 #ifdef HALO_WEB
 #include <emscripten/emscripten.h>
 #include "../../port/web/src/web_online_ui.h"
+/* port/linux/game/network_lobby.c */
+boolean network_lobby_spectating(void);
 
 /* Browser performance meter (port/linux/src/sdl_platform.c). */
 void platform_web_frame_begin(void);
@@ -3066,6 +3068,12 @@ void main_game_render(
 				{
 					last_local_player_index = local_player_get_next(last_local_player_index);
 				}
+#ifdef HALO_WEB
+				/* a spectator: player 0's view, with no player
+				(port/linux/game/network_lobby.c) */
+				if (last_local_player_index == NONE && network_lobby_spectating())
+					last_local_player_index = 0;
+#endif
 			}
 
 			window->local_player_index = last_local_player_index;

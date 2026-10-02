@@ -55,6 +55,10 @@ type outFrame struct {
 	data     []byte
 }
 
+// the team a spectator's machine is marked with: the server refuses it a
+// player (port/server/src/server_link.c)
+const spectatorTeam = 255
+
 // a peer this far behind on frames the game sent it is dropped
 const outQueueFrames = 1024
 
@@ -166,7 +170,7 @@ func (set *peerSet) setICEServers(servers []iceServer) {
 }
 
 // ensure makes the connection to a guest the room announced.
-func (set *peerSet) ensure(id, identifier string) {
+func (set *peerSet) ensure(id, identifier string, spectator bool) {
 	identifier = toLower(identifier)
 	bytes, err := hex.DecodeString(identifier)
 	if err != nil || len(bytes) != identifierSize {
@@ -174,7 +178,8 @@ func (set *peerSet) ensure(id, identifier string) {
 		return
 	}
 	set.mu.Lock()
-	if set.allowed != nil && !set.allowed(identifier) {
+	// a spectator may watch any match: the server never gives it a player
+	if !spectator && set.allowed != nil && !set.allowed(identifier) {
 		set.mu.Unlock()
 		log.Printf("peer %s (%s) refused: not in this match", id, identifier)
 		return
@@ -228,6 +233,11 @@ func (set *peerSet) ensure(id, identifier string) {
 	set.byAddress[address] = p
 	team, planned := set.teams[identifier]
 	set.mu.Unlock()
+	if spectator {
+		// the team table's mark for a spectator (port/server/src/server_link.c)
+		team, planned = spectatorTeam, true
+		log.Printf("peer %s (%s) watches", id, identifier)
+	}
 	if planned {
 		if err := set.link.setTeam(address, team); err != nil {
 			log.Printf("peer %s: team not sent: %v", id, err)

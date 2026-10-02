@@ -87,6 +87,8 @@ type roomPeer struct {
 	Identifier string `json:"identifier"`
 	PeerID     string `json:"peerId"`
 	Role       string `json:"role"`
+	// watching, not playing: the server refuses it a player
+	Spectator bool `json:"spectator,omitempty"`
 }
 
 type roomMessage struct {
@@ -395,7 +397,7 @@ func (r *room) ensure(peer roomPeer) {
 	if peer.Role != "guest" || peer.PeerID == self {
 		return
 	}
-	go r.peers.ensure(peer.PeerID, peer.Identifier)
+	go r.peers.ensure(peer.PeerID, peer.Identifier, peer.Spectator)
 }
 
 // waitingCount is how many guests asked to join in the last ten seconds.

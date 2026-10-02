@@ -576,6 +576,37 @@ export class Matchmaker extends DurableObject<Env> {
     };
   }
 
+  /* The matches for SOL on now, for anyone to watch. */
+  async liveMatches(now: number): Promise<Array<{
+    id: string; playlist: string; label: string; mapIndex: number; modeIndex: number; players: number;
+    matchState: string | null; ageSeconds: number;
+  }>> {
+    this.sweep(now);
+    return this.ctx.storage.sql.exec<{ id: string; playlist: string; map_index: number; mode_index: number;
+      roster: string; match_state: string | null; created_at: number }>(
+      `SELECT id, playlist, map_index, mode_index, roster, match_state, created_at FROM matches
+        WHERE state = 'ready' AND stake IS NOT NULL ORDER BY created_at DESC LIMIT 20`,
+    ).toArray().map((match) => ({
+      id: match.id,
+      playlist: match.playlist,
+      label: isPlaylist(match.playlist) ? PLAYLISTS[match.playlist].label : match.playlist,
+      mapIndex: match.map_index,
+      modeIndex: match.mode_index,
+      players: (JSON.parse(match.roster) as string[]).length,
+      matchState: match.match_state,
+      ageSeconds: Math.round((now - match.created_at) / 1000),
+    }));
+  }
+
+  /* A match's invite, for a spectator's place in its room; null when it is
+     not on. */
+  async spectateInvite(matchId: string): Promise<string | null> {
+    const match = this.ctx.storage.sql.exec<{ state: string; invite_code: string | null }>(
+      "SELECT state, invite_code FROM matches WHERE id = ?", matchId,
+    ).toArray()[0];
+    return match && match.state === "ready" ? match.invite_code : null;
+  }
+
   /* The server has opened its private room: the players may join. */
   async matchReady(serverId: string, matchId: string, roomId: string, inviteCode: string, now: number): Promise<boolean> {
     const match = this.match(matchId);

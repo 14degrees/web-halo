@@ -74,6 +74,12 @@ unsigned char network_lobby_background_start(long map_index);
 void network_lobby_background_update(float seconds);
 void network_lobby_background_stop(void);
 void network_lobby_debug_spawn(float seconds);
+unsigned char network_lobby_spectating(void);
+void network_lobby_spectate(unsigned char on);
+void network_lobby_spectate_next(void);
+void network_lobby_spectate_update(float seconds);
+void network_lobby_spectate_hold_scores(unsigned char hold);
+void network_lobby_spectate_target_name(char *out);
 #endif
 long halo_screen_width(void);
 
@@ -847,6 +853,15 @@ static void add_primary_player_when_ready(
 {
 	if (!client || web_online.player_added)
 		return;
+#ifdef HALO_WEB
+	/* a spectator watches: no player of its own (network_lobby.c) */
+	if (network_lobby_spectating())
+	{
+		web_online.player_added = WEB_TRUE;
+		platform_log("web online: watching, with no player");
+		return;
+	}
+#endif
 	if (network_game_client_has_local_player(client, 0))
 	{
 		web_online.player_added = WEB_TRUE;
@@ -1054,6 +1069,7 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 		}
 		network_lobby_background_update(seconds);
 		network_lobby_debug_spawn(seconds);
+		network_lobby_spectate_update(seconds);
 		atomic_store_explicit(&web_background_state, (int)network_lobby_background_state(), memory_order_release);
 	}
 #endif
@@ -1137,6 +1153,33 @@ static atomic_int web_wager_sequence = ATOMIC_VAR_INIT(0);
 
 /* where the page writes the table: rows of a 12-byte name and a 12-byte
 label, then a 48-byte footer, each NUL-terminated */
+#ifdef HALO_WEB
+/* Watching (a spectator): on before joining, off to play; the next player
+to follow; whose view it is; the scores held up (Tab) */
+EMSCRIPTEN_KEEPALIVE void platform_web_spectate(int on)
+{
+	network_lobby_spectate(on ? 1 : 0);
+}
+
+EMSCRIPTEN_KEEPALIVE void platform_web_spectate_next(void)
+{
+	network_lobby_spectate_next();
+}
+
+EMSCRIPTEN_KEEPALIVE char const *platform_web_spectate_target(void)
+{
+	static char name[16];
+
+	network_lobby_spectate_target_name(name);
+	return name;
+}
+
+EMSCRIPTEN_KEEPALIVE void platform_web_spectate_scores(int hold)
+{
+	network_lobby_spectate_hold_scores(hold ? 1 : 0);
+}
+#endif
+
 /* The scores, while the scoreboard shows (JSON: network_lobby.c); the page
 draws them (port/web/online_client.js) */
 long network_lobby_scoreboard_json(char *out, long size);

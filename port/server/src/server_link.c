@@ -488,6 +488,28 @@ int server_link_game_persistent(void)
 	return link_persistent;
 }
 
+/* Whether a machine only watches: the gateway marks a spectator with team
+255 (services/game-server/gateway/peers.go). It is given no player. */
+int server_link_spectator_for_address(unsigned long address)
+{
+	uint32_t value = (uint32_t)address;
+	uint32_t swapped = (value >> 24) | ((value >> 8) & 0xFF00u) | ((value << 8) & 0xFF0000u) | (value << 24);
+	int spectator = 0;
+	int index;
+
+	pthread_mutex_lock(&link_team_mutex);
+	for (index = 0; index < link_team_count; index++)
+	{
+		if (link_teams[index].address == value || link_teams[index].address == swapped)
+		{
+			spectator = link_teams[index].team == 255;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&link_team_mutex);
+	return spectator;
+}
+
 /* the team planned for a machine by its address (either byte order, as the
 game may hold it), or -1 */
 int server_link_team_for_address(unsigned long address)

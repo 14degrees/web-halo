@@ -672,7 +672,7 @@ function sessionError(result: Extract<CreateSessionResult, { ok: false }>): Http
 async function mintSession(
   env: RuntimeEnv,
   roomId: string,
-  input: { buildId: string; identifier: string; protocolVersion: number; ticket?: string },
+  input: { buildId: string; identifier: string; protocolVersion: number; ticket?: string; spectator?: boolean },
   wallet?: string | null,
 ): Promise<CreateSessionResult> {
   return env.ROOMS.getByName(roomId).createSession({
@@ -682,8 +682,43 @@ async function mintSession(
     protocolVersion: input.protocolVersion,
     sessionTtlMs: sessionTtlMilliseconds(env),
     ...(input.ticket === undefined ? {} : { ticket: input.ticket }),
-    ...(wallet ? { wallet } : {}),
+    ...(wallet && !input.spectator ? { wallet } : {}),
+    ...(input.spectator ? { spectator: true } : {}),
   });
+}
+
+/* Watch a matchmade match (a match for SOL, say): a spectator's place in its
+   private room, by the invite the matchmaker keeps, which never leaves the
+   service. A spectator has no player in the game; the server refuses one. */
+async function spectateMatch(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+): Promise<Response> {
+  const body = await readJsonBody(request);
+  const parsed = parseQuickJoinInput(body);
+  if (!parsed.ok) throw new HttpError(400, "VALIDATION_FAILED", parsed.message);
+  const matchId = (body as Record<string, unknown>).matchId;
+  if (typeof matchId !== "string" || !/^[A-Za-z0-9_-]{6,64}$/u.test(matchId)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "matchId is required.");
+  }
+  const actorId = await requireAllowedActor(request, env);
+  const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
+  try {
+    await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "join_room");
+  } catch {
+    throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
+  }
+  const invite = await env.MATCHMAKER.getByName(MATCHMAKER_NAME).spectateInvite(matchId);
+  const separator = invite ? invite.indexOf(".") : -1;
+  if (!invite || separator <= 0) throw new HttpError(404, "MATCH_NOT_LIVE", "That match isn't on right now.");
+  const roomId = invite.slice(0, separator);
+  const result = await mintSession(env, roomId, {
+    ...parsed.value, ticket: invite.slice(separator + 1), spectator: true,
+  });
+  if (!result.ok) throw sessionError(result);
+  const response: QuickJoinResponse = { ...(await sessionResponse(request, env, roomId, actorId, result)), role: "guest" };
+  return withCors(jsonResponse(response, 201), origin);
 }
 
 async function sessionResponse(
@@ -762,6 +797,8 @@ async function quickJoin(
   const wallet = await walletForToken(env, parsed.value.walletToken);
   for (const candidate of candidates) {
     if (parsed.value.serversOnly && !candidate.dedicated) continue;
+    /* a spectator watches a server's game with someone in it */
+    if (parsed.value.spectator && (!candidate.dedicated || candidate.players === 0)) continue;
     if (parsed.value.modes && !parsed.value.modes.includes(candidate.modeIndex ?? 0)) continue;
     const result = await mintSession(env, candidate.roomId, parsed.value, wallet);
     if (result.ok) {
@@ -787,6 +824,9 @@ async function quickJoin(
   }
 
   /* click to play never makes a browser the host: the servers are busy */
+  if (parsed.value.spectator) {
+    throw new HttpError(404, "NOTHING_TO_WATCH", "Nobody is playing on the public servers right now.");
+  }
   if (parsed.value.serversOnly) {
     throw new HttpError(503, "NO_PUBLIC_SERVER", "Every server is full right now. Try again in a moment.");
   }
@@ -951,6 +991,17 @@ async function handleMatchmaking(
       return withCors(jsonResponse({ cancelled, v: SIGNALING_PROTOCOL_VERSION }), origin);
     }
   }
+  /* the matches on now that can be watched (those for SOL) */
+  if (request.method === "GET" && url.pathname === "/v1/live") {
+    const matches = await env.MATCHMAKER.getByName(MATCHMAKER_NAME).liveMatches(Date.now());
+    return withCors(jsonResponse({ matches, v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/spectate") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "session-create");
+    await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
+    return spectateMatch(request, env, origin);
+  }
+
   if (request.method === "GET" && url.pathname === "/v1/playlists") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
     const playlists = await matchmaker(env).playlists(now);

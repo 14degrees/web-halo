@@ -96,6 +96,8 @@ export interface QuickJoinInput {
   serversOnly?: boolean;
   /* ... playing one of these game types (LOBBY_MODE_COUNT) */
   modes?: number[];
+  /* to watch, not play */
+  spectator?: boolean;
 }
 
 export interface SessionDescriptor {
@@ -423,6 +425,7 @@ export function parseQuickJoinInput(
       ...walletTokenField(value.walletToken),
       ...(value.serversOnly === true ? { serversOnly: true } : {}),
       ...(modes ? { modes } : {}),
+      ...(value.spectator === true ? { spectator: true } : {}),
     },
   };
 }

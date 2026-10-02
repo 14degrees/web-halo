@@ -16,5 +16,6 @@ int server_link_game_persistent(void);
 
 /* the team the matchmaker planned for a machine, by its address, or -1 */
 int server_link_team_for_address(unsigned long address);
+int server_link_spectator_for_address(unsigned long address);
 
 #endif

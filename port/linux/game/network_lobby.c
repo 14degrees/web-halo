@@ -18,6 +18,7 @@ headers, so it calls these through plain prototypes.
 #include "networking/network_game_manager.h"
 #include "networking/network_server_manager.h"
 #include "objects/objects.h"
+#include "units/units.h"
 #include "camera/observer.h"
 #include "camera/director.h"
 #ifdef HALO_WEB
@@ -711,5 +712,216 @@ long network_lobby_scoreboard_json(
 		at = scoreboard_put(out, size, at, number);
 	}
 	return scoreboard_put(out, size, at, "]}");
+}
+#endif
+
+#ifdef HALO_WEB
+/* ---------- watching (a spectator)
+
+A spectator's machine has no player in the game (the server refuses it one:
+port/server/src/server_link.c). The camera follows a player from behind and
+above, along their aim, kept out of walls; the page asks for the next one
+(a click) and shows whose view it is. The director and observer run local
+player 0's camera without a player (camera/director.c, camera/observer.c,
+main/main.c: network_lobby_spectating). */
+
+#define SPECTATE_BACK 2.4f
+#define SPECTATE_UP 0.55f
+#define SPECTATE_EYE 0.62f
+
+static struct
+{
+	boolean on;
+	long target;
+	boolean placed;
+	boolean hold_scores;
+	real_point3d position;
+} lobby_spectator;
+
+boolean network_lobby_spectating(
+	void)
+{
+	return lobby_spectator.on;
+}
+
+void network_lobby_spectate(
+	boolean on)
+{
+	csmemset(&lobby_spectator, 0, sizeof(lobby_spectator));
+	lobby_spectator.on = on;
+	lobby_spectator.target = NONE;
+	lobby_preview_active = on;
+	platform_log("network lobby: %s", on ? "watching, not playing" : "playing");
+}
+
+void network_lobby_spectate_hold_scores(
+	boolean hold)
+{
+	lobby_spectator.hold_scores = hold;
+}
+
+/* a player alive in the game, with a body to follow */
+static boolean spectate_followable(
+	long player_index)
+{
+	struct player_datum *player = player_index != NONE ? player_try_and_get(player_index) : NULL;
+
+	return player && !player->quit_out_of_game && player->unit_index != NONE &&
+		object_try_and_get(player->unit_index) &&
+		!TEST_FLAG(object_get(player->unit_index)->object.damage_flags, _object_dead_bit);
+}
+
+/* the next player to follow after the current one (any, when none) */
+void network_lobby_spectate_next(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	long first = NONE;
+	boolean passed = lobby_spectator.target == NONE;
+
+	if (!lobby_spectator.on || !game_engine_running())
+		return;
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		if (!spectate_followable(iterator.datum_index))
+			continue;
+		if (first == NONE)
+			first = iterator.datum_index;
+		if (passed)
+		{
+			lobby_spectator.target = iterator.datum_index;
+			lobby_spectator.placed = FALSE;
+			return;
+		}
+		if (iterator.datum_index == lobby_spectator.target)
+			passed = TRUE;
+	}
+	if (first != NONE && first != lobby_spectator.target)
+		lobby_spectator.placed = FALSE;
+	lobby_spectator.target = first;
+}
+
+/* whose view it is, for the page ("" for nobody yet) */
+void network_lobby_spectate_target_name(
+	char *out)
+{
+	out[0] = 0;
+	if (lobby_spectator.on && lobby_spectator.target != NONE && player_try_and_get(lobby_spectator.target))
+		lobby_name(out, player_get(lobby_spectator.target));
+}
+
+void network_lobby_spectate_update(
+	float seconds)
+{
+	struct object_datum *object;
+	struct unit_datum *unit;
+	real_point3d eye;
+	real_point3d desired;
+	real_vector3d aim;
+	real_vector3d flat;
+	real_vector3d back;
+	real_vector3d forward;
+	real length;
+
+	if (!lobby_spectator.on || !game_engine_running())
+		return;
+	if (lobby_spectator.hold_scores)
+		network_lobby_scoreboard_shown(1.0f, FALSE);
+	scripted_show_hud(FALSE);
+	scripted_show_hud_help_text(FALSE);
+	player_input_enable(FALSE);
+	lobby_preview_active = TRUE;
+	/* the one followed died or left: hold the view a moment, then the next */
+	if (!spectate_followable(lobby_spectator.target))
+	{
+		network_lobby_spectate_next();
+		if (lobby_spectator.target == NONE)
+			return;
+	}
+	unit = unit_get(player_get(lobby_spectator.target)->unit_index);
+	object = (struct object_datum *)unit;
+	eye = object->object.position;
+	/* riding: the vehicle's place */
+	if (object->object.parent_object_index != NONE && object_try_and_get(object->object.parent_object_index))
+		eye = object_get(object->object.parent_object_index)->object.position;
+	eye.z += SPECTATE_EYE;
+	aim = unit->unit.aiming_vector;
+	length = (real)sqrt(aim.i * aim.i + aim.j * aim.j + aim.k * aim.k);
+	/* (no aim yet, before they have moved: the way their body faces) */
+	if (length < 0.001f)
+	{
+		aim = object->object.forward;
+		length = (real)sqrt(aim.i * aim.i + aim.j * aim.j + aim.k * aim.k);
+	}
+	if (length < 0.001f)
+	{
+		aim.i = 1.0f;
+		aim.j = 0.0f;
+		aim.k = 0.0f;
+	}
+	else
+	{
+		aim.i /= length;
+		aim.j /= length;
+		aim.k /= length;
+	}
+	flat.i = aim.i;
+	flat.j = aim.j;
+	flat.k = 0.0f;
+	length = (real)sqrt(flat.i * flat.i + flat.j * flat.j);
+	if (length < 0.001f)
+	{
+		flat.i = 1.0f;
+		flat.j = 0.0f;
+	}
+	else
+	{
+		flat.i /= length;
+		flat.j /= length;
+	}
+	/* behind and above, short of any wall */
+	back.i = -flat.i * SPECTATE_BACK;
+	back.j = -flat.j * SPECTATE_BACK;
+	back.k = SPECTATE_UP;
+	{
+		struct collision_result collision;
+		unsigned long flags = FLAG(_collision_test_structure_bit) | FLAG(_collision_test_front_facing_surfaces_bit);
+		real reach = 1.0f;
+
+		if (collision_test_vector(flags, &eye, &back, NONE, &collision))
+			reach = collision.t > 0.15f ? collision.t - 0.1f : 0.05f;
+		desired.x = eye.x + back.i * reach;
+		desired.y = eye.y + back.j * reach;
+		desired.z = eye.z + back.k * reach;
+	}
+	if (!lobby_spectator.placed)
+	{
+		lobby_spectator.position = desired;
+		lobby_spectator.placed = TRUE;
+	}
+	else
+	{
+		real follow = seconds * 12.0f;
+
+		if (follow > 1.0f)
+			follow = 1.0f;
+		lobby_spectator.position.x += (desired.x - lobby_spectator.position.x) * follow;
+		lobby_spectator.position.y += (desired.y - lobby_spectator.position.y) * follow;
+		lobby_spectator.position.z += (desired.z - lobby_spectator.position.z) * follow;
+	}
+	/* looking where they look */
+	forward.i = eye.x + aim.i * 8.0f - lobby_spectator.position.x;
+	forward.j = eye.y + aim.j * 8.0f - lobby_spectator.position.y;
+	forward.k = eye.z + aim.k * 8.0f - lobby_spectator.position.z;
+	length = (real)sqrt(forward.i * forward.i + forward.j * forward.j + forward.k * forward.k);
+	if (length > 0.001f)
+	{
+		forward.i /= length;
+		forward.j /= length;
+		forward.k /= length;
+	}
+	director_preview_camera(&lobby_spectator.position, &forward);
 }
 #endif

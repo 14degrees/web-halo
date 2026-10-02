@@ -1761,7 +1761,20 @@ void network_game_server_handle_client_update_packet(
 #ifdef HALO_SERVER
 /* port/server/src/server_link.c */
 int server_link_team_for_address(unsigned long address);
+int server_link_spectator_for_address(unsigned long address);
 int server_link_game_persistent(void);
+
+/* a machine that only watches (a spectator): no player of its own */
+static boolean server_client_machine_is_spectator(
+	struct network_game_server_client_machine const *machine)
+{
+	struct transport_address address;
+
+	if (!machine->connection)
+		return FALSE;
+	network_connection_get_address(machine->connection, &address, FALSE);
+	return server_link_spectator_for_address(address.address.long_words[0]) ? TRUE : FALSE;
+}
 #endif
 
 boolean network_game_server_add_player_to_game(
@@ -1776,6 +1789,13 @@ boolean network_game_server_add_player_to_game(
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x46D, machine);
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x46E, player);
 
+#ifdef HALO_SERVER
+	if (server_client_machine_is_spectator(machine))
+	{
+		network_event("refused a player from machine #%d: it only watches", machine->machine_index);
+		return FALSE;
+	}
+#endif
 	if (machine->machine_index == player->machine_index)
 	{
 #ifdef HALO_SERVER
@@ -2161,6 +2181,9 @@ boolean server_has_a_player_on_each_machine(
 
 #ifdef HALO_SERVER
 			if (!has_a_player && server_client_machine_is_local(client_machine))
+				has_a_player = TRUE;
+			/* a spectator has none, and the game need not wait for one */
+			if (!has_a_player && server_client_machine_is_spectator(client_machine))
 				has_a_player = TRUE;
 #endif
 			if (!has_a_player)

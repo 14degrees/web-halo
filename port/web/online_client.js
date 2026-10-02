@@ -766,6 +766,7 @@
     return {
       peerId: value.peerId, role: value.role, profile: profile,
       matches: typeof value.matches === "number" && value.matches >= 0 ? value.matches : null,
+      spectator: value.spectator === true,
     };
   }
 
@@ -2168,6 +2169,7 @@
   }
 
   function resetSessionState() {
+    if (session.spectating) setSpectating(false);
     session.active = false;
     session.matchmade = false;
     session.role = null;
@@ -2789,6 +2791,13 @@
     /* what the fullest public server is playing; paused, your own game */
     var servers = publicServers();
     var room = servers[0];
+    /* something to watch: a public game with players in it */
+    var watchButton = lobbyElement("landing-watch");
+    if (watchButton) {
+      var watchable = !lobby.paused && session.runtimeReady && !session.active && !lobby.joining &&
+        servers.some(function(entry) { return (entry.players || 0) > 0; });
+      if (watchButton.hidden === watchable) watchButton.hidden = !watchable;
+    }
     if (lobby.paused && session.room && session.room.lobby) room = session.room.lobby;
     if (room) {
       var mapName = selectedLabel(elements.map, Number(room.mapIndex)) || "Blood Gulch";
@@ -2862,7 +2871,88 @@
     seamlessQuickJoin();
   }
 
-  async function seamlessQuickJoin() {
+  /* ---------- watching (a spectator): a public server's game, or a match
+     for SOL, with no player of one's own; the game follows a player from
+     behind (port/linux/game/network_lobby.c) */
+
+  function setSpectating(on) {
+    session.spectating = !!on;
+    var watch = global.Module && global.Module._platform_web_spectate;
+    if (typeof watch === "function") watch(on ? 1 : 0);
+    if (on) document.body.dataset.spectate = "true";
+    else delete document.body.dataset.spectate;
+    var layer = byId("spectate");
+    if (layer && !on) layer.hidden = true;
+  }
+
+  function readWasmString(pointer) {
+    if (!pointer || typeof HEAPU8 === "undefined") return "";
+    var text = "";
+    for (var index = pointer; HEAPU8[index] && text.length < 64; index++) text += String.fromCharCode(HEAPU8[index]);
+    return text;
+  }
+
+  function renderSpectate() {
+    var layer = byId("spectate");
+    if (!layer) return;
+    if (layer.hidden) layer.hidden = false;
+    var target = global.Module && global.Module._platform_web_spectate_target;
+    var name = typeof target === "function" ? readWasmString(target()) : "";
+    var element = byId("spectate-name");
+    var text = name || "Waiting for a player…";
+    if (element && element.textContent !== text) element.textContent = text;
+  }
+
+  function stopSpectating() {
+    lobby.wantsPlay = false;
+    cancelQueue();
+    leave(false).catch(function() {});
+  }
+
+  /* watch: the fullest public game (options.matchId: that match for SOL) */
+  function landingSpectate(options) {
+    if (session.active || lobby.joining || !session.runtimeReady) return;
+    setLandingStatus("");
+    seamlessQuickJoin({ spectator: true, matchId: options && options.matchId });
+  }
+
+  /* the matches for SOL on now, for the lobby's Watch list */
+  var LIVE_REFRESH_MILLISECONDS = 6000;
+  function refreshLive() {
+    if (lobby.liveBusy || Date.now() - (lobby.liveAt || 0) < LIVE_REFRESH_MILLISECONDS) return;
+    lobby.liveBusy = true;
+    lobby.liveAt = Date.now();
+    fetchJson("/v1/live", { method: "GET" })
+      .then(function(result) { lobby.live = result && Array.isArray(result.matches) ? result.matches : []; })
+      .catch(function() { lobby.live = []; })
+      .then(function() { lobby.liveBusy = false; });
+  }
+
+  function renderLive() {
+    var root = lobbyElement("lobby-live");
+    var list = lobbyElement("lobby-live-list");
+    if (!root || !list) return;
+    var matches = (lobby.live || []).filter(function(match) { return match.matchState === "ingame" || match.matchState === "countdown"; });
+    root.hidden = matches.length === 0 || session.active;
+    var key = JSON.stringify(matches.map(function(match) { return [match.id, match.mapIndex, match.players]; }));
+    if (lobby.liveKey === key) return;
+    lobby.liveKey = key;
+    list.replaceChildren.apply(list, matches.slice(0, 6).map(function(match) {
+      var item = document.createElement("li");
+      var label = document.createElement("span");
+      label.textContent = match.label + " · " + (selectedLabel(elements.map, Number(match.mapIndex)) || "Halo") +
+        " · " + match.players + " players";
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Watch";
+      button.addEventListener("click", function() { landingSpectate({ matchId: match.id }); });
+      item.append(label, button);
+      return item;
+    }));
+  }
+
+  async function seamlessQuickJoin(options) {
+    options = options || {};
     if (session.active || lobby.joining) return;
     lobby.joining = true;
     lobby.quickPlay = true;
@@ -2887,12 +2977,16 @@
         identifier: localIdentifier(),
         serversOnly: true,
       };
-      if (wallet.token) request.walletToken = wallet.token;
-      var result = await fetchJson("/v1/quickjoin", { method: "POST", body: JSON.stringify(request) });
+      if (options.spectator) request.spectator = true;
+      if (options.matchId) request.matchId = options.matchId;
+      else if (wallet.token && !options.spectator) request.walletToken = wallet.token;
+      var result = await fetchJson(options.matchId ? "/v1/spectate" : "/v1/quickjoin",
+        { method: "POST", body: JSON.stringify(request) });
       requireCurrentOperation(operation);
       session.roomTicket = null;
+      if (options.spectator) setSpectating(true);
       await completeGuestJoin(result, operation);
-      telemetry("quick_play", "online");
+      telemetry(options.spectator ? "spectate" : "quick_play", "online");
     } catch (error) {
       if (operation === undefined || operation === session.operationGeneration) {
         lobby.quickPlay = false;
@@ -3327,6 +3421,8 @@
     if (session.room && session.room.dedicated) {
       players = players.filter(function(player) { return player.role !== "host"; });
     }
+    /* spectators watch; they are not in the match */
+    players = players.filter(function(player) { return !player.spectator; });
     /* Halo 3's roster: you, then open slots up to the playlist's size while
        the matchmaker looks for players */
     var playlist = (lobby.queue && playlistById(lobby.queue.playlist)) || selectedPlaylist();
@@ -3664,6 +3760,16 @@
 
     var prompt = lobbyElement("lobby-deploy");
     if (lobby.pendingQuickPlay && session.runtimeReady && !session.active) landingQuickPlay();
+    /* a link to watch a match (#watch=<match>), once Halo is up */
+    if (lobby.watchLink === undefined) {
+      var watchMatch = /(?:^|[#&])watch=([A-Za-z0-9_-]{6,64})/.exec(String(global.location && global.location.hash || ""));
+      lobby.watchLink = watchMatch ? watchMatch[1] : null;
+    }
+    if (lobby.watchLink && session.runtimeReady && !session.active && !lobby.joining && backdropState() !== 1) {
+      var watchId = lobby.watchLink;
+      lobby.watchLink = null;
+      landingSpectate({ matchId: watchId });
+    }
     /* a Quick Play game that has ended (left, or lost) is over: home again */
     if (lobby.quickPlay && !session.active && !lobby.joining) lobby.quickPlay = false;
     if (!publicPlay) {
@@ -3675,6 +3781,15 @@
     tickWager();
     renderWallet(inMatch);
     renderLobbyKind();
+    if (inMatch && session.spectating) {
+      setLobbyVisible(false);
+      setLandingVisible(false);
+      if (prompt) prompt.hidden = true;
+      var leaveWatch = lobbyElement("lobby-leave-game");
+      if (leaveWatch) leaveWatch.hidden = true;
+      renderSpectate();
+      return;
+    }
     if (inMatch) {
       setLobbyVisible(false);
       /* Esc in a match: the landing over the game, as Krunker's menu */
@@ -3720,6 +3835,8 @@
     tickBackdrop(false);
     setLandingVisible(false);
     setLobbyVisible(true);
+    refreshLive();
+    renderLive();
 
     var countdown = lobbyElement("lobby-countdown");
     var seconds = countdownSeconds();
@@ -4699,7 +4816,8 @@
     var emblems = scoreboardEmblems();
     var money = scoreboardMoney();
     var pings = session.pings || {};
-    var key = JSON.stringify([state.over, state.teams, state.red, state.blue, state.title, state.self, state.players, money, pings]);
+    var watchers = session.roster ? Array.from(session.roster.values()).filter(function(entry) { return entry.spectator; }).length : 0;
+    var key = JSON.stringify([state.over, state.teams, state.red, state.blue, state.title, state.self, state.players, money, pings, watchers]);
     if (root.hidden) root.hidden = false;
     if (key === scoreboard.key) return;
     scoreboard.key = key;
@@ -4715,7 +4833,10 @@
     /* the game type: Halo's own name for it, or the room's */
     var room = session.room && session.room.lobby;
     var title = state.title || (room ? selectedLabel(elements.mode, Number(room.modeIndex)) : "") || "Scores";
-    byId("scoreboard-title").textContent = state.over ? "Game over" : title;
+    /* who is watching (spectators: the room's roster) */
+    var watching = session.roster ? Array.from(session.roster.values()).filter(function(entry) { return entry.spectator; }).length : 0;
+    byId("scoreboard-title").textContent = (state.over ? "Game over" : title) +
+      (watching ? " · " + watching + " watching" : "");
     byId("scoreboard-tag-head").textContent = Object.keys(money).length ? "SOL" : "K/D";
     if (state.teams) {
       /* Halo's teams: 0 red, 1 blue; the leader first */
@@ -4974,10 +5095,30 @@
       setLandingStatus("");
     };
     lobbyElement("landing").addEventListener("click", function(event) {
-      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave")) return;
+      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave, .landing-watch")) return;
       if (lobby.paused) resumeGame();
       else landingQuickPlay();
     });
+    lobbyElement("landing-watch").addEventListener("click", function() { landingSpectate(); });
+    /* watching: a click follows the next player; Tab holds up the scores;
+       Esc leaves */
+    byId("spectate").addEventListener("click", function() {
+      var next = global.Module && global.Module._platform_web_spectate_next;
+      if (typeof next === "function") next();
+    });
+    var spectateKey = function(event) {
+      if (!session.spectating) return;
+      var scores = global.Module && global.Module._platform_web_spectate_scores;
+      if (event.key === "Tab") {
+        event.preventDefault();
+        if (typeof scores === "function") scores(event.type === "keydown" ? 1 : 0);
+      } else if (event.key === "Escape" && event.type === "keydown") {
+        event.preventDefault();
+        stopSpectating();
+      }
+    };
+    global.addEventListener("keydown", spectateKey);
+    global.addEventListener("keyup", spectateKey);
     lobbyElement("landing-quick").addEventListener("click", function() {
       if (lobby.paused) resumeGame();
       else landingQuickPlay();
