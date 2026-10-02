@@ -568,3 +568,41 @@ void network_lobby_background_stop(
 	platform_log("network lobby: backdrop over, back to the menu");
 }
 #endif
+
+#ifdef HALO_WEB
+/* ---------- diagnosing a player who never spawns ("Waiting for space to
+clear"): once local player 0 has had no unit in a network game for longer
+than any respawn, and every ten seconds after, the players this machine
+holds, and which is its own */
+void network_lobby_debug_spawn(
+	float seconds)
+{
+	static float since;
+	struct data_iterator iterator;
+	struct player_datum *player;
+	long local = local_player_get_player_index(0);
+
+	if (!global_network_game_client_get() || !game_engine_running() || local == NONE ||
+		player_get(local)->unit_index != NONE)
+	{
+		since = 0.0f;
+		return;
+	}
+	since += seconds;
+	if (since < 15.0f)
+		return;
+	since = 5.0f;
+	platform_log("spawn debug: local player %lx", local);
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		char name[12];
+
+		lobby_name(name, player);
+		platform_log("spawn debug:   %lx %s machine %d controller %d local %d unit %lx quit %d deaths %d respawn %ld",
+			iterator.datum_index, name, player->network_player_data.machine_index,
+			player->network_player_data.controller_index, player->local_player_index,
+			player->unit_index, player->quit_out_of_game, player->statistics.deaths, player->respawn_timer);
+	}
+}
+#endif

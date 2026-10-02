@@ -81,6 +81,8 @@ boolean network_game_distributed(
 	void);
 boolean network_game_distributed_client(
 	void);
+boolean network_game_client_player_in_game(
+	long absolute_index);
 #endif
 
 /* ---------- globals */

@@ -695,6 +695,16 @@
     /* the live map behind (the game's canvas): the page lets it show */
     #landing { transition: background-color 1s ease; }
     #landing[data-live] { background-color: transparent; }
+    /* the pause menu (Esc in a game): the game shows through, dimmed */
+    #landing[data-pause] { background-color: rgba(0, 0, 0, .38); }
+    #landing[data-pause] .landing-film { opacity: 0; }
+    .landing-leave {
+      position: absolute; top: clamp(1rem, 3vh, 2rem); left: clamp(1rem, 4vw, 3rem); z-index: 2;
+      padding: .5rem 1.1rem; border: 2px solid #ff7a6b; background: rgba(6, 10, 26, .72); color: #f2f5fa;
+      font-family: inherit; font-size: clamp(1rem, 1.5vw, 1.25rem); font-weight: 500; cursor: pointer;
+    }
+    .landing-leave[hidden] { display: none; }
+    .landing-leave:hover, .landing-leave:focus-visible { background: rgba(255, 122, 107, .22); outline: none; }
     /* the globe while the live map loads, fading out once it is up */
     .landing-film { transition: opacity 1s ease; }
     #landing[data-live] .landing-film { opacity: 0; }
@@ -2124,6 +2134,7 @@
   </main>
   <section id="landing" aria-label="Halo" hidden>
     <video class="lobby-film landing-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
+    <button id="landing-leave" class="landing-leave" type="button" hidden>Leave game</button>
     <div class="landing-brand">
       <strong>Halo</strong>
       <span>Combat Evolved · Online</span>
@@ -3433,7 +3444,9 @@
        before the game starts, so it runs ahead of SDL's window listeners. */
     ["keydown", "keyup", "keypress"].forEach((type) => {
       window.addEventListener(type, (event) => {
-        if (document.body.dataset.lobby === "open") event.stopImmediatePropagation();
+        /* Esc frees the mouse and opens the page's menu (online_client.js),
+           never Halo's own Start menu under it */
+        if (document.body.dataset.lobby === "open" || event.key === "Escape") event.stopImmediatePropagation();
       }, true);
     });
 

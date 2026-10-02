@@ -73,6 +73,7 @@ unsigned char network_lobby_background_active(void);
 unsigned char network_lobby_background_start(long map_index);
 void network_lobby_background_update(float seconds);
 void network_lobby_background_stop(void);
+void network_lobby_debug_spawn(float seconds);
 #endif
 long halo_screen_width(void);
 
@@ -1052,6 +1053,7 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 			network_lobby_background_start(request - 1);
 		}
 		network_lobby_background_update(seconds);
+		network_lobby_debug_spawn(seconds);
 		atomic_store_explicit(&web_background_state, (int)network_lobby_background_state(), memory_order_release);
 	}
 #endif

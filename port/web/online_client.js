@@ -2748,14 +2748,21 @@
     };
     var root = lobbyElement("landing");
     if (!root) return;
-    /* the live map shows through once the game has it up */
+    /* the live map shows through once the game has it up; paused, the game
+       itself is behind */
     var live = backdropState() === 2 && !session.active && !lobby.joining;
     if (live) root.dataset.live = "true";
     else delete root.dataset.live;
+    if (lobby.paused) root.dataset.pause = "true";
+    else delete root.dataset.pause;
+    setText("landing-quick", lobby.paused ? "Resume" : "Quick Play");
+    var leaveLink = lobbyElement("landing-leave");
+    if (leaveLink) leaveLink.hidden = !lobby.paused;
     var busy = lobby.quickPlay && (session.active || lobby.joining);
     if (busy) root.dataset.busy = "true";
     else delete root.dataset.busy;
-    setText("landing-play-text", busy ? "Dropping in…" : session.runtimeReady ? "Click to play" : "Loading Halo…");
+    setText("landing-play-text", lobby.paused ? "Click to play" :
+      busy ? "Dropping in…" : session.runtimeReady ? "Click to play" : "Loading Halo…");
     var status = lobby.landingStatus || { text: "" };
     var statusText = status.text || (lobby.pendingQuickPlay && !session.runtimeReady ?
       "You'll drop in as soon as Halo has loaded." : "");
@@ -2765,15 +2772,16 @@
       if (status.tone) statusElement.dataset.tone = status.tone;
       else delete statusElement.dataset.tone;
     }
-    /* what the fullest public server is playing */
+    /* what the fullest public server is playing; paused, your own game */
     var servers = (lobby.listing || []).filter(function(room) { return room.dedicated; });
     var room = servers[0];
+    if (lobby.paused && session.room && session.room.lobby) room = session.room.lobby;
     if (room) {
       var mapName = selectedLabel(elements.map, Number(room.mapIndex)) || "Blood Gulch";
       var modeName = selectedLabel(elements.mode, Number(room.modeIndex)) || "Slayer";
       setText("landing-now", "Now playing: " + modeName + " on " + mapName);
       var playing = servers.reduce(function(sum, entry) { return sum + (entry.players || 0); }, 0);
-      setText("landing-now-detail", playing === 0 ? "Servers ready, be the first in" :
+      setText("landing-now-detail", lobby.paused ? "Paused · Esc menu" : playing === 0 ? "Servers ready, be the first in" :
         playing + (playing === 1 ? " player" : " players") + " online");
     } else {
       setText("landing-now", "Now playing: Slayer");
@@ -3450,6 +3458,16 @@
     }
   }
 
+  /* back into the game from the pause menu: the keys and the mouse are the
+     game's again */
+  function resumeGame() {
+    lobby.paused = false;
+    var landing = lobbyElement("landing");
+    if (landing) landing.hidden = true;
+    document.body.dataset.lobby = "closed";
+    deploy();
+  }
+
   function deploy() {
     var prompt = lobbyElement("lobby-deploy");
     if (prompt) prompt.hidden = true;
@@ -3627,6 +3645,17 @@
     renderLobbyKind();
     if (inMatch) {
       setLobbyVisible(false);
+      /* Esc in a match: the landing over the game, as Krunker's menu */
+      if (lobby.deployed && !mouseCaptured()) {
+        lobby.paused = true;
+        if (prompt) prompt.hidden = true;
+        var leaveNow = lobbyElement("lobby-leave-game");
+        if (leaveNow) leaveNow.hidden = true;
+        setLandingVisible(true);
+        renderLanding();
+        return;
+      }
+      lobby.paused = false;
       setLandingVisible(false);
       /* Whenever the mouse is free during a match, one click takes it back. */
       if (prompt) {
@@ -4750,15 +4779,36 @@
     lobbyElement("lobby-wallet-signout").addEventListener("click", signOutWallet);
     /* the landing */
     var showLobby = function(kind) {
+      if (lobby.paused) {
+        lobby.paused = false;
+        lobby.wantsPlay = false;
+        cancelQueue();
+        leave(false);
+      }
       lobby.screen = "lobby";
       if (kind) lobby.kind = kind;
       setLandingStatus("");
     };
     lobbyElement("landing").addEventListener("click", function(event) {
-      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize")) return;
-      landingQuickPlay();
+      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave")) return;
+      if (lobby.paused) resumeGame();
+      else landingQuickPlay();
     });
-    lobbyElement("landing-quick").addEventListener("click", function() { landingQuickPlay(); });
+    lobbyElement("landing-quick").addEventListener("click", function() {
+      if (lobby.paused) resumeGame();
+      else landingQuickPlay();
+    });
+    /* from the pause menu, the other ways to play leave this game first */
+    var leaveMatch = function() {
+      lobby.paused = false;
+      lobby.wantsPlay = false;
+      cancelQueue();
+      leave(false);
+    };
+    lobbyElement("landing-leave").addEventListener("click", function() {
+      leaveMatch();
+      lobby.screen = "landing";
+    });
     lobbyElement("landing-matchmaking").addEventListener("click", function() { showLobby("matchmaking"); });
     lobbyElement("landing-custom").addEventListener("click", function() {
       showLobby("custom");

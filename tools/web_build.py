@@ -327,6 +327,8 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         "-sSTACK_SIZE=5242880",
         "-sDEFAULT_PTHREAD_STACK_SIZE=2097152",
         "-sEXIT_RUNTIME=0",
+        # function names for reading a crash's stack (halo.js.symbols, not published)
+        "--emit-symbol-map",
         f"-sASSERTIONS={assertions}",
         "-sENVIRONMENT=web,worker",
         "-sERROR_ON_UNDEFINED_SYMBOLS=1",

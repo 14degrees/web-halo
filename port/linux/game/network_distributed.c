@@ -37,6 +37,7 @@ machine (their datum identifiers need not be).
 #include "game/game.h"
 #include "game/players.h"
 #include "networking/network_game_globals.h"
+#include "networking/network_messages.h"
 #include "objects/objects.h"
 #include "objects/damage.h"
 #include "units/units.h"
@@ -84,6 +85,8 @@ enum
 	_distributed_unit_shield_depleted_bit,
 	_distributed_unit_shield_charging_bit,
 	_distributed_unit_shield_over_charging_bit,
+	/* the state names its player's machine and controller */
+	_distributed_unit_identified_bit,
 };
 
 /* struct distributed_unit_state unit flags */
@@ -114,7 +117,10 @@ struct distributed_unit_state
 	/* the vehicle it rides and its seat, NONE for none */
 	long vehicle_index;
 	short seat_index;
-	short pad1;
+	/* whose player this is (identified): a machine that joined a game in
+	progress numbers its players its own way (distributed_learn_player) */
+	byte machine_index;
+	byte controller_index;
 	real_point3d position;
 	real_vector3d velocity;
 	real_vector3d forward;
@@ -257,7 +263,66 @@ void distributed_send_to_machine_reliably(
 	network_distributed_server_send_to_machine_reliably(machine_index, message, size);
 }
 
-struct player_datum *distributed_player(
+/* Players cross the network by the host's index for them. The host numbers
+players in the order it made them, and keeps those who left; a machine that
+joined a game in progress made its own afresh, so with anyone gone the two
+disagree. A client learns the host's index for each of its players from the
+unit states, which name each player's machine and controller
+(distributed_learn_player), and translates every index that crosses. */
+/* (this machine's index + 1; 0 for not known, the same index) */
+static short distributed_host_to_local[MAXIMUM_TRACKED_PLAYERS];
+
+/* (a client) whether the host names its players at all (an older host
+doesn't) */
+static boolean distributed_host_names_players;
+
+static void distributed_forget_players(
+	void)
+{
+	csmemset(distributed_host_to_local, 0, sizeof(distributed_host_to_local));
+	distributed_host_names_players = FALSE;
+}
+
+/* (a client) the host's index for a player as this machine has it */
+static short distributed_local_from_host(
+	short host_index)
+{
+	if (game_connection() == _game_connection_network_client &&
+		host_index >= 0 && host_index < MAXIMUM_TRACKED_PLAYERS)
+	{
+		short index;
+
+		if (distributed_host_to_local[host_index])
+			return distributed_host_to_local[host_index] - 1;
+		/* not known: the same index here, unless that is another of the
+		host's players here */
+		for (index = 0; index < MAXIMUM_TRACKED_PLAYERS; index++)
+		{
+			if (distributed_host_to_local[index] == host_index + 1)
+				return NONE;
+		}
+	}
+	return host_index;
+}
+
+static short distributed_host_from_local(
+	short local_index)
+{
+	if (game_connection() == _game_connection_network_client)
+	{
+		short index;
+
+		for (index = 0; index < MAXIMUM_TRACKED_PLAYERS; index++)
+		{
+			if (distributed_host_to_local[index] == local_index + 1)
+				return index;
+		}
+	}
+	return local_index;
+}
+
+/* this machine's player at an absolute index */
+static struct player_datum *distributed_local_player(
 	short player_index)
 {
 	struct player_datum *player;
@@ -268,18 +333,66 @@ struct player_datum *distributed_player(
 	return player->identifier ? player : NULL;
 }
 
+/* the player the host means by an index */
+struct player_datum *distributed_player(
+	short player_index)
+{
+	return distributed_local_player(distributed_local_from_host(player_index));
+}
+
 byte distributed_player_to_byte(
 	long player_index)
 {
-	return player_index != NONE ? (byte)DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index) : NO_PLAYER;
+	return player_index != NONE ?
+		(byte)distributed_host_from_local((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index)) : NO_PLAYER;
 }
 
 long distributed_player_from_byte(
 	byte player_index)
 {
-	struct player_datum *player = player_index != NO_PLAYER ? distributed_player(player_index) : NULL;
+	short local_index = player_index != NO_PLAYER ? distributed_local_from_host(player_index) : NONE;
+	struct player_datum *player = local_index != NONE ? distributed_local_player(local_index) : NULL;
 
-	return player ? DATUM_INDEX_NEW(player_index, player->identifier) : NONE;
+	return player ? DATUM_INDEX_NEW(local_index, player->identifier) : NONE;
+}
+
+/* (a client) a unit state names its player: which of this machine's players
+the host's index is */
+static void distributed_learn_player(
+	struct distributed_unit_state const *state)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	short index;
+
+	if (!TEST_FLAG(state->flags, _distributed_unit_identified_bit) || state->player_index >= MAXIMUM_TRACKED_PLAYERS)
+		return;
+	distributed_host_names_players = TRUE;
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		if (!player->quit_out_of_game && player->quit_out_of_game_time == NONE &&
+			(byte)player->network_player_data.machine_index == state->machine_index &&
+			(byte)player->network_player_data.controller_index == state->controller_index)
+		{
+			short local_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index);
+
+			if (distributed_host_to_local[state->player_index] == local_index + 1)
+				return;
+			for (index = 0; index < MAXIMUM_TRACKED_PLAYERS; index++)
+			{
+				if (distributed_host_to_local[index] == local_index + 1)
+					distributed_host_to_local[index] = 0;
+			}
+			distributed_host_to_local[state->player_index] = local_index + 1;
+			if (local_index != state->player_index)
+			{
+				network_event("distributed: the host's player #%d is #%d here",
+					(int)state->player_index, (int)local_index);
+			}
+			return;
+		}
+	}
 }
 
 boolean distributed_player_is_local(
@@ -325,11 +438,19 @@ static void distributed_state_from_player(
 	short player_index,
 	struct distributed_unit_state *state)
 {
-	struct player_datum *player = distributed_player(player_index);
+	struct player_datum *player = distributed_local_player(player_index);
 	long unit_index = distributed_living_unit(player);
 
 	csmemset(state, 0, sizeof(*state));
-	state->player_index = (byte)player_index;
+	state->player_index = (byte)distributed_host_from_local(player_index);
+	/* (not a player who left: their machine's number may be someone's now) */
+	if (player && !player->quit_out_of_game && player->quit_out_of_game_time == NONE &&
+		network_game_client_player_in_game(player_index))
+	{
+		state->machine_index = (byte)player->network_player_data.machine_index;
+		state->controller_index = (byte)player->network_player_data.controller_index;
+		SET_FLAG(state->flags, _distributed_unit_identified_bit, TRUE);
+	}
 	state->unit_index = NONE;
 	state->vehicle_index = NONE;
 	state->seat_index = NONE;
@@ -478,21 +599,29 @@ static void distributed_handle_unit_states(
 	for (index = 0; index < count; index++)
 	{
 		struct distributed_unit_state const *state = &states[index];
-		struct player_datum *player = distributed_player(state->player_index);
+		struct player_datum *player;
+		short local_index;
 		long player_index;
 		long unit_index;
 		boolean alive = TEST_FLAG(state->flags, _distributed_unit_alive_bit);
 		boolean local;
 
+		distributed_learn_player(state);
+		/* a host that names its players leaves unnamed only those who left
+		the game: nobody here */
+		if (distributed_host_names_players && !TEST_FLAG(state->flags, _distributed_unit_identified_bit))
+			continue;
+		player = distributed_player(state->player_index);
 		if (!player)
 			continue;
-		player_index = DATUM_INDEX_NEW(state->player_index, player->identifier);
+		local_index = distributed_local_from_host(state->player_index);
+		player_index = DATUM_INDEX_NEW(local_index, player->identifier);
 		local = player->local_player_index != NONE;
 		/* how it died, for when this machine's copy dies
 		(network_distributed_player_killed) */
-		if (state->player_index < MAXIMUM_TRACKED_PLAYERS)
+		if (local_index < MAXIMUM_TRACKED_PLAYERS)
 		{
-			struct distributed_death *death = &distributed_deaths[state->player_index];
+			struct distributed_death *death = &distributed_deaths[local_index];
 
 			death->valid = !alive;
 			death->killing_player_index = state->killing_player_index != NO_PLAYER ?
@@ -536,7 +665,7 @@ static void distributed_handle_unit_states(
 				unit->object.parent_object_index : NONE;
 			boolean same = vehicle_index == state->vehicle_index &&
 				(vehicle_index == NONE || unit->unit.parent_seat_index == state->seat_index);
-			short *disagreement = &distributed_seat_disagreements[state->player_index];
+			short *disagreement = &distributed_seat_disagreements[local_index];
 
 			if (same)
 				*disagreement = 0;
@@ -612,14 +741,16 @@ void network_distributed_player_killed(
 	}
 	else if (game_connection() == _game_connection_network_client && death->valid)
 	{
-		struct player_datum *killing_player = death->killing_player_index != NONE ?
-			distributed_player(death->killing_player_index) : NULL;
+		short killing_local_index = death->killing_player_index != NONE ?
+			distributed_local_from_host(death->killing_player_index) : NONE;
+		struct player_datum *killing_player = killing_local_index != NONE ?
+			distributed_local_player(killing_local_index) : NULL;
 
 		*friendly_fire = death->friendly_fire;
 		*killing_player_index = NONE;
 		if (killing_player)
 		{
-			*killing_player_index = DATUM_INDEX_NEW(death->killing_player_index, killing_player->identifier);
+			*killing_player_index = DATUM_INDEX_NEW(killing_local_index, killing_player->identifier);
 			*killing_object_index = killing_player->unit_index;
 		}
 		/* (an empty vehicle's: the one that did it, the same object here) */
@@ -774,6 +905,7 @@ void network_distributed_new_game(
 	distributed_last_sent_time = NONE;
 	csmemset(distributed_deaths, 0, sizeof(distributed_deaths));
 	csmemset(distributed_seat_disagreements, 0, sizeof(distributed_seat_disagreements));
+	distributed_forget_players();
 	distributed_statistics_due = FALSE;
 	distributed_pickup_count = 0;
 	network_objects_new_game();

@@ -949,6 +949,32 @@ void network_game_client_game_out_of_sync(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* (the distributed netcode) whether a player is still in the network game:
+one whose machine left keeps their player, in the game but not in the
+network game's list */
+boolean network_game_client_player_in_game(
+	long absolute_index)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	long network_player_index;
+
+	if (!client)
+		return TRUE;
+	for (network_player_index = 0; network_player_index < MAXIMUM_NUMBER_OF_PLAYERS; network_player_index++)
+	{
+		struct network_player const *player = &client->game.players[network_player_index];
+
+		if (network_player_is_valid(player) &&
+			DATUM_INDEX_TO_ABSOLUTE_INDEX(unstrip_player_index(player->player_list_index)) == absolute_index)
+		{
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+#endif
+
 long unstrip_player_index(
 	long player_index)
 {
@@ -2089,6 +2115,9 @@ boolean network_game_client_add_player_to_game(
 	struct network_player *player)
 {
 	boolean success = FALSE;
+#ifdef HALO_LINUX
+	struct network_player incoming;
+#endif
 
 	match_assert(
 		"c:\\halo\\SOURCE\\networking\\network_client_manager.c",
@@ -2097,13 +2126,64 @@ boolean network_game_client_add_player_to_game(
 
 	if (network_player_is_valid(player))
 	{
+#ifdef HALO_LINUX
+		/* a player of the machine that had this number before, still listed:
+		it left as the game started, and the word of it was lost to the
+		start. It has quit; the number is the new machine's now. */
+		{
+			long network_player_index;
+
+			for (network_player_index = 0; network_player_index < MAXIMUM_NUMBER_OF_PLAYERS; network_player_index++)
+			{
+				struct network_player *stale = &client->game.players[network_player_index];
+
+				if (network_player_is_valid(stale) &&
+					stale->machine_index == player->machine_index &&
+					stale->controller_index == player->controller_index)
+				{
+					long stale_index = unstrip_player_index(stale->player_list_index);
+
+					if (stale_index != NONE && client->state == _network_game_client_state_ingame &&
+						player_get(stale_index)->quit_out_of_game_time == NONE)
+					{
+						player_get(stale_index)->quit_out_of_game_time = game_time_get();
+					}
+					network_event("a stale player of machine #%d left the game list", (int)player->machine_index);
+					network_game_remove_player(&client->game, stale);
+					break;
+				}
+			}
+		}
+		/* (this machine's list has its own order: the player takes its first
+		free slot here, whatever slot it has on the server) */
+		incoming = *player;
+		incoming.player_list_index = NONE;
+		player = &incoming;
+#endif
 		success = network_game_add_player(&client->game, player);
 
 		if (success)
 		{
 			if (client->state == _network_game_client_state_ingame)
 			{
+#ifdef HALO_LINUX
+				/* (the slot it took: the first free one, not always the last) */
+				long network_player_index;
+
+				for (network_player_index = 0; network_player_index < MAXIMUM_NUMBER_OF_PLAYERS; network_player_index++)
+				{
+					if (network_player_is_valid(&client->game.players[network_player_index]) &&
+						client->game.players[network_player_index].machine_index == player->machine_index &&
+						client->game.players[network_player_index].controller_index == player->controller_index)
+					{
+						break;
+					}
+				}
+				player = &client->game.players[network_player_index < MAXIMUM_NUMBER_OF_PLAYERS ?
+					network_player_index : client->game.player_count - 1];
+#else
 				player = &client->game.players[client->game.player_count - 1];
+#endif
 
 				success = network_game_spawn_player(player);
 
