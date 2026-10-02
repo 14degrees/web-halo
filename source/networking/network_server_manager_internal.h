@@ -44,6 +44,18 @@ boolean network_game_server_client_machine_is_joined_to_game(
 boolean network_game_server_accept_client_machine_into_game(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *client_machine);
+#ifdef HALO_SERVER
+/* port: a dedicated server takes machines into a game in progress
+(port/server/README.md, joining in progress) */
+boolean network_game_server_join_in_progress_allowed(
+	struct network_game_server *server);
+boolean network_game_server_client_machine_takes_game_traffic(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *machine);
+void network_game_server_client_machine_loaded_in_progress(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *machine);
+#endif
 boolean network_game_server_add_player_to_game(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *client_machine,

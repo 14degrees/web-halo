@@ -654,6 +654,17 @@ static boolean update_client_dequeue_distributed(
 }
 
 #endif
+#ifdef HALO_LINUX
+/* A client that joined a game in progress: its updates are numbered from
+where the server's game is. */
+void update_client_join_in_progress(
+	long update_number)
+{
+	update_client_globals.next_update_number_to_dequeue = update_number;
+	update_client_globals.latest_update_number_received = update_number - 1;
+}
+#endif
+
 boolean update_client_dequeue(
 	struct player_action *actions)
 {

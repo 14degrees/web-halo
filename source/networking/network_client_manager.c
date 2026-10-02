@@ -1717,6 +1717,19 @@ boolean network_game_client_handle_game_update(
 		message_packet->local_player_count = client->game.player_count;
 	}
 
+#ifdef HALO_LINUX
+	/* a machine that joined a game in progress (a dedicated server's): the
+	server's updates start where its game is, not at 0. The distributed
+	netcode's machines keep their own clocks, so only the numbering moves. */
+	if (network_game_distributed() && client->next_update_number == 0 && !client->last_update_time &&
+		message_packet->update_number > 0)
+	{
+		network_event("joined a game in progress at update #%ld", message_packet->update_number);
+		client->next_update_number = message_packet->update_number;
+		update_client_join_in_progress(message_packet->update_number);
+	}
+#endif
+
 	if (message_packet->update_number != client->next_update_number)
 	{
 		network_event(

@@ -632,6 +632,20 @@ static boolean network_game_server_write(
 
 /* ---------- public code */
 
+/* Whether a machine gets the game's broadcasts: a machine in the game, or,
+on a dedicated server's game in progress, one that has finished loading
+(network_server_manager.c, joining in progress). */
+static boolean network_game_server_client_machine_takes_traffic(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *machine)
+{
+#ifdef HALO_SERVER
+	return network_game_server_client_machine_takes_game_traffic(server, machine);
+#else
+	return network_game_server_client_machine_is_joined_to_game(server, machine);
+#endif
+}
+
 boolean network_game_server_send_message_to_machine(
 	struct network_game_server *server,
 	struct network_machine *machine,
@@ -674,7 +688,7 @@ boolean network_distributed_server_send_to_all(
 		struct network_game_server_client_machine *machine =
 			network_game_server_get_client_machine_at_index(server, machine_index);
 
-		if (network_game_server_client_machine_is_joined_to_game(server, machine))
+		if (network_game_server_client_machine_takes_traffic(server, machine))
 		{
 			struct network_connection *connection = network_game_server_get_client_connection(machine);
 			byte buffer[NETWORK_MESSAGE_BUFFER_SIZE];
@@ -719,7 +733,7 @@ boolean network_distributed_server_send_to_machine_reliably(
 		struct network_connection *connection;
 		long game_machine_index;
 
-		if (!network_game_server_client_machine_is_joined_to_game(server, machine))
+		if (!network_game_server_client_machine_takes_traffic(server, machine))
 			continue;
 		network_game_server_get_client_machine(server, machine, &game_machine_index);
 		if (game_machine_index != machine_index)
@@ -750,7 +764,7 @@ boolean network_distributed_server_send_to_all_reliably(
 		struct network_game_server_client_machine *machine =
 			network_game_server_get_client_machine_at_index(server, machine_index);
 
-		if (network_game_server_client_machine_is_joined_to_game(server, machine))
+		if (network_game_server_client_machine_takes_traffic(server, machine))
 		{
 			struct network_connection *connection = network_game_server_get_client_connection(machine);
 			byte buffer[NETWORK_MESSAGE_BUFFER_SIZE];
@@ -786,7 +800,7 @@ boolean network_game_server_send_message_to_all_machines(
 		struct network_game_server_client_machine *machine =
 			network_game_server_get_client_machine_at_index(server, machine_index);
 
-		if (network_game_server_client_machine_is_joined_to_game(server, machine))
+		if (network_game_server_client_machine_takes_traffic(server, machine))
 		{
 			struct network_connection *connection =
 				network_game_server_get_client_connection(machine);
@@ -978,6 +992,56 @@ boolean network_game_server_send_game_data_pregame(
 
 	return network_game_server_flush_game_data_pregame(server);
 }
+
+#ifdef HALO_SERVER
+/* (as network_server_manager.c has it) */
+struct message_server_begin_game
+{
+	long unused;
+};
+
+/* A machine joining a game in progress gets the game's settings (as pieces)
+and the begin message, alone: it loads the map and plays in. */
+static boolean network_game_server_send_game_in_progress(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *client_machine)
+{
+	struct network_machine *machine = network_game_server_get_client_machine(server, client_machine, NULL);
+	struct network_game *game = network_game_server_get_game(server);
+	struct message_server_game_settings_update message;
+	struct message_server_begin_game begin_game;
+	void *encoded_message;
+	long offset;
+	boolean result = TRUE;
+
+	if (!machine || !game)
+		return FALSE;
+	for (offset = 0; offset < (long)sizeof(*game); offset += sizeof(message.data))
+	{
+		message.total_size = (word)sizeof(*game);
+		message.offset = (word)offset;
+		message.length = (word)MIN((long)sizeof(message.data), (long)sizeof(*game) - offset);
+		message.pad = 0;
+		csmemset(message.data, 0, sizeof(message.data));
+		csmemcpy(message.data, (byte const *)game + offset, message.length);
+		encoded_message = create_network_game_message(
+			_message_server_game_settings_update,
+			&message,
+			sizeof(message));
+		if (!encoded_message || !network_game_server_send_message_to_machine(server, machine, encoded_message))
+			result = FALSE;
+	}
+	csmemset(&begin_game, 0, sizeof(begin_game));
+	encoded_message = create_network_game_message(
+		_message_server_begin_game,
+		&begin_game,
+		sizeof(begin_game));
+	if (!encoded_message || !network_game_server_send_message_to_machine(server, machine, encoded_message))
+		result = FALSE;
+	network_event("sent the game in progress to a joining machine%s", result ? "" : " (a piece failed)");
+	return result;
+}
+#endif
 #else
 boolean network_game_server_send_game_data_pregame(
 	struct network_game_server *server)
@@ -1628,8 +1692,12 @@ static boolean network_game_server_handle_message_client_join_game_request(
 	short message_size)
 {
 	boolean result = TRUE;
+	boolean in_progress = FALSE;
 
-	if (network_game_server_get_state(server, NULL) == _network_game_server_state_pregame)
+#ifdef HALO_SERVER
+	in_progress = network_game_server_join_in_progress_allowed(server);
+#endif
+	if (network_game_server_get_state(server, NULL) == _network_game_server_state_pregame || in_progress)
 	{
 		struct message_client_join_game_request join_game_request;
 		short packet_type = _message_client_join_game_request;
@@ -1654,7 +1722,7 @@ static boolean network_game_server_handle_message_client_join_game_request(
 				network_game_server_get_client_connection(server_client_machine),
 				&source_address,
 				FALSE);
-			if (network_game_server_get_state(server, NULL) == _network_game_server_state_pregame &&
+			if ((network_game_server_get_state(server, NULL) == _network_game_server_state_pregame || in_progress) &&
 				network_game_server_game_is_open(server))
 			{
 				byte join_game_token[JOIN_GAME_TOKEN_LENGTH];
@@ -1772,7 +1840,15 @@ static boolean network_game_server_handle_message_client_join_game_request(
 										machine_index);
 								}
 
-								if (result == TRUE)
+								if (result == TRUE && in_progress)
+								{
+#ifdef HALO_SERVER
+									/* a game in progress: its settings and the
+									begin message, to this machine alone */
+									result = network_game_server_send_game_in_progress(server, server_client_machine);
+#endif
+								}
+								else if (result == TRUE)
 								{
 									result = network_game_server_send_game_data_pregame(server);
 									if (!result)
@@ -2274,6 +2350,13 @@ static boolean network_game_server_handle_message_client_loaded(
 			result = FALSE;
 		}
 	}
+#ifdef HALO_SERVER
+	else if (network_game_server_join_in_progress_allowed(server))
+	{
+		/* a machine that joined the game in progress has loaded it */
+		network_game_server_client_machine_loaded_in_progress(server, client_machine);
+	}
+#endif
 	else
 	{
 		network_event(

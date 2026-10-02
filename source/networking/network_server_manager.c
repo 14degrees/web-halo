@@ -1600,6 +1600,46 @@ void network_game_server_all_machines_have_loaded(
 	return;
 }
 
+#ifdef HALO_SERVER
+/* A dedicated server runs its game for whoever comes and goes: a machine
+may join while the game is on. The server sends it the game's settings and
+the begin message alone; once it has loaded, it takes the game's traffic,
+gets the objects as they are (network_objects_client_ready), and adds its
+player in game. Only with the distributed netcode, whose machines keep their
+own clocks. */
+boolean network_game_server_join_in_progress_allowed(
+	struct network_game_server *server)
+{
+	/* in game, or about to be: the begin message has gone out and the
+	machines are loading */
+	return server && network_game_distributed() &&
+		(server->state == _network_game_server_state_ingame ||
+			(server->state == _network_game_server_state_pregame && server->sent_start_game_message));
+}
+
+/* Whether a machine gets the game's traffic now: in game, only once it has
+loaded (one still loading the map would take an update as out of sync). */
+boolean network_game_server_client_machine_takes_game_traffic(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *machine)
+{
+	if (!network_game_server_client_machine_is_joined_to_game(server, machine))
+		return FALSE;
+	if (server->state != _network_game_server_state_ingame)
+		return TRUE;
+	return TEST_FLAG(machine->flags, _network_client_machine_level_loaded_bit);
+}
+
+void network_game_server_client_machine_loaded_in_progress(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *machine)
+{
+	(void)server;
+	SET_FLAG(machine->flags, _network_client_machine_level_loaded_bit, TRUE);
+	network_event("machine #%d loaded into the game in progress", machine->machine_index);
+}
+#endif
+
 void network_game_server_client_machine_game_loading_complete(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *machine)
@@ -1666,12 +1706,21 @@ void network_game_server_handle_client_update_packet(
 
 	if (TEST_FLAG(message_packet->update_number, _client_update_out_of_sync_bit))
 	{
+#ifdef HALO_SERVER
+		/* a dedicated server's game is everyone's: one machine out of sync
+		(one that joined late, say) does not end it for the others */
+		network_event(
+			"client machine #%d says it is out of sync @ game tick #%ld; the game goes on",
+			machine->machine_index,
+			game_time_get());
+#else
 		network_event(
 			"client machine #%d is out of sync @ game tick #%ld; switching to post-game",
 			machine->machine_index,
 			game_time_get());
 
 		game_engine_switch_to_postgame();
+#endif
 	}
 	else if ((message_packet->update_number & CLIENT_UPDATE_SEQUENCE_NUMBER_MASK) <
 		machine->last_received_update_sequence_number)
@@ -3460,6 +3509,11 @@ static boolean network_game_server_idle_pregame_tasks(
 				network_game_server_have_all_machines_have_precached(server) &&
 				server->countdown_state.paused == FALSE)
 			{
+#ifdef HALO_SERVER
+				/* a dedicated server's game stays open: machines join it in
+				progress */
+				if (!network_game_distributed())
+#endif
 				network_game_server_close_game(server);
 				if ((success = network_game_server_start_network_game(server)) != TRUE)
 					network_event("network_game_server_start_network_game() failed");
