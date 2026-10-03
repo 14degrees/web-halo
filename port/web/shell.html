@@ -1186,9 +1186,16 @@
     .sb-gap { height: .55em; }
     .sb-self { border-color: rgba(230, 236, 245, .75); }
     .sb-ping { text-align: center; font-size: .82em; color: #cfd6e2; }
-    .sb-ping[data-tone="good"] { color: #8fe3a0; }
-    .sb-ping[data-tone="fair"] { color: #ffd65a; }
-    .sb-ping[data-tone="poor"] { color: #ff8a7a; }
+    /* a ping's colors, everywhere one shows (online_client.js, pingTone) */
+    .sb-ping[data-tone="good"], .ping[data-tone="good"], #lobby-ping[data-tone="good"], #landing-ping[data-tone="good"] { color: #8fe3a0; }
+    .sb-ping[data-tone="fair"], .ping[data-tone="fair"], #lobby-ping[data-tone="fair"], #landing-ping[data-tone="fair"] { color: #ffd65a; }
+    .sb-ping[data-tone="poor"], .ping[data-tone="poor"], #lobby-ping[data-tone="poor"], #landing-ping[data-tone="poor"] { color: #ff8a7a; }
+    .ping[hidden], #lobby-ping[hidden], #landing-ping[hidden] { display: none; }
+    #lobby-players li .ping { font-size: .8rem; letter-spacing: .04em; white-space: nowrap; }
+    .player-row .ping { margin-left: .4rem; font-size: .78rem; white-space: nowrap; }
+    #lobby-ping::before { content: " · "; color: #c9d4e6; }
+    .landing-ping { white-space: nowrap; }
+    .landing-now-side { display: flex; gap: 1rem; white-space: nowrap; }
     .sb-quit { color: rgba(241, 243, 246, .4); }
     .sb-quit .sb-tag { color: rgba(207, 214, 226, .35); }
     .kill-pop { position: absolute; transform: translate(-50%, -100%); will-change: left, top; }
@@ -2243,7 +2250,10 @@
     <div class="landing-bar">
       <div class="landing-now">
         <span id="landing-now">Now playing: Slayer</span>
-        <span id="landing-now-detail" class="landing-now-detail"></span>
+        <span class="landing-now-side">
+          <span id="landing-now-detail" class="landing-now-detail"></span>
+          <span id="landing-ping" class="landing-ping" title="Ping" hidden></span>
+        </span>
       </div>
       <nav class="landing-modes" aria-label="Ways to play">
         <button id="landing-quick" class="landing-mode" data-tone="quick" type="button">Quick Play</button>
@@ -2269,7 +2279,7 @@
       <nav class="lobby-menu" aria-label="Matchmaking">
         <div class="lobby-info">
           <button id="lobby-switch" class="lobby-menu-item" type="button">Switch Lobby</button>
-          <p class="lobby-menu-item lobby-menu-static">Network: <span id="lobby-network">Online</span></p>
+          <p class="lobby-menu-item lobby-menu-static">Network: <span id="lobby-network">Online</span><span id="lobby-ping" title="Ping" hidden></span></p>
           <button id="lobby-party-code" class="lobby-menu-item" type="button" hidden>Party: <span id="lobby-party-code-text"></span></button>
           <button id="lobby-playlist-open" class="lobby-menu-item" type="button">Playlist: <span id="lobby-playlist">Team Doubles</span></button>
           <button id="lobby-game-open" class="lobby-menu-item lobby-pick" type="button" hidden>Game: <span id="lobby-game">Slayer</span></button>

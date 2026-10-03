@@ -20,6 +20,26 @@ Newest ideas first within each part. Commit hashes are on
   resume, or go elsewhere (it leaves the match first). Halo's own pause
   menu no longer opens under it. (`eeea0e4`)
 
+## Ping, before a match
+
+- **Your ping on the landing and in the lobby**, in the scoreboard's colors
+  (green under 80 ms, yellow under 150). Outside a room the page times a
+  few small requests to the signaling Worker (`GET /v1/ping`), which lists
+  where else to probe: one URL per game region (`PING_TARGETS`; the
+  gateway's `GET /ping`, exposed over HTTPS by `fly/fly.toml`). The nearest
+  region shows, the rest in the readout's tooltip. *Why:* a player should
+  know what to expect before they queue, and the probe, by region id, is
+  what region-aware matchmaking will need. In a room, a guest's ping is
+  WebRTC's measure to the host or server.
+- **Pings in player-hosted rooms too.** A browser host now measures each
+  player over WebRTC every two seconds and tells the room, as a dedicated
+  server's gateway does, so the lobby's player list, the friends sidebar
+  and the scoreboard show them in every room. The lobby lists each
+  player's ping next to their name.
+- Code: `port/web/online_client.js` (`refreshPing`, `tickPeerPings`),
+  `services/signaling/src/index.ts` (`pingTargets`),
+  `services/game-server/gateway/main.go` (`statusMux`).
+
 ## Spectating
 
 - **Through the CDN, a few seconds behind** (`618e097`). While anyone

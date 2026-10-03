@@ -364,6 +364,49 @@ function allowedOrigin(request: Request, env: RuntimeEnv): string | null {
   return normalized;
 }
 
+/* Where the page probes its ping to the game: one target per region, from
+   PING_TARGETS (a JSON list of {id, label, url}; the gateway answers GET
+   /ping, services/game-server/gateway/main.go). A broken setting lists
+   nothing rather than failing the page. Region-aware matchmaking can later
+   take the page's measurements by these ids. */
+export interface PingTarget {
+  id: string;
+  label: string;
+  url: string;
+}
+
+const PING_TARGET_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/u;
+
+export function pingTargets(setting: string | undefined): PingTarget[] {
+  if (!setting) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(setting);
+  } catch {
+    console.warn(JSON.stringify({ message: "PING_TARGETS is not valid JSON" }));
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const targets: PingTarget[] = [];
+  for (const entry of parsed.slice(0, 16)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { id, label, url } = entry as Record<string, unknown>;
+    if (typeof id !== "string" || !PING_TARGET_ID_PATTERN.test(id)) continue;
+    if (typeof label !== "string" || label.length < 1 || label.length > 40) continue;
+    if (typeof url !== "string") continue;
+    let probe: URL;
+    try {
+      probe = new URL(url);
+    } catch {
+      continue;
+    }
+    if (probe.protocol !== "https:" && probe.protocol !== "http:") continue;
+    if (targets.some((target) => target.id === id)) continue;
+    targets.push({ id, label, url: probe.href });
+  }
+  return targets;
+}
+
 function withCors(response: Response, origin: string | null): Response {
   if (origin === null || response.status === 101) {
     return response;
@@ -1020,6 +1063,13 @@ async function handleMatchmaking(
     return spectateMatch(request, env, origin);
   }
 
+  if (request.method === "GET" && url.pathname === "/v1/ping") {
+    /* The page's ping before a match (port/web/online_client.js,
+       refreshPing): a round trip to this Worker, and where else to probe,
+       one URL per game region. Nothing to compute, so it is not rate
+       limited beyond the page's own pace. */
+    return withCors(jsonResponse({ ok: true, targets: pingTargets(env.PING_TARGETS), v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
   if (request.method === "GET" && url.pathname === "/v1/playlists") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
     const playlists = await matchmaker(env).playlists(now);
