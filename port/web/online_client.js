@@ -1756,8 +1756,10 @@
     updateLocalRoster();
     session.inviteCode = result.invite && result.invite.code;
     if (!session.inviteCode) throw new Error("The room did not return an invite.");
-    session.inviteUrl = result.invite && result.invite.url ?
-      result.invite.url : makeInviteUrl(session.inviteCode);
+    /* Keep the visible host and path that the player opened. This lets the
+       same signaling service support a staged origin without leaking its
+       canonical production URL into preview invites. */
+    session.inviteUrl = makeInviteUrl(session.inviteCode);
     showInvite();
     session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
     configureTransport(session.iceServers);

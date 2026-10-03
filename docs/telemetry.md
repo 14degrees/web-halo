@@ -24,6 +24,7 @@ export CLOUDFLARE_API_TOKEN=...
 node tools/halo_telemetry.mjs fps 24
 node tools/halo_telemetry.mjs campaign 24
 node tools/halo_telemetry.mjs runtime 24
+node tools/halo_telemetry.mjs crashes 24
 node tools/halo_telemetry.mjs turn 7
 ```
 
@@ -73,9 +74,16 @@ raw logs. It shows whether a session reached the renderer, initialized the
 runtime, presented frames, connected a controller, entered an online state or
 started/completed a map load. Slow and stalled startup/map events include the
 normalized GPU class, role, direct/relay class, Halo client state and elapsed
-time. It deliberately excludes player names, room codes, raw error text, full
-GPU strings and network addresses. Query it with
-`node tools/halo_telemetry.mjs runtime 24`.
+time. The first fatal error in each page session also includes a stable
+fingerprint of a locally sanitized error, a coarse category, the top function
+name, page visibility, cross-origin isolation, SharedArrayBuffer, WebGL and
+Gamepad capability classes, plus coarse CPU-thread and device-memory hints.
+Repeated errors after the first fatal failure are suppressed. It deliberately
+excludes player names, room codes, raw error text, stack traces, URLs, full GPU
+strings and network addresses. Each deployed asset set receives a content-hash
+build ID so regressions can be attributed to a specific rollout. Query normal
+lifecycle events with `node tools/halo_telemetry.mjs runtime 24` and grouped
+crash fingerprints with `node tools/halo_telemetry.mjs crashes 24`.
 
 The `halo_web_campaign_loads` dataset receives one summary when a streamed
 campaign load finishes or the page exits. It does not contain player names or

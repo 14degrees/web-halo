@@ -7,6 +7,7 @@
   <meta name="halo-signaling-url" content="https://halo-signaling.lilchocobo2.workers.dev">
   <meta name="halo-build-id" content="web-multiplayer-v1">
   <meta name="halo-turnstile-sitekey" content="">
+  <script src="coi-serviceworker.js"></script>
   <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2703,6 +2704,8 @@
     let runtimeGpuClass = "unknown";
     let runtimeRole = "offline";
     let runtimeConnection = "unknown";
+    let runtimeFirstFailureSent = false;
+    let runtimeCapabilities = null;
     let runtimeMapLoad = null;
     let runtimeOnlineState = null;
     let runtimeClientState = null;
@@ -2777,8 +2780,86 @@
       return renderer ? "other" : "unknown";
     }
 
+    function detectWebglCapability() {
+      try {
+        const probe = document.createElement("canvas");
+        for (const name of ["webgl2", "webgl"]) {
+          const context = probe.getContext(name);
+          if (!context) continue;
+          const extension = context.getExtension("WEBGL_lose_context");
+          if (extension) extension.loseContext();
+          return name;
+        }
+      } catch (_error) {
+        // Capability telemetry must never interfere with startup.
+      }
+      return "unavailable";
+    }
+
+    function runtimeCapabilitySnapshot() {
+      if (runtimeCapabilities) return runtimeCapabilities;
+      runtimeCapabilities = Object.freeze({
+        isolation: self.crossOriginIsolated === true ? "isolated" : "not-isolated",
+        sharedMemory: typeof SharedArrayBuffer === "function" ? "available" : "unavailable",
+        webgl: detectWebglCapability(),
+        gamepadApi: typeof navigator.getGamepads === "function" ? "available" : "unavailable",
+        hardwareConcurrency: Number.isFinite(navigator.hardwareConcurrency)
+          ? navigator.hardwareConcurrency : 0,
+        deviceMemoryGb: Number.isFinite(navigator.deviceMemory) ? navigator.deviceMemory : 0,
+      });
+      return runtimeCapabilities;
+    }
+
+    function normalizeTelemetryError(value) {
+      return String(value || "unknown error")
+        .toLowerCase()
+        .replace(/\b(?:https?|blob|file):\/\/\S+/gu, "<url>")
+        .replace(/\b(?:chrome|moz|safari|ms-browser)-extension:\/\/\S+/gu, "<extension>")
+        .replace(/\b(?:0x)?[0-9a-f]{8,}\b/gu, "<id>")
+        .replace(/\b\d+(?:[.:]\d+)*\b/gu, "#")
+        .replace(/\s+/gu, " ")
+        .trim()
+        .slice(0, 320);
+    }
+
+    function telemetryHash(value) {
+      let first = 0x811c9dc5;
+      let second = 0x9e3779b1;
+      for (let index = 0; index < value.length; index++) {
+        const code = value.charCodeAt(index);
+        first = Math.imul(first ^ code, 0x01000193);
+        second = Math.imul(second ^ code, 0x85ebca6b);
+      }
+      return `${(first >>> 0).toString(16).padStart(8, "0")}${
+        (second >>> 0).toString(16).padStart(8, "0")}`;
+    }
+
+    function classifyRuntimeError(value) {
+      const message = normalizeTelemetryError(value);
+      if (/out of memory|cannot enlarge memory|webassembly\.memory|memory access out of bounds|allocation failed/u.test(message)) return "wasm-memory";
+      if (/sharedarraybuffer|cross.origin|atomics|pthread|emscripten_proxy_async/u.test(message)) return "threading";
+      if (/getgamepads|gamepad|joystick/u.test(message)) return "gamepad";
+      if (/webgl|gl_invalid|graphics context|renderer/u.test(message)) return "graphics";
+      if (/audiocontext|audio worklet|audio device|scriptprocessor/u.test(message)) return "audio";
+      if (/failed to fetch|networkerror|load failed|network request/u.test(message)) return "network";
+      if (/securityerror|not allowed|permission denied/u.test(message)) return "permission";
+      if (/runtimeerror|unreachable|abort/u.test(message)) return "wasm-runtime";
+      if (/typeerror|is not a function|cannot read propert/u.test(message)) return "javascript-type";
+      return "unknown";
+    }
+
+    function telemetryTopFrame(source) {
+      for (const line of String(source || "").split("\n")) {
+        const match = line.match(/^\s*at\s+(?:async\s+)?([A-Za-z_$][\w$.:~-]*)/u) ||
+          line.match(/^\s*([A-Za-z_$][\w$.:~-]*)@/u);
+        if (match) return match[1].slice(0, 64);
+      }
+      return "none";
+    }
+
     function sendRuntimeTelemetry(event, stage = runtimeStage, details = {}) {
       if (/^(localhost|127\.0\.0\.1)$/u.test(location.hostname)) return;
+      const capabilities = runtimeCapabilitySnapshot();
       const payload = JSON.stringify({
         sessionId: telemetrySessionId,
         buildId: telemetryBuildId(),
@@ -2798,6 +2879,17 @@
         viewportWidth: innerWidth,
         viewportHeight: innerHeight,
         dpr: devicePixelRatio || 1,
+        errorCategory: details.errorCategory || "none",
+        errorFingerprint: details.errorFingerprint || "none",
+        errorTopFrame: details.errorTopFrame || "none",
+        visibility: ["visible", "hidden", "prerender"].includes(document.visibilityState)
+          ? document.visibilityState : "unknown",
+        isolation: capabilities.isolation,
+        sharedMemory: capabilities.sharedMemory,
+        webgl: capabilities.webgl,
+        gamepadApi: capabilities.gamepadApi,
+        hardwareConcurrency: capabilities.hardwareConcurrency,
+        deviceMemoryGb: capabilities.deviceMemoryGb,
         platform: navigator.userAgentData && navigator.userAgentData.platform
           ? navigator.userAgentData.platform : (navigator.platform || "unknown"),
         mobile: Boolean(navigator.userAgentData && navigator.userAgentData.mobile),
@@ -2813,6 +2905,19 @@
       fetch("/v1/telemetry/runtime", {
         method: "POST", body: payload, headers: { "Content-Type": "application/json" }, keepalive: true,
       }).catch(() => {});
+    }
+
+    function sendRuntimeFailure(event, reason, source = "") {
+      if (runtimeFirstFailureSent) return;
+      runtimeFirstFailureSent = true;
+      const message = reason && reason.message ? reason.message : String(reason || "unknown error");
+      const name = reason && reason.name ? reason.name : "Error";
+      const normalized = normalizeTelemetryError(`${name}: ${message}`);
+      sendRuntimeTelemetry(event, runtimeStage, {
+        errorCategory: classifyRuntimeError(normalized),
+        errorFingerprint: telemetryHash(`${normalized}|${telemetryTopFrame(source)}`),
+        errorTopFrame: telemetryTopFrame(source),
+      });
     }
 
     window.HaloTelemetry = Object.freeze({
@@ -3651,7 +3756,7 @@
       },
       onAbort(reason) {
         diagnostic(`abort: ${reason}`);
-        sendRuntimeTelemetry("runtime_abort", runtimeStage);
+        sendRuntimeFailure("runtime_abort", reason);
         setStatus(`Aborted: ${reason || "the runtime stopped"}`);
       },
     };
@@ -3683,7 +3788,7 @@
         return;
       }
       diagnostic(source || message);
-      sendRuntimeTelemetry("runtime_error", runtimeStage);
+      sendRuntimeFailure("runtime_error", event.error || message, source);
       setStatus(`Could not start: ${message}`);
     });
     window.addEventListener("unhandledrejection", event => {
@@ -3699,7 +3804,7 @@
         return;
       }
       diagnostic(source || message);
-      sendRuntimeTelemetry("runtime_error", runtimeStage);
+      sendRuntimeFailure("runtime_error", event.reason || message, source);
       setStatus(`Could not start: ${message}`);
     });
   </script>

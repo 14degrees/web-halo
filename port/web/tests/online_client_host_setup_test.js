@@ -184,7 +184,10 @@ const context = {
               websocketUrl: 'wss://signal.example/v1/socket',
             },
           },
-          invite: { code: 'room.1234567890abcdef' },
+          invite: {
+            code: 'room.1234567890abcdef',
+            url: 'https://canonical.example/#join=room.1234567890abcdef',
+          },
           iceServers: [],
         };
       },
@@ -351,7 +354,7 @@ vm.runInContext(
   assert.equal(elements['player-count'].textContent, '1/128');
   assert.equal(elements['player-count']['aria-label'], 'Players in room: 1 of 128');
   assert.match(elements['invite-link'].value,
-    /#join=room\.1234567890abcdef$/);
+    /^https:\/\/halo\.example\/halo\.html#join=room\.1234567890abcdef$/);
 
   elements['invite-copy'].listeners.click();
   await Promise.resolve();

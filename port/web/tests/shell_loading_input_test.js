@@ -21,6 +21,8 @@ const worker = fs.readFileSync(
   path.join(repository, 'services', 'web', 'src', 'index.js'), 'utf8');
 const wrangler = fs.readFileSync(
   path.join(repository, 'services', 'web', 'wrangler.jsonc'), 'utf8');
+const stageCloudflare = fs.readFileSync(
+  path.join(repository, 'tools', 'web_stage_cloudflare.py'), 'utf8');
 
 const loading = shell.match(/<section id="loading"[\s\S]*?<\/section>/);
 assert(loading, 'missing loading overlay');
@@ -149,6 +151,46 @@ assert.match(worker, /RUNTIME_ROUTE = "\/v1\/telemetry\/runtime"[\s\S]*?RUNTIME_
   'the Worker must accept runtime telemetry');
 assert.match(wrangler, /"binding": "RUNTIME_TELEMETRY"[\s\S]*?"dataset": "halo_web_runtime"/,
   'runtime telemetry needs an Analytics Engine binding');
+assert.match(shell,
+  /function sendRuntimeFailure\([\s\S]*?runtimeFirstFailureSent[\s\S]*?errorFingerprint[\s\S]*?errorTopFrame/,
+  'runtime failures must be deduplicated and fingerprinted before upload');
+assert.match(shell,
+  /errorCategory:[\s\S]*?visibility:[\s\S]*?isolation:[\s\S]*?sharedMemory:[\s\S]*?webgl:[\s\S]*?gamepadApi:[\s\S]*?hardwareConcurrency:[\s\S]*?deviceMemoryGb:/,
+  'runtime telemetry must include privacy-safe capability context');
+assert.doesNotMatch(shell,
+  /errorMessage:\s*|errorStack:\s*/,
+  'runtime telemetry must never upload raw messages or stack traces');
+assert.match(worker,
+  /env\.RUNTIME_TELEMETRY\.writeDataPoint\([\s\S]*?errorCategory,[\s\S]*?errorFingerprint,[\s\S]*?errorTopFrame,[\s\S]*?hardwareConcurrency, deviceMemoryGb/,
+  'the Worker must persist crash fingerprints and capability context');
+assert.match(stageCloudflare,
+  /asset_build_id[\s\S]*?sha256[\s\S]*?stamp_build_id[\s\S]*?halo-build-id/,
+  'staged deployments must carry a content-addressed build ID');
+assert.match(webPlatform,
+  /new URL\("assets\/maps", scriptDirectory\)\.href/,
+  'map downloads must resolve from the loaded script when hosted below /halo/');
+assert.match(shell, /<script src="coi-serviceworker\.js"><\/script>/,
+  'static hosting must bootstrap cross-origin isolation before Halo loads');
+assert.match(stageCloudflare, /coi-serviceworker\.js/,
+  'the staged browser build must include the isolation service worker');
+
+const normalizerSource = shell.match(
+  /function normalizeTelemetryError\(value\) \{[\s\S]*?\n    \}/);
+assert(normalizerSource, 'missing telemetry error sanitizer');
+const normalizeTelemetryError = Function(`return (${normalizerSource[0]});`)();
+const normalizedFailure = normalizeTelemetryError(
+  'TypeError at https://example.test/halo.js:1:93820 id 0123456789abcdef');
+assert.doesNotMatch(normalizedFailure, /example\.test|93820|0123456789abcdef/,
+  'error sanitizer must remove URLs, offsets and long identifiers');
+
+const classifierSource = shell.match(
+  /function classifyRuntimeError\(value\) \{[\s\S]*?\n    \}/);
+assert(classifierSource, 'missing runtime error classifier');
+const classifyRuntimeError = Function(
+  `const normalizeTelemetryError = ${normalizerSource[0]}; return (${classifierSource[0]});`)();
+assert.equal(classifyRuntimeError('RangeError: WebAssembly.Memory allocation failed'), 'wasm-memory');
+assert.equal(classifyRuntimeError('navigator.getGamepads is not a function'), 'gamepad');
+assert.equal(classifyRuntimeError('emscripten_proxy_async failed'), 'threading');
 
 const rendererClassifier = shell.match(
   /function classifyRenderer\(value\) \{[\s\S]*?\n    \}/);
