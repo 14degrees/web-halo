@@ -2779,7 +2779,7 @@
     if (!root) return;
     /* the live map shows through once the game has it up; paused, the game
        itself is behind */
-    var live = backdropState() === 2 && !session.active && !lobby.joining;
+    var live = (backdropState() === 2 || backgroundBroadcastPlaying()) && !session.active && !lobby.joining;
     if (live) root.dataset.live = "true";
     else delete root.dataset.live;
     if (lobby.paused) root.dataset.pause = "true";
@@ -2846,7 +2846,76 @@
     return wasmNumber("platform_web_background_state", 0);
   }
 
+  /* ---------- the landing's backdrop: someone playing, from the broadcast,
+     when anyone is on a public server; the map, flown over, when nobody is */
+
+  var BACKGROUND_SWITCH_MILLISECONDS = 20000;
+  /* a broadcast with nobody to follow this long (longer than a respawn)
+     gives way to the map */
+  var BACKGROUND_EMPTY_MILLISECONDS = 15000;
+  var BACKGROUND_RETRY_MILLISECONDS = 15000;
+
+  function broadcastPhase() {
+    return wasmNumber("platform_web_broadcast_state", 0) % 16;
+  }
+
+  function backgroundBroadcastPlaying() {
+    return !!(lobby.broadcast && lobby.broadcast.background) && broadcastPhase() === 3;
+  }
+
+  function stopBackgroundBroadcast() {
+    if (lobby.broadcast && lobby.broadcast.background) {
+      stopBroadcast(true);
+      lobby.backdropAskedAt = 0;
+    }
+  }
+
+  /* a public game with players: its broadcast behind the landing */
+  function tickBackgroundBroadcast(onLanding) {
+    var watching = lobby.broadcast && lobby.broadcast.background ? lobby.broadcast : null;
+    if (watching && (!onLanding || session.active || lobby.paused)) {
+      stopBackgroundBroadcast();
+      return false;
+    }
+    if (watching) {
+      var target = global.Module && global.Module._platform_web_spectate_target;
+      var followed = typeof target === "function" ? readWasmString(target()) : "";
+      var now = Date.now();
+      if (followed) watching.followedAt = now;
+      /* nobody left to follow: the map instead, for a while */
+      if (broadcastPhase() === 3 && now - (watching.followedAt || watching.startedAt) > BACKGROUND_EMPTY_MILLISECONDS) {
+        stopBackgroundBroadcast();
+        lobby.backgroundRetryAt = now + BACKGROUND_RETRY_MILLISECONDS;
+        return false;
+      }
+      /* a different player now and then */
+      if (followed && now - (watching.switchedAt || watching.startedAt) > BACKGROUND_SWITCH_MILLISECONDS) {
+        watching.switchedAt = now;
+        var next = global.Module && global.Module._platform_web_spectate_next;
+        if (typeof next === "function") next();
+      }
+      return true;
+    }
+    if (!onLanding || session.active || lobby.joining || lobby.paused || !session.runtimeReady) return false;
+    if (Date.now() < (lobby.backgroundRetryAt || 0)) return false;
+    var playing = publicServers().some(function(room) { return (room.players || 0) > 0; });
+    if (!playing) return false;
+    /* (out of the map's flyover first: the broadcast replaces the game) */
+    if (backdropState() !== 0) {
+      var stopMap = global.Module && global.Module._platform_web_background_stop;
+      if (typeof stopMap === "function" && Date.now() - (lobby.backdropStoppedAt || 0) > 3000) {
+        lobby.backdropStoppedAt = Date.now();
+        stopMap();
+      }
+      return true;
+    }
+    lobby.backgroundRetryAt = Date.now() + BACKGROUND_RETRY_MILLISECONDS;
+    watchBroadcast({ background: true });
+    return true;
+  }
+
   function tickBackdrop(onLanding) {
+    if (tickBackgroundBroadcast(onLanding)) return;
     var start = global.Module && global.Module._platform_web_background_start;
     var stop = global.Module && global.Module._platform_web_background_stop;
     if (typeof start !== "function") return;
@@ -2874,6 +2943,7 @@
   /* Click to play: once Halo has loaded, into a server's game in progress. */
   function landingQuickPlay() {
     if (session.active || lobby.joining) return;
+    stopBackgroundBroadcast();
     setLandingStatus("");
     lobby.screen = "landing";
     if (!session.runtimeReady) {
@@ -2892,7 +2962,9 @@
     session.spectating = !!on;
     var watch = global.Module && global.Module._platform_web_spectate;
     if (typeof watch === "function") watch(on ? 1 : 0);
-    if (on) document.body.dataset.spectate = "true";
+    /* (the keys are the page's while watching; a broadcast behind the
+       landing leaves them to the landing) */
+    if (on && !(lobby.broadcast && lobby.broadcast.background)) document.body.dataset.spectate = "true";
     else delete document.body.dataset.spectate;
     var layer = byId("spectate");
     if (layer && !on) layer.hidden = true;
@@ -2929,8 +3001,15 @@
   /* watch: the fullest public game (options.matchId: that match), from the
      CDN a few seconds behind */
   function landingSpectate(options) {
-    if (session.active || lobby.joining || lobby.broadcast || !session.runtimeReady) return;
+    if (session.active || lobby.joining || !session.runtimeReady) return;
     setLandingStatus("");
+    /* already playing behind the landing: the same broadcast, in front */
+    if (lobby.broadcast && lobby.broadcast.background && !(options && options.matchId)) {
+      lobby.broadcast.background = false;
+      document.body.dataset.spectate = "true";
+      return;
+    }
+    if (lobby.broadcast) stopBroadcast(true);
     watchBroadcast(options || {});
   }
 
@@ -2954,22 +3033,23 @@
         "/v1/broadcast/public?buildId=" + encodeURIComponent(buildId());
       var found = await fetchJson(where, { method: "GET" });
       if (!found || typeof found.roomId !== "string") throw new Error("Nothing to watch right now.");
-      lobby.broadcast = { roomId: found.roomId, next: null, busy: false, startedAt: Date.now(), fed: 0 };
+      lobby.broadcast = { roomId: found.roomId, next: null, busy: false, startedAt: Date.now(), fed: 0,
+        background: !!options.background };
       setSpectating(true);
       start();
       lobby.broadcast.timer = global.setInterval(pollBroadcast, BROADCAST_POLL_MILLISECONDS);
       pollBroadcast();
-      telemetry("watch_broadcast", "online");
+      if (!options.background) telemetry("watch_broadcast", "online");
     } catch (error) {
       lobby.broadcast = null;
       setSpectating(false);
-      setLandingStatus((error && error.message) || "Couldn't find a game to watch.", "error");
+      if (!options.background) setLandingStatus((error && error.message) || "Couldn't find a game to watch.", "error");
     } finally {
       lobby.joining = false;
     }
   }
 
-  function stopBroadcast() {
+  function stopBroadcast(quiet) {
     var watching = lobby.broadcast;
     if (!watching) return;
     if (watching.timer) global.clearInterval(watching.timer);
@@ -2977,7 +3057,7 @@
     var stop = global.Module && global.Module._platform_web_broadcast_stop;
     if (typeof stop === "function") stop();
     setSpectating(false);
-    lobby.screen = "landing";
+    if (!quiet) lobby.screen = "landing";
   }
 
   /* the newest chunk's number, and every chunk since the last one fed */
@@ -3834,8 +3914,9 @@
   function tickLobby() {
     pollQueue();
     pollParty();
-    /* watching a broadcast: no session; the game plays the recording */
-    if (lobby.broadcast) {
+    /* watching a broadcast: no session; the game plays the recording (the
+       landing's own, behind it, leaves the page as it is) */
+    if (lobby.broadcast && !lobby.broadcast.background) {
       tickBroadcast();
       return;
     }

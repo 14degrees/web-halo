@@ -944,6 +944,24 @@ void network_lobby_spectate_update(
 
 		if (collision_test_vector(flags, &eye, &back, NONE, &collision))
 			reach = collision.t > 0.15f ? collision.t - 0.1f : 0.05f;
+		/* a wall right behind them: up over their head instead, rather
+		than inside their shoulders */
+		if (reach < 0.45f)
+		{
+			real_vector3d over;
+			real over_reach = 1.0f;
+
+			over.i = -flat.i * SPECTATE_BACK * 0.35f;
+			over.j = -flat.j * SPECTATE_BACK * 0.35f;
+			over.k = 1.25f;
+			if (collision_test_vector(flags, &eye, &over, NONE, &collision))
+				over_reach = collision.t > 0.15f ? collision.t - 0.1f : 0.05f;
+			if (over_reach * 1.3f > reach)
+			{
+				back = over;
+				reach = over_reach;
+			}
+		}
 		desired.x = eye.x + back.i * reach;
 		desired.y = eye.y + back.j * reach;
 		desired.z = eye.z + back.k * reach;
