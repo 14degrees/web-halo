@@ -80,6 +80,11 @@ void network_lobby_spectate_next(void);
 void network_lobby_spectate_update(float seconds);
 void network_lobby_spectate_hold_scores(unsigned char hold);
 void network_lobby_spectate_target_name(char *out);
+unsigned char network_lobby_broadcast_start(void);
+void network_lobby_broadcast_stop(void);
+unsigned char network_lobby_broadcast_feed(unsigned char const *data, long size);
+long network_lobby_broadcast_state(long *queued);
+void network_lobby_broadcast_update(float seconds);
 #endif
 long halo_screen_width(void);
 
@@ -159,6 +164,8 @@ static atomic_int web_online_player_count = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_headless = ATOMIC_VAR_INIT(0);
 /* a player is waiting to join: end the match so the next one includes them */
 static atomic_int web_online_restart_requested = ATOMIC_VAR_INIT(0);
+/* the next join plays a broadcast (platform_web_broadcast_start) */
+static atomic_int web_broadcast_requested = ATOMIC_VAR_INIT(0);
 /* (a dedicated host) a new number of players to start with, or -1 */
 static atomic_int web_online_minimum_players_request = ATOMIC_VAR_INIT(-1);
 /* the latest kill by this machine's player and where its body is on the
@@ -844,6 +851,20 @@ static void setup_join(void)
 		return;
 	}
 	game_connection_set(_game_connection_network_client);
+#ifdef HALO_WEB
+	/* a broadcast: the client plays the recording instead of joining
+	(network_lobby.c) */
+	if (atomic_exchange_explicit(&web_broadcast_requested, 0, memory_order_acq_rel))
+	{
+		if (!network_lobby_broadcast_start())
+		{
+			fail_session(_web_online_error_client_setup_failed);
+			return;
+		}
+		publish_state(_web_online_state_join_connecting);
+		return;
+	}
+#endif
 	publish_state(_web_online_state_join_searching);
 }
 
@@ -1070,6 +1091,7 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 		network_lobby_background_update(seconds);
 		network_lobby_debug_spawn(seconds);
 		network_lobby_spectate_update(seconds);
+		network_lobby_broadcast_update(seconds);
 		atomic_store_explicit(&web_background_state, (int)network_lobby_background_state(), memory_order_release);
 	}
 #endif
@@ -1154,6 +1176,46 @@ static atomic_int web_wager_sequence = ATOMIC_VAR_INIT(0);
 /* where the page writes the table: rows of a 12-byte name and a 12-byte
 label, then a 48-byte footer, each NUL-terminated */
 #ifdef HALO_WEB
+/* A broadcast (a match from the CDN, a few seconds behind): start it (it
+replaces any game: a join whose client plays the recording), the page's
+next chunk (copied), and its state: 0 none, 1 waiting for a chunk, 2
+loading the map, 3 playing, plus the chunks queued times 16 */
+EMSCRIPTEN_KEEPALIVE int platform_web_broadcast_start(void)
+{
+	atomic_store_explicit(&web_broadcast_requested, 1, memory_order_release);
+	atomic_store_explicit(&web_online_requested_request,
+		pack_request(_web_online_command_join, 0, 0), memory_order_release);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE void platform_web_broadcast_stop(void)
+{
+	network_lobby_broadcast_stop();
+	atomic_store_explicit(&web_online_requested_request,
+		pack_request(_web_online_command_cancel, 0, 0), memory_order_release);
+}
+
+/* where the page writes a chunk before feeding it (no allocator exported) */
+static unsigned char web_broadcast_buffer[4 * 1024 * 1024];
+
+EMSCRIPTEN_KEEPALIVE unsigned char *platform_web_broadcast_buffer(int size)
+{
+	return size > 0 && size <= (int)sizeof(web_broadcast_buffer) ? web_broadcast_buffer : NULL;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_broadcast_feed(unsigned char const *data, int size)
+{
+	return network_lobby_broadcast_feed(data, size) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_broadcast_state(void)
+{
+	long queued = 0;
+	long phase = network_lobby_broadcast_state(&queued);
+
+	return (int)(phase + queued * 16);
+}
+
 /* Watching (a spectator): on before joining, off to play; the next player
 to follow; whose view it is; the scores held up (Tab) */
 EMSCRIPTEN_KEEPALIVE void platform_web_spectate(int on)

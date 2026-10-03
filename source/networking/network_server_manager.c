@@ -1875,6 +1875,11 @@ boolean network_game_server_add_player_to_game(
 	return success;
 }
 
+#if defined(HALO_LINUX) && defined(HALO_SERVER)
+/* network_server_message_handler.c */
+void network_game_server_broadcast_tick(struct network_game_server *server);
+#endif
+
 void network_game_server_update_ticks(
 	struct network_game_server *server,
 	short tick_count)
@@ -1891,6 +1896,11 @@ void network_game_server_update_ticks(
 
 			for (tick_index = 0; tick_index < tick_count; tick_index++)
 			{
+#if defined(HALO_LINUX) && defined(HALO_SERVER)
+				/* (a new broadcast chunk opens before this tick's messages:
+				network_server_message_handler.c) */
+				network_game_server_broadcast_tick(server);
+#endif
 				struct message_server_game_update game_update;
 				struct server_update update;
 				long update_number = server->next_update_number++;

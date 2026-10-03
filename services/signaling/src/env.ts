@@ -26,6 +26,8 @@ export type RuntimeEnv = Omit<Env, "ALLOW_NO_ORIGIN" | "ENVIRONMENT"> & {
      (src/alerts.ts). */
   ALERT_WEBHOOK_URL?: string;
   ROOM_ID_SECRET: string;
+  /* the broadcasts' chunks (src/broadcast.ts) */
+  BROADCASTS?: R2Bucket;
   TURN_KEY_ID?: string;
   TURN_KEY_SECRET?: string;
   TURNSTILE_SECRET: string;

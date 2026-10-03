@@ -949,6 +949,64 @@ void network_game_client_game_out_of_sync(
 	return;
 }
 
+#ifdef HALO_WEB
+/* ---------- a broadcast's playback (port/linux/game/network_lobby.c)
+
+The client plays a recorded match: its connection carries nothing
+(network_connection.c's network_connection_playback), it is a machine of no
+player, and the recording's messages go straight to its handler, as they
+would have arrived. It starts in the pregame, where a joining machine
+waits for the game's settings and its start. */
+extern struct network_connection *network_connection_playback;
+/* the machine number a broadcast viewer has: no real machine's */
+#define PLAYBACK_MACHINE_INDEX (MAXIMUM_NETWORK_MACHINE_COUNT - 1)
+
+boolean network_game_client_begin_playback(
+	void)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	if (!client || !client->connection)
+		return FALSE;
+	network_connection_playback = client->connection;
+	client->machine_index = PLAYBACK_MACHINE_INDEX;
+	client->state = _network_game_client_state_pregame;
+	client->last_update_time = system_milliseconds();
+	network_event("broadcast: playing a recording");
+	return TRUE;
+}
+
+void network_game_client_end_playback(
+	void)
+{
+	network_connection_playback = NULL;
+}
+
+boolean network_game_client_play_message(
+	word *message,
+	short size)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	struct transport_address address;
+
+	if (!client || !network_connection_playback || size < (short)sizeof(message_header) ||
+		size != GET_MESSAGE_SIZE(*message))
+	{
+		return FALSE;
+	}
+	csmemset(&address, 0, sizeof(address));
+	return network_game_client_handle_message(client, message, size, &address);
+}
+
+int network_game_client_state_for_playback(
+	void)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	return client ? client->state : -1;
+}
+#endif
+
 #ifdef HALO_LINUX
 /* (the distributed netcode) whether a player is still in the network game:
 one whose machine left keeps their player, in the game but not in the

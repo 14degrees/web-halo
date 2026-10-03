@@ -2917,16 +2917,114 @@
   }
 
   function stopSpectating() {
+    if (lobby.broadcast) {
+      stopBroadcast();
+      return;
+    }
     lobby.wantsPlay = false;
     cancelQueue();
     leave(false).catch(function() {});
   }
 
-  /* watch: the fullest public game (options.matchId: that match for SOL) */
+  /* watch: the fullest public game (options.matchId: that match), from the
+     CDN a few seconds behind */
   function landingSpectate(options) {
-    if (session.active || lobby.joining || !session.runtimeReady) return;
+    if (session.active || lobby.joining || lobby.broadcast || !session.runtimeReady) return;
     setLandingStatus("");
-    seamlessQuickJoin({ spectator: true, matchId: options && options.matchId });
+    watchBroadcast(options || {});
+  }
+
+  /* ---------- the broadcast (services/signaling/src/broadcast.ts): a match
+     as a spectator receives it, recorded by its server in chunks of two
+     seconds while anyone watches, played here into the game a few seconds
+     behind (port/linux/game/network_lobby.c). The viewer has no connection
+     to the game: any number cost its server nothing more. */
+
+  var BROADCAST_POLL_MILLISECONDS = 1000;
+  /* how far behind the newest chunk playback starts (chunks of 2 s) */
+  var BROADCAST_START_BEHIND = 1;
+
+  async function watchBroadcast(options) {
+    if (lobby.broadcast || lobby.joining) return;
+    var start = global.Module && global.Module._platform_web_broadcast_start;
+    if (typeof start !== "function") return;
+    lobby.joining = true;
+    try {
+      var where = options.matchId ? "/v1/broadcast/match/" + encodeURIComponent(options.matchId) :
+        "/v1/broadcast/public?buildId=" + encodeURIComponent(buildId());
+      var found = await fetchJson(where, { method: "GET" });
+      if (!found || typeof found.roomId !== "string") throw new Error("Nothing to watch right now.");
+      lobby.broadcast = { roomId: found.roomId, next: null, busy: false, startedAt: Date.now(), fed: 0 };
+      setSpectating(true);
+      start();
+      lobby.broadcast.timer = global.setInterval(pollBroadcast, BROADCAST_POLL_MILLISECONDS);
+      pollBroadcast();
+      telemetry("watch_broadcast", "online");
+    } catch (error) {
+      lobby.broadcast = null;
+      setSpectating(false);
+      setLandingStatus((error && error.message) || "Couldn't find a game to watch.", "error");
+    } finally {
+      lobby.joining = false;
+    }
+  }
+
+  function stopBroadcast() {
+    var watching = lobby.broadcast;
+    if (!watching) return;
+    if (watching.timer) global.clearInterval(watching.timer);
+    lobby.broadcast = null;
+    var stop = global.Module && global.Module._platform_web_broadcast_stop;
+    if (typeof stop === "function") stop();
+    setSpectating(false);
+    lobby.screen = "landing";
+  }
+
+  /* the newest chunk's number, and every chunk since the last one fed */
+  async function pollBroadcast() {
+    var watching = lobby.broadcast;
+    if (!watching || watching.busy) return;
+    watching.busy = true;
+    try {
+      var base = "/v1/broadcast/" + encodeURIComponent(watching.roomId) + "/";
+      var answer = await fetchJson(base + "latest", { method: "GET" });
+      var latest = answer && answer.latest ? answer.latest.sequence : 0;
+      if (!latest || lobby.broadcast !== watching) return;
+      if (watching.next === null) watching.next = Math.max(1, latest - BROADCAST_START_BEHIND);
+      while (watching.next <= latest && lobby.broadcast === watching) {
+        var response = await fetch(apiBase() + base + watching.next, { method: "GET", cache: "default" });
+        if (response.status === 404) break;
+        if (!response.ok) throw new Error("chunk " + watching.next + ": " + response.status);
+        feedBroadcastChunk(new Uint8Array(await response.arrayBuffer()));
+        watching.fed++;
+        watching.next++;
+      }
+    } catch (error) {
+      /* the next poll tries again */
+    } finally {
+      watching.busy = false;
+    }
+  }
+
+  function feedBroadcastChunk(bytes) {
+    var feed = global.Module && global.Module._platform_web_broadcast_feed;
+    var buffer = global.Module && global.Module._platform_web_broadcast_buffer;
+    if (typeof feed !== "function" || typeof buffer !== "function" || typeof HEAPU8 === "undefined") return;
+    var pointer = buffer(bytes.length);
+    if (!pointer) return;
+    HEAPU8.set(bytes, pointer);
+    feed(pointer, bytes.length);
+  }
+
+  /* the page while watching: the game, the Watching bar */
+  function tickBroadcast() {
+    setLobbyVisible(false);
+    setLandingVisible(false);
+    var prompt = lobbyElement("lobby-deploy");
+    if (prompt) prompt.hidden = true;
+    var leaveGame = lobbyElement("lobby-leave-game");
+    if (leaveGame) leaveGame.hidden = true;
+    renderSpectate();
   }
 
   /* the matches for SOL on now, for the lobby's Watch list */
@@ -3736,6 +3834,11 @@
   function tickLobby() {
     pollQueue();
     pollParty();
+    /* watching a broadcast: no session; the game plays the recording */
+    if (lobby.broadcast) {
+      tickBroadcast();
+      return;
+    }
     if (document.body.dataset.lobby === "open") refreshPlaylists();
     moveToOpenServer(clientState());
     restartForWaitingPlayers();

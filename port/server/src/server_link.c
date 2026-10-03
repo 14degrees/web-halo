@@ -26,6 +26,8 @@ gateway to game
   'o' persistent:u8              a public server's game (1): it starts with one
                                  player and goes on as players come and go
   'X'                            end the match for players waiting to join
+  'B' on:u8                      record the broadcast (someone watches it on
+                                 the CDN) or stop
   'Q'                            stop the server
 
 game to gateway
@@ -39,6 +41,9 @@ game to gateway
                                  the postgame 'M' (port/linux/game/
                                  network_lobby.c, network_lobby_capture_result)
   'D' address:u32                the game cannot take this peer's traffic: drop it
+  'C' sequence:u32 piece:u16 pieces:u16 bytes
+                                 a piece of a broadcast chunk (network_server_
+                                 message_handler.c); the gateway joins them
 
 Frames the game cannot take yet (a stream's buffer is full) wait in a
 backlog of their own peer, so one peer the game has stopped reading (a
@@ -87,6 +92,8 @@ int platform_web_host_kill_sequence(void);
 void const *platform_web_host_kills(void);
 /* a public server's game: drop-in, drop-out (server_link_game_persistent) */
 static volatile int link_persistent;
+/* the gateway wants the broadcast recorded ('B') */
+static volatile int link_broadcast;
 
 /* the match's team plan, below */
 static void clear_teams(void);
@@ -425,6 +432,13 @@ static void *link_reader(void *unused)
 				set_team(address, packet[5]);
 			}
 			break;
+		case 'B':
+			if (length == 2)
+			{
+				link_broadcast = packet[1] != 0;
+				fprintf(stderr, "server link: the broadcast is %s\n", link_broadcast ? "wanted" : "not wanted");
+			}
+			break;
 		case 'Q':
 			fprintf(stderr, "halo-server: stopping at the gateway's request\n");
 			_exit(0);
@@ -487,6 +501,38 @@ single player and does not end when players leave (the game engine's
 int server_link_game_persistent(void)
 {
 	return link_persistent;
+}
+
+/* the broadcast: whether the gateway wants it recorded, and each chunk to it,
+in pieces a packet holds */
+int server_link_broadcast_wanted(void)
+{
+	return link_broadcast;
+}
+
+void server_link_broadcast_chunk(unsigned char const *chunk, unsigned long size, unsigned long sequence)
+{
+	enum { PIECE = LINK_FRAME_LIMIT - 16 };
+	unsigned char packet[1 + 4 + 2 + 2 + PIECE];
+	unsigned long pieces = (size + PIECE - 1) / PIECE;
+	unsigned long piece;
+
+	if (link_socket < 0 || pieces == 0 || pieces > 0xffff)
+		return;
+	for (piece = 0; piece < pieces; piece++)
+	{
+		unsigned long offset = piece * PIECE;
+		unsigned long length = size - offset < PIECE ? size - offset : PIECE;
+		uint32_t value = (uint32_t)sequence;
+		uint16_t index = (uint16_t)piece, count = (uint16_t)pieces;
+
+		packet[0] = 'C';
+		memcpy(packet + 1, &value, 4);
+		memcpy(packet + 5, &index, 2);
+		memcpy(packet + 7, &count, 2);
+		memcpy(packet + 9, chunk + offset, length);
+		link_send(packet, 9 + length);
+	}
 }
 
 /* Whether a machine only watches: the gateway marks a spectator with team

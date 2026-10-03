@@ -272,6 +272,8 @@ symbols in this file:
 void network_distributed_handle_message(long machine_index, word const *message, word size);
 #endif
 
+
+
 /* ---------- constants */
 
 enum
@@ -630,6 +632,199 @@ static boolean network_game_server_write(
 		reliable);
 }
 
+#ifdef HALO_SERVER
+/* (as network_server_manager.c has it) */
+struct message_server_begin_game
+{
+	long unused;
+};
+#endif
+
+#if defined(HALO_LINUX) && defined(HALO_SERVER)
+/* ---------- the broadcast (what a spectator receives, recorded)
+
+While anyone watches the match through the CDN (the gateway asks: 'B'), the
+server records every message it sends all machines, as a spectator would
+receive them, in chunks of BROADCAST_CHUNK_TICKS. Each chunk opens with what
+a machine joining then would be sent: the game (its settings and the start:
+a viewer starting here loads the map) and the world (every object, the
+scores and the game's state: a viewer already playing catches up). The
+server link hands each chunk to the gateway, which puts it on the CDN
+(port/server/src/server_link.c, services/game-server/gateway/broadcast.go).
+A viewer plays the messages into its own game, with no connection
+(network_client_manager.c's playback). */
+
+enum
+{
+	BROADCAST_CHUNK_TICKS = 60,
+	BROADCAST_CHUNK_LIMIT = 1024 * 1024,
+	/* the machine the world's catch-up is addressed to: no real one */
+	BROADCAST_MACHINE_INDEX = 0x7fff,
+};
+
+enum
+{
+	_broadcast_kind_message = 0,
+	_broadcast_kind_data,
+};
+
+enum
+{
+	_broadcast_section_stream = 0,
+	_broadcast_section_game,
+	_broadcast_section_world,
+};
+
+/* port/server/src/server_link.c */
+int server_link_broadcast_wanted(void);
+void server_link_broadcast_chunk(unsigned char const *chunk, unsigned long size, unsigned long sequence);
+/* port/linux/game/network_objects.c, network_distributed.c */
+void network_objects_client_ready(long machine_index);
+void network_distributed_broadcast_state(void);
+
+static struct
+{
+	boolean active;
+	boolean overflowed;
+	byte section;
+	unsigned long sequence;
+	long start_tick;
+	unsigned long size;
+	unsigned long count;
+	byte chunk[BROADCAST_CHUNK_LIMIT];
+} broadcast;
+
+static void broadcast_put_u32(byte *at, unsigned long value)
+{
+	at[0] = (byte)value;
+	at[1] = (byte)(value >> 8);
+	at[2] = (byte)(value >> 16);
+	at[3] = (byte)(value >> 24);
+}
+
+/* chunk: "HBC1" sequence:u32 start_tick:u32 end_tick:u32 count:u32, then
+count entries of tick_offset:u16 kind:u8 section:u8 size:u16 message */
+#define BROADCAST_HEADER_SIZE 20
+#define BROADCAST_ENTRY_SIZE 6
+
+static void broadcast_record(
+	byte kind,
+	void const *message,
+	word size)
+{
+	byte *entry;
+	long offset;
+
+	if (!broadcast.active || broadcast.overflowed)
+		return;
+	if (broadcast.size + BROADCAST_ENTRY_SIZE + size > BROADCAST_CHUNK_LIMIT)
+	{
+		broadcast.overflowed = TRUE;
+		return;
+	}
+	offset = game_time_get() - broadcast.start_tick;
+	if (offset < 0)
+		offset = 0;
+	entry = broadcast.chunk + broadcast.size;
+	entry[0] = (byte)offset;
+	entry[1] = (byte)(offset >> 8);
+	entry[2] = kind;
+	entry[3] = broadcast.section;
+	entry[4] = (byte)size;
+	entry[5] = (byte)(size >> 8);
+	csmemcpy(entry + BROADCAST_ENTRY_SIZE, message, size);
+	broadcast.size += BROADCAST_ENTRY_SIZE + size;
+	broadcast.count++;
+}
+
+static void broadcast_flush(
+	void)
+{
+	if (!broadcast.active)
+		return;
+	if (!broadcast.overflowed)
+	{
+		broadcast.chunk[0] = 'H';
+		broadcast.chunk[1] = 'B';
+		broadcast.chunk[2] = 'C';
+		broadcast.chunk[3] = '1';
+		broadcast_put_u32(broadcast.chunk + 4, broadcast.sequence);
+		broadcast_put_u32(broadcast.chunk + 8, (unsigned long)broadcast.start_tick);
+		broadcast_put_u32(broadcast.chunk + 12, (unsigned long)game_time_get());
+		broadcast_put_u32(broadcast.chunk + 16, broadcast.count);
+		server_link_broadcast_chunk(broadcast.chunk, broadcast.size, broadcast.sequence);
+	}
+	else
+	{
+		network_event("broadcast: chunk %lu was too big; skipped", broadcast.sequence);
+	}
+	broadcast.active = FALSE;
+}
+
+/* a chunk's opening: what a machine joining now would be sent */
+static void broadcast_keyframe(
+	struct network_game_server *server)
+{
+	struct network_game *game = network_game_server_get_game(server);
+	struct message_server_game_settings_update settings;
+	struct message_server_begin_game begin_game;
+	void *encoded;
+	long offset;
+
+	broadcast.section = _broadcast_section_game;
+	for (offset = 0; game && offset < (long)sizeof(*game); offset += sizeof(settings.data))
+	{
+		settings.total_size = (word)sizeof(*game);
+		settings.offset = (word)offset;
+		settings.length = (word)MIN((long)sizeof(settings.data), (long)sizeof(*game) - offset);
+		settings.pad = 0;
+		csmemset(settings.data, 0, sizeof(settings.data));
+		csmemcpy(settings.data, (byte const *)game + offset, settings.length);
+		encoded = create_network_game_message(_message_server_game_settings_update, &settings, sizeof(settings));
+		if (encoded)
+			broadcast_record(_broadcast_kind_message, encoded, GET_MESSAGE_SIZE(*(message_header *)encoded));
+	}
+	csmemset(&begin_game, 0, sizeof(begin_game));
+	encoded = create_network_game_message(_message_server_begin_game, &begin_game, sizeof(begin_game));
+	if (encoded)
+		broadcast_record(_broadcast_kind_message, encoded, GET_MESSAGE_SIZE(*(message_header *)encoded));
+	broadcast.section = _broadcast_section_world;
+	network_objects_client_ready(BROADCAST_MACHINE_INDEX);
+	network_distributed_broadcast_state();
+	broadcast.section = _broadcast_section_stream;
+}
+
+/* each server tick, before its messages go out */
+void network_game_server_broadcast_tick(
+	struct network_game_server *server)
+{
+	boolean wanted = server_link_broadcast_wanted() &&
+		network_game_server_get_state(server, NULL) == _network_game_server_state_ingame;
+
+	if (!wanted)
+	{
+		if (broadcast.active)
+		{
+			broadcast_flush();
+			network_event("broadcast: nobody watching; stopped");
+		}
+		return;
+	}
+	if (broadcast.active && game_time_get() - broadcast.start_tick < BROADCAST_CHUNK_TICKS)
+		return;
+	if (!broadcast.active && broadcast.sequence == 0)
+		network_event("broadcast: someone is watching; recording");
+	broadcast_flush();
+	broadcast.active = TRUE;
+	broadcast.overflowed = FALSE;
+	broadcast.sequence++;
+	broadcast.start_tick = game_time_get();
+	broadcast.size = BROADCAST_HEADER_SIZE;
+	broadcast.count = 0;
+	broadcast_keyframe(server);
+}
+#endif
+
 /* ---------- public code */
 
 /* Whether a machine gets the game's broadcasts: a machine in the game, or,
@@ -683,6 +878,9 @@ boolean network_distributed_server_send_to_all(
 
 	if (!server)
 		return FALSE;
+#ifdef HALO_SERVER
+	broadcast_record(_broadcast_kind_data, message, size);
+#endif
 	for (machine_index = 0; machine_index < MAXIMUM_NETWORK_MACHINE_COUNT; machine_index++)
 	{
 		struct network_game_server_client_machine *machine =
@@ -724,6 +922,14 @@ boolean network_distributed_server_send_to_machine_reliably(
 
 	if (!server || size > sizeof(buffer))
 		return FALSE;
+#ifdef HALO_SERVER
+	/* (the broadcast's world: to no machine, into the chunk) */
+	if (machine_index == BROADCAST_MACHINE_INDEX)
+	{
+		broadcast_record(_broadcast_kind_data, message, size);
+		return TRUE;
+	}
+#endif
 	/* (machine_index is the game's machine, as the message handlers have
 	it: the client machine of that machine) */
 	for (client_index = 0; client_index < MAXIMUM_NETWORK_MACHINE_COUNT; client_index++)
@@ -759,6 +965,9 @@ boolean network_distributed_server_send_to_all_reliably(
 
 	if (!server)
 		return FALSE;
+#ifdef HALO_SERVER
+	broadcast_record(_broadcast_kind_data, message, size);
+#endif
 	for (machine_index = 0; machine_index < MAXIMUM_NETWORK_MACHINE_COUNT; machine_index++)
 	{
 		struct network_game_server_client_machine *machine =
@@ -795,6 +1004,9 @@ boolean network_game_server_send_message_to_all_machines(
 		server && message);
 
 	message_length = GET_MESSAGE_SIZE(message->header);
+#if defined(HALO_LINUX) && defined(HALO_SERVER)
+	broadcast_record(_broadcast_kind_message, message, message_length);
+#endif
 	for (machine_index = 0; machine_index < MAXIMUM_NETWORK_MACHINE_COUNT; machine_index++)
 	{
 		struct network_game_server_client_machine *machine =
@@ -994,11 +1206,6 @@ boolean network_game_server_send_game_data_pregame(
 }
 
 #ifdef HALO_SERVER
-/* (as network_server_manager.c has it) */
-struct message_server_begin_game
-{
-	long unused;
-};
 
 /* A machine joining a game in progress gets the game's settings (as pieces)
 and the begin message, alone: it loads the map and plays in. */

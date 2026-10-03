@@ -105,6 +105,8 @@ type roomMessage struct {
 	// wager_out: the players out of SOL, and whether the match ends there
 	Out []string `json:"out,omitempty"`
 	End bool     `json:"end,omitempty"`
+	// broadcast: whether anyone watches the match through the CDN
+	On bool `json:"on,omitempty"`
 }
 
 type room struct {
@@ -360,6 +362,10 @@ func (r *room) handle(message roomMessage) {
 		if err := r.peers.handleSignal(message.From, signal); err != nil {
 			log.Printf("peer %s: bad signal: %v", message.From, err)
 			r.peers.remove(message.From, "invalid connection data")
+		}
+	case "broadcast":
+		if err := r.peers.link.setBroadcast(message.On); err != nil {
+			log.Printf("broadcast: not switched: %v", err)
 		}
 	case "wager_out":
 		// a bounty match: the players out of SOL leave it, and may not come

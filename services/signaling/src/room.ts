@@ -217,6 +217,12 @@ const ROOM_COLUMN_UPGRADES: ReadonlyArray<readonly [string, string]> = [
 const MAX_GUEST_WEBSOCKET_MESSAGES_PER_MINUTE = 240;
 /* watchers a room seats beyond its players */
 const MAXIMUM_SPECTATORS = 16;
+/* the broadcast (src/broadcast.ts): recorded while a viewer has asked for
+   the newest chunk this recently */
+const BROADCAST_WATCH_MS = 15_000;
+const BROADCAST_LATEST_KEY = "broadcast-latest";
+const BROADCAST_WATCHED_KEY = "broadcast-watched-until";
+const BROADCAST_ON_KEY = "broadcast-on";
 const MAX_HOST_WEBSOCKET_MESSAGES_PER_MINUTE = 16_384;
 
 export class SignalingRoom extends DurableObject<Env> {
@@ -584,6 +590,9 @@ export class SignalingRoom extends DurableObject<Env> {
     this.broadcastRoster();
     if (attachment.role === "host") {
       this.ctx.storage.kv.put(HOST_SEEN_KEY, now);
+      /* a new host records nothing until told (src/broadcast.ts) */
+      this.ctx.storage.kv.delete(BROADCAST_ON_KEY);
+      this.switchBroadcast(now);
     }
     this.ctx.waitUntil(this.publishToDirectory(now));
 
@@ -662,6 +671,8 @@ export class SignalingRoom extends DurableObject<Env> {
         const now = Date.now();
         this.ctx.storage.kv.put(HOST_SEEN_KEY, now);
         this.ctx.waitUntil(this.publishToDirectory(now));
+        /* nobody has watched for a while: the recording stops */
+        this.switchBroadcast(now);
       }
       try {
         socket.send(
@@ -1185,6 +1196,38 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
     /* a free match's kills move nothing */
+  }
+
+  /* ---------- the broadcast (src/broadcast.ts) */
+
+  /* The newest chunk the room's server has put up. */
+  async noteBroadcastChunk(sequence: number, now: number): Promise<void> {
+    this.ctx.storage.kv.put(BROADCAST_LATEST_KEY, { sequence, at: now });
+  }
+
+  /* A viewer asks for the newest chunk: the recording goes on (or starts)
+     for a while yet. */
+  async watchBroadcast(now: number): Promise<{ sequence: number; at: number } | null> {
+    this.ctx.storage.kv.put(BROADCAST_WATCHED_KEY, now + BROADCAST_WATCH_MS);
+    this.switchBroadcast(now);
+    return (this.ctx.storage.kv.get(BROADCAST_LATEST_KEY) as { sequence: number; at: number } | undefined) ?? null;
+  }
+
+  /* Tells the server to record or stop, when that changes. */
+  private switchBroadcast(now: number): void {
+    const watched = Number(this.ctx.storage.kv.get(BROADCAST_WATCHED_KEY) ?? 0) > now;
+    const on = this.ctx.storage.kv.get(BROADCAST_ON_KEY) === true;
+    if (watched === on) return;
+    let told = false;
+    for (const { socket } of this.connections("host")) {
+      try {
+        socket.send(jsonMessage({ on: watched, type: "broadcast", v: SIGNALING_PROTOCOL_VERSION }));
+        told = true;
+      } catch {
+        /* closing: the next host hears it when it connects */
+      }
+    }
+    if (told) this.ctx.storage.kv.put(BROADCAST_ON_KEY, watched);
   }
 
   /* A bounty match: a player whose stake is spent is out. Once only one

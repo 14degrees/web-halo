@@ -35,6 +35,7 @@ type gameEvents interface {
 	gameKill(killer, victim string)
 	gameResult(result matchResult)
 	gameDrop(address uint32)
+	gameBroadcast(sequence uint32, chunk []byte)
 }
 
 // matchResult is a match's result as it ended (the game's 'E' message):
@@ -90,6 +91,8 @@ type gameLink struct {
 	pending sync.Map // key -> chan uint32 (add-peer answers)
 	nextKey uint32
 	keyLock sync.Mutex
+	// the broadcast chunk the game is sending, in pieces
+	chunks chunkAssembly
 }
 
 func listenForGame(path string) (*net.UnixListener, error) {
@@ -155,6 +158,10 @@ func (link *gameLink) run() error {
 		case 'E':
 			if result, ok := parseResult(packet[1:length]); ok {
 				link.events.gameResult(result)
+			}
+		case 'C':
+			if sequence, chunk, ok := link.chunks.add(packet[1:length]); ok {
+				link.events.gameBroadcast(sequence, chunk)
 			}
 		}
 	}

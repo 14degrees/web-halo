@@ -321,6 +321,17 @@ static short distributed_host_from_local(
 	return local_index;
 }
 
+/* (the host) the scores and the game's state now, to every machine (and a
+broadcast chunk's opening: network_server_message_handler.c) */
+static void distributed_send_statistics(void);
+static void distributed_send_game_state(void);
+void network_distributed_broadcast_state(
+	void)
+{
+	distributed_send_statistics();
+	distributed_send_game_state();
+}
+
 /* (a client) this machine's index for the host's player index: NONE when it
 is another of the host's players here (player_queues_new.c's relayed
 actions) */

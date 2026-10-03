@@ -29,6 +29,8 @@ headers, so it calls these through plain prototypes.
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* the platform layer's */
 void platform_log(char const *format, ...);
@@ -995,5 +997,290 @@ float network_lobby_spectate_heading(
 	void)
 {
 	return lobby_spectator.heading;
+}
+#endif
+
+#ifdef HALO_WEB
+/* ---------- a broadcast's playback
+
+A match on the CDN, a few seconds behind (services/signaling/src/
+broadcast.ts): the page fetches its chunks of two seconds and hands them
+here (platform_web_broadcast_feed). Each chunk holds what the server sent
+every machine in that time, opened by what a machine joining then would be
+sent: the game (its settings and start) and the world (every object, the
+scores, the game's state). The client plays them as though they came from
+the server, with no connection (network_client_manager.c's playback):
+
+  the first chunk's game: the client loads the map
+  then the newest chunk's world, and on from there in real time: each
+  message at the tick it was sent, chunk after chunk; the openings of
+  later chunks are skipped, unless the viewer has fallen too far behind,
+  when it jumps to the newest chunk's world and plays on from there.
+
+Watching (network_lobby_spectate) follows a player as for a spectator. */
+
+boolean network_game_client_begin_playback(void);
+void network_game_client_end_playback(void);
+boolean network_game_client_play_message(word *message, short size);
+
+#define BROADCAST_QUEUE 6
+/* chunks waiting before the viewer jumps ahead to the newest */
+#define BROADCAST_BEHIND 3
+#define BROADCAST_HEADER 20
+#define BROADCAST_ENTRY 6
+
+enum
+{
+	_playback_idle = 0,
+	_playback_waiting,
+	_playback_loading,
+	_playback_playing,
+};
+
+struct broadcast_chunk
+{
+	byte *data;
+	long size;
+	unsigned long sequence;
+	long start_tick;
+	long end_tick;
+	long count;
+	/* the next entry to play: its byte offset and index */
+	long cursor;
+	long played;
+};
+
+static struct
+{
+	long phase;
+	struct broadcast_chunk queue[BROADCAST_QUEUE];
+	long length;
+	/* the tick being played, in the recording's time */
+	real clock;
+	unsigned long last_sequence;
+	long messages;
+	long failures;
+} lobby_broadcast;
+
+static unsigned long broadcast_u32(byte const *at)
+{
+	return (unsigned long)at[0] | ((unsigned long)at[1] << 8) | ((unsigned long)at[2] << 16) | ((unsigned long)at[3] << 24);
+}
+
+static void broadcast_drop_front(
+	void)
+{
+	if (lobby_broadcast.length == 0)
+		return;
+	free(lobby_broadcast.queue[0].data);
+	memmove(&lobby_broadcast.queue[0], &lobby_broadcast.queue[1],
+		(lobby_broadcast.length - 1) * sizeof(lobby_broadcast.queue[0]));
+	lobby_broadcast.length--;
+}
+
+static void broadcast_clear(
+	void)
+{
+	while (lobby_broadcast.length > 0)
+		broadcast_drop_front();
+}
+
+/* plays a chunk's entries of one section (or the stream, up to a tick):
+returns whether it reached the chunk's end */
+static boolean broadcast_play(
+	struct broadcast_chunk *chunk,
+	long section,
+	real until_tick)
+{
+	while (chunk->played < chunk->count && chunk->cursor + BROADCAST_ENTRY <= chunk->size)
+	{
+		byte *entry = chunk->data + chunk->cursor;
+		long offset = (long)entry[0] | ((long)entry[1] << 8);
+		long entry_section = entry[3];
+		long size = (long)entry[4] | ((long)entry[5] << 8);
+
+		if (chunk->cursor + BROADCAST_ENTRY + size > chunk->size)
+			break;
+		if (entry_section == 0)
+		{
+			/* the stream: only in its time, and not while an opening plays */
+			if (section != 0 || (real)(chunk->start_tick + offset) > until_tick)
+				return FALSE;
+		}
+		else if (section != entry_section)
+		{
+			/* another section of the opening: skipped */
+			chunk->cursor += BROADCAST_ENTRY + size;
+			chunk->played++;
+			continue;
+		}
+		if (size >= (long)sizeof(word))
+		{
+			/* (aligned for the handlers) */
+			word message[0x1000 / sizeof(word)];
+
+			if (size <= (long)sizeof(message))
+			{
+				memcpy(message, entry + BROADCAST_ENTRY, size);
+				lobby_broadcast.messages++;
+				if (!network_game_client_play_message(message, (short)size))
+					lobby_broadcast.failures++;
+			}
+		}
+		chunk->cursor += BROADCAST_ENTRY + size;
+		chunk->played++;
+	}
+	return chunk->played >= chunk->count;
+}
+
+/* a chunk's opening section, from the start of the chunk */
+static void broadcast_play_opening(
+	struct broadcast_chunk *chunk,
+	long section)
+{
+	chunk->cursor = BROADCAST_HEADER;
+	chunk->played = 0;
+	broadcast_play(chunk, section, -1.0f);
+	/* the stream after it starts at the chunk's top again; the openings it
+	passes are skipped */
+	chunk->cursor = BROADCAST_HEADER;
+	chunk->played = 0;
+}
+
+boolean network_lobby_broadcast_start(
+	void)
+{
+	broadcast_clear();
+	csmemset(&lobby_broadcast, 0, sizeof(lobby_broadcast));
+	if (!network_game_client_begin_playback())
+		return FALSE;
+	lobby_broadcast.phase = _playback_waiting;
+	network_lobby_spectate(TRUE);
+	platform_log("network lobby: broadcast playback waiting for its first chunk");
+	return TRUE;
+}
+
+void network_lobby_broadcast_stop(
+	void)
+{
+	if (lobby_broadcast.phase == _playback_idle)
+		return;
+	broadcast_clear();
+	lobby_broadcast.phase = _playback_idle;
+	network_game_client_end_playback();
+	network_lobby_spectate(FALSE);
+	platform_log("network lobby: broadcast playback over (%ld messages, %ld refused)",
+		lobby_broadcast.messages, lobby_broadcast.failures);
+}
+
+/* the page's next chunk (a copy is kept) */
+boolean network_lobby_broadcast_feed(
+	byte const *data,
+	long size)
+{
+	struct broadcast_chunk *chunk;
+
+	if (lobby_broadcast.phase == _playback_idle || size < BROADCAST_HEADER ||
+		data[0] != 'H' || data[1] != 'B' || data[2] != 'C' || data[3] != '1')
+	{
+		return FALSE;
+	}
+	if (broadcast_u32(data + 4) <= lobby_broadcast.last_sequence)
+		return FALSE;
+	if (lobby_broadcast.length == BROADCAST_QUEUE)
+		broadcast_drop_front();
+	chunk = &lobby_broadcast.queue[lobby_broadcast.length];
+	chunk->data = (byte *)malloc(size);
+	if (!chunk->data)
+		return FALSE;
+	memcpy(chunk->data, data, size);
+	chunk->size = size;
+	chunk->sequence = broadcast_u32(data + 4);
+	chunk->start_tick = (long)broadcast_u32(data + 8);
+	chunk->end_tick = (long)broadcast_u32(data + 12);
+	chunk->count = (long)broadcast_u32(data + 16);
+	chunk->cursor = BROADCAST_HEADER;
+	chunk->played = 0;
+	lobby_broadcast.length++;
+	lobby_broadcast.last_sequence = chunk->sequence;
+	return TRUE;
+}
+
+/* 0 none, 1 waiting for a chunk, 2 loading the map, 3 playing; and how many
+chunks wait */
+long network_lobby_broadcast_state(
+	long *queued)
+{
+	if (queued)
+		*queued = lobby_broadcast.length;
+	return lobby_broadcast.phase;
+}
+
+/* the newest chunk's world, and on from there */
+static void broadcast_join_newest(
+	void)
+{
+	struct broadcast_chunk *chunk;
+
+	while (lobby_broadcast.length > 1)
+		broadcast_drop_front();
+	chunk = &lobby_broadcast.queue[0];
+	broadcast_play_opening(chunk, 2);
+	lobby_broadcast.clock = (real)chunk->start_tick;
+}
+
+void network_lobby_broadcast_update(
+	float seconds)
+{
+	switch (lobby_broadcast.phase)
+	{
+	case _playback_waiting:
+		if (lobby_broadcast.length == 0)
+			return;
+		/* the game: the map loads */
+		broadcast_play_opening(&lobby_broadcast.queue[lobby_broadcast.length - 1], 1);
+		lobby_broadcast.phase = _playback_loading;
+		platform_log("network lobby: broadcast chunk %lu: loading the game", lobby_broadcast.queue[lobby_broadcast.length - 1].sequence);
+		return;
+	case _playback_loading:
+		if (!game_engine_running() || lobby_broadcast.length == 0)
+			return;
+		broadcast_join_newest();
+		lobby_broadcast.phase = _playback_playing;
+		platform_log("network lobby: broadcast playing from chunk %lu", lobby_broadcast.queue[0].sequence);
+		return;
+	case _playback_playing:
+		break;
+	default:
+		return;
+	}
+	if (lobby_broadcast.length == 0)
+		return;
+	/* fallen behind: the newest chunk's world, and on */
+	if (lobby_broadcast.length > BROADCAST_BEHIND)
+	{
+		platform_log("network lobby: broadcast behind by %ld chunks; jumping ahead", lobby_broadcast.length - 1);
+		broadcast_join_newest();
+	}
+	lobby_broadcast.clock += seconds * (real)TICKS_PER_SECOND;
+	for (;;)
+	{
+		struct broadcast_chunk *chunk = &lobby_broadcast.queue[0];
+
+		if (!broadcast_play(chunk, 0, lobby_broadcast.clock))
+		{
+			/* (no further than the chunk's end until the next is here) */
+			if (lobby_broadcast.clock > (real)chunk->end_tick)
+				lobby_broadcast.clock = (real)chunk->end_tick;
+			return;
+		}
+		if (lobby_broadcast.length == 1)
+		{
+			if (lobby_broadcast.clock > (real)chunk->end_tick)
+				lobby_broadcast.clock = (real)chunk->end_tick;
+			return;
+		}
+		broadcast_drop_front();
+	}
 }
 #endif

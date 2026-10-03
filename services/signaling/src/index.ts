@@ -46,6 +46,7 @@ import { generateIceServersWithFallback, revokeTurnCredential } from "./turn";
 import { enforceTurnBandwidthCaps, turnIsDisabled, turnUsageSummary } from "./turn_cap";
 import { requireHumanVerification } from "./turnstile";
 import { checkSettlementWallet } from "./alerts";
+import { handleBroadcastRequest } from "./broadcast";
 import { handlePartyRequest } from "./parties";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
@@ -991,6 +992,23 @@ async function handleMatchmaking(
       return withCors(jsonResponse({ cancelled, v: SIGNALING_PROTOCOL_VERSION }), origin);
     }
   }
+  /* the broadcasts (src/broadcast.ts) */
+  const broadcast = await handleBroadcastRequest(request, env, url, {
+    requestIsDedicatedHost,
+    requireValidRoomId,
+    publicRoom: async (buildId) => {
+      const rooms = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME)
+        .candidates(buildId, SIGNALING_PROTOCOL_VERSION, Date.now(), 32);
+      return rooms.find((room) => room.dedicated && room.players > 0)?.roomId ?? null;
+    },
+    matchRoom: async (matchId) => {
+      const invite = await env.MATCHMAKER.getByName(MATCHMAKER_NAME).spectateInvite(matchId);
+      const separator = invite ? invite.indexOf(".") : -1;
+      return invite && separator > 0 ? invite.slice(0, separator) : null;
+    },
+  });
+  if (broadcast !== null) return broadcast;
+
   /* the matches on now that can be watched (those for SOL) */
   if (request.method === "GET" && url.pathname === "/v1/live") {
     const matches = await env.MATCHMAKER.getByName(MATCHMAKER_NAME).liveMatches(Date.now());
