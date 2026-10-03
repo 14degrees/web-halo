@@ -1188,6 +1188,17 @@ EMSCRIPTEN_KEEPALIVE int platform_web_broadcast_start(void)
 	return 1;
 }
 
+/* game_engine.c, main.c */
+unsigned char game_engine_running(void);
+unsigned char main_menu_is_active(void);
+
+/* whether a game (not Halo's own menu) is on the screen: the landing is
+see-through only then */
+EMSCRIPTEN_KEEPALIVE int platform_web_game_in_view(void)
+{
+	return game_engine_running() && !main_menu_is_active() ? 1 : 0;
+}
+
 EMSCRIPTEN_KEEPALIVE void platform_web_broadcast_stop(void)
 {
 	network_lobby_broadcast_stop();

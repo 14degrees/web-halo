@@ -2779,7 +2779,8 @@
     if (!root) return;
     /* the live map shows through once the game has it up; paused, the game
        itself is behind */
-    var live = (backdropState() === 2 || backgroundBroadcastPlaying()) && !session.active && !lobby.joining;
+    var live = (backdropState() === 2 || backgroundBroadcastPlaying()) && gameInView() &&
+      !session.active && !lobby.joining;
     if (live) root.dataset.live = "true";
     else delete root.dataset.live;
     if (lobby.paused) root.dataset.pause = "true";
@@ -2852,6 +2853,11 @@
     return wasmNumber("platform_web_broadcast_state", 0) % 16;
   }
 
+  /* a game on the screen, not Halo's own menu (which never shows through) */
+  function gameInView() {
+    return wasmNumber("platform_web_game_in_view", 0) === 1;
+  }
+
   function backgroundBroadcastPlaying() {
     return !!(lobby.broadcast && lobby.broadcast.background) && broadcastPhase() === 3;
   }
@@ -2875,6 +2881,12 @@
       var followed = typeof target === "function" ? readWasmString(target()) : "";
       var now = Date.now();
       if (followed) watching.followedAt = now;
+      /* the recording ended under it (Halo is back at its menu): the map */
+      if (broadcastPhase() === 3 && !gameInView()) {
+        stopBackgroundBroadcast();
+        lobby.backgroundRetryAt = now + BACKGROUND_RETRY_MILLISECONDS;
+        return false;
+      }
       /* nobody left to follow: the map instead, for a while */
       if (broadcastPhase() === 3 && now - (watching.followedAt || watching.startedAt) > BACKGROUND_EMPTY_MILLISECONDS) {
         stopBackgroundBroadcast();
