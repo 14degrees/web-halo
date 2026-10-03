@@ -110,7 +110,7 @@ export async function handlePartyRequest(
   if (url.pathname === "/v1/parties") {
     if (!isBuildId(input.buildId)) throw new HttpError(400, "VALIDATION_FAILED", "buildId is required.");
     const join = await member(env, input);
-    const chosen = { lobby: "matchmaking" as const, playlist: "team", mapIndex: 0, modeIndex: 1, ...settings(input) };
+    const chosen = { lobby: "matchmaking" as const, playlist: "ffa", mapIndex: 0, modeIndex: 1, ...settings(input) };
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const code = newCode();
       const party = await env.PARTIES.getByName(code).create(code, input.buildId, join, chosen, now);

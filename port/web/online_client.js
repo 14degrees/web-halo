@@ -2514,7 +2514,7 @@
 
   var QUEUE_POLL_MILLISECONDS = 1000;
   /* what Play queues for (services/signaling/src/matchmaker.ts, PLAYLISTS) */
-  var DEFAULT_PLAYLIST = "team";
+  var DEFAULT_PLAYLIST = "ffa";
 
   async function enqueueForMatch() {
     if (lobby.queue) return;
@@ -3503,9 +3503,12 @@
     show("lobby-map-open", custom);
     setText("lobby-game", selectedLabel(elements.mode, currentCustomMode()) || "Slayer");
     setText("lobby-map", selectedLabel(elements.map, currentCustomMap()) || "Battle Creek");
-    setText("lobby-options", custom ? "Edit Game Options" : "Edit Matchmaking Options");
+    /* friends: Leave Party once anyone else is in it; Invite while not in a
+       match */
+    show("lobby-party-leave", !!view && view.members.length > 1);
+    show("lobby-invite", !session.active && !lobby.queue);
     var leaderOnly = !!view && !view.leader;
-    ["lobby-switch", "lobby-playlist-open", "lobby-game-open", "lobby-map-open", "lobby-options"].forEach(function(id) {
+    ["lobby-switch", "lobby-playlist-open", "lobby-game-open", "lobby-map-open"].forEach(function(id) {
       var element = lobbyElement(id);
       if (element) element.disabled = leaderOnly;
     });
@@ -5151,9 +5154,14 @@
           lights.appendChild(light);
         });
     }
-    lobbyElement("lobby-options").addEventListener("click", function() {
-      if (lobbyKind() === "custom") openChooser("mode");
-      else lobbyElement("lobby-playlist-open").click();
+    lobbyElement("lobby-customize").addEventListener("click", function() {
+      lobbyElement("lobby-spartan-toggle").click();
+    });
+    lobbyElement("lobby-party-leave").addEventListener("click", function() { leaveParty(); });
+    /* invite: a party to bring friends into (started if there is none) */
+    lobbyElement("lobby-invite").addEventListener("click", async function() {
+      if (!partyView()) await createParty();
+      if (partyView()) openPartyDialog();
     });
     lobbyElement("lobby-switch").addEventListener("click", function() {
       if (session.active || lobby.queue) return;
