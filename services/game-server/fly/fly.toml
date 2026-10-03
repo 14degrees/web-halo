@@ -26,6 +26,20 @@ primary_region = "lax"
   HALO_MODE = "pool"
   HALO_MATCH_COUNTDOWN_SECONDS = "5"
 
+# The status page and the page's ping probe (gateway/main.go, statusMux):
+# GET https://halo-game-lilchocobo.fly.dev/ping answers 204 from any origin,
+# and the browser times it before a match (the signaling Worker's
+# PING_TARGETS). Fly terminates TLS on its edge and proxies to the machine,
+# so a kept-alive request's round trip is close to the game's own path.
+# The app needs a public IP for TCP (`fly ips list`; `fly ips allocate-v4
+# --shared` is free).
+[[services]]
+  protocol = "tcp"
+  internal_port = 8790
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
 [[services]]
   protocol = "udp"
   internal_port = 40100
