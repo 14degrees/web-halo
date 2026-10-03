@@ -284,6 +284,8 @@ addToLibrary({
         return;
       }
       if (reliable) {
+        record.reliableBytesIn += bytes.byteLength;
+        record.reliablePacketsIn++;
         if (record.reliableQueuedBytes + bytes.byteLength > runtime.RELIABLE_QUEUE_LIMIT) {
           runtime.failPeer(record, new Error('Reliable receive queue overflow'));
           return;
@@ -291,6 +293,8 @@ addToLibrary({
         record.reliableQueue.push(bytes);
         record.reliableQueuedBytes += bytes.byteLength;
       } else {
+        record.unreliableBytesIn += bytes.byteLength;
+        record.unreliablePacketsIn++;
         if (record.unreliableQueue.length >= runtime.UNRELIABLE_PACKET_LIMIT ||
             record.unreliableQueuedBytes + bytes.byteLength > runtime.UNRELIABLE_QUEUE_LIMIT) {
           /* UDP is best effort: discard the newest update when the game is
@@ -428,6 +432,18 @@ addToLibrary({
         reliableQueuedBytes: 0,
         unreliableQueuedBytes: 0,
         droppedDatagrams: 0,
+        /* the developer panel's counters (listPeers): frames and payload
+           bytes each way per channel, and sends the game asked for while a
+           channel was over its high-water mark */
+        reliableBytesIn: 0,
+        reliableBytesOut: 0,
+        reliablePacketsIn: 0,
+        reliablePacketsOut: 0,
+        unreliableBytesIn: 0,
+        unreliableBytesOut: 0,
+        unreliablePacketsIn: 0,
+        unreliablePacketsOut: 0,
+        sendRefusals: 0,
         needsStateSync: true,
         lastPublicState: null,
         removed: false,
@@ -567,6 +583,7 @@ addToLibrary({
       var highWater = reliable ? runtime.RELIABLE_HIGH_WATER :
         runtime.UNRELIABLE_HIGH_WATER;
       if (!runtime.channelWriteable(channel, highWater)) {
+        record.sendRefusals++;
         record.needsStateSync = true;
         runtime.schedulePump(1);
         return 0;
@@ -574,6 +591,13 @@ addToLibrary({
       try {
         var frame = HEAPU8.slice(pointer, pointer + length);
         channel.send(frame);
+        if (reliable) {
+          record.reliableBytesOut += length;
+          record.reliablePacketsOut++;
+        } else {
+          record.unreliableBytesOut += length;
+          record.unreliablePacketsOut++;
+        }
         if (channel.bufferedAmount > highWater) {
           record.needsStateSync = true;
           runtime.schedulePump(1);
@@ -615,6 +639,23 @@ addToLibrary({
               address: record.addressText,
               state: record.lastPublicState,
               droppedDatagrams: record.droppedDatagrams,
+              sendRefusals: record.sendRefusals,
+              reliable: {
+                bytesIn: record.reliableBytesIn,
+                bytesOut: record.reliableBytesOut,
+                packetsIn: record.reliablePacketsIn,
+                packetsOut: record.reliablePacketsOut,
+                queuedBytes: record.reliableQueuedBytes,
+                bufferedAmount: record.reliable ? record.reliable.bufferedAmount : 0,
+              },
+              unreliable: {
+                bytesIn: record.unreliableBytesIn,
+                bytesOut: record.unreliableBytesOut,
+                packetsIn: record.unreliablePacketsIn,
+                packetsOut: record.unreliablePacketsOut,
+                queuedBytes: record.unreliableQueuedBytes,
+                bufferedAmount: record.unreliable ? record.unreliable.bufferedAmount : 0,
+              },
             };
           });
         },
