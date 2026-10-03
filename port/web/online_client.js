@@ -2804,13 +2804,6 @@
     /* what the fullest public server is playing; paused, your own game */
     var servers = publicServers();
     var room = servers[0];
-    /* something to watch: a public game with players in it */
-    var watchButton = lobbyElement("landing-watch");
-    if (watchButton) {
-      var watchable = !lobby.paused && session.runtimeReady && !session.active && !lobby.joining &&
-        servers.some(function(entry) { return (entry.players || 0) > 0; });
-      if (watchButton.hidden === watchable) watchButton.hidden = !watchable;
-    }
     if (lobby.paused && session.room && session.room.lobby) room = session.room.lobby;
     if (room) {
       var mapName = selectedLabel(elements.map, Number(room.mapIndex)) || "Blood Gulch";
@@ -5293,11 +5286,21 @@
       setLandingStatus("");
     };
     lobbyElement("landing").addEventListener("click", function(event) {
-      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave, .landing-watch")) return;
+      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave")) return;
       if (lobby.paused) resumeGame();
       else landingQuickPlay();
     });
-    lobbyElement("landing-watch").addEventListener("click", function() { landingSpectate(); });
+    lobbyElement("landing-spectate").addEventListener("click", function() {
+      /* (from the Esc menu: out of this game first) */
+      if (lobby.paused) {
+        lobby.paused = false;
+        lobby.wantsPlay = false;
+        cancelQueue();
+        leave(false).then(function() { landingSpectate(); });
+        return;
+      }
+      landingSpectate();
+    });
     /* watching: a click follows the next player; Tab holds up the scores;
        Esc leaves */
     byId("spectate").addEventListener("click", function() {
