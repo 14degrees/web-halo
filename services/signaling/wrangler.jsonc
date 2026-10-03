@@ -81,6 +81,10 @@
       {
         "name": "PARTIES",
         "class_name": "Party"
+      },
+      {
+        "name": "PROFILES",
+        "class_name": "Profiles"
       }
     ]
   },
@@ -106,6 +110,16 @@
       "namespace_id": "41003",
       "simple": {
         "limit": 30,
+        "period": 60
+      }
+    },
+    {
+      // username claims and renames (src/profile.ts); the store also caps
+      // renames per profile per day
+      "name": "PROFILE_CLAIM_LIMITER",
+      "namespace_id": "41004",
+      "simple": {
+        "limit": 10,
         "period": 60
       }
     }
@@ -139,6 +153,11 @@
       // the house ledger, replaced by the escrow program's vaults
       "tag": "v7",
       "deleted_classes": ["Bank"]
+    },
+    {
+      // players' profiles: usernames, wallets, fomo and X links
+      "tag": "v8",
+      "new_sqlite_classes": ["Profiles"]
     }
   ],
   "observability": {
