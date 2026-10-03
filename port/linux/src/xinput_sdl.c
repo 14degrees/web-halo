@@ -177,6 +177,11 @@ static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GA
 	if (k[SDL_SCANCODE_ESCAPE]) pad->wButtons |= XINPUT_GAMEPAD_START;
 	if (k[SDL_SCANCODE_F1]) pad->wButtons |= XINPUT_GAMEPAD_BACK;
 #ifdef HALO_WEB
+	/* the browser game: Tab holds up the scores, as in other shooters (the
+	wheel switches weapons) */
+	if (k[SDL_SCANCODE_TAB]) pad->wButtons |= XINPUT_GAMEPAD_BACK;
+#endif
+#ifdef HALO_WEB
 	/* Control plus a movement key is a browser shortcut (Ctrl+W closes the
 	 * tab, Ctrl+S opens Save, and Ctrl+D bookmarks). Keep web crouch on C so
 	 * ordinary tab play cannot accidentally leave the game. */
@@ -195,8 +200,14 @@ static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GA
 	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(k[SDL_SCANCODE_AC_BACK]);
 #endif
 	pad->bAnalogButtons[XINPUT_GAMEPAD_X] |= analog(k[SDL_SCANCODE_E] || k[SDL_SCANCODE_R]);
+#ifdef HALO_WEB
+	/* (the browser game: Q switches weapons, T is the flashlight) */
+	pad->bAnalogButtons[XINPUT_GAMEPAD_Y] |= analog(k[SDL_SCANCODE_Q] || SDL_GetTicks() < wheel_press_until_ms);
+	pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] |= analog(k[SDL_SCANCODE_T]);
+#else
 	pad->bAnalogButtons[XINPUT_GAMEPAD_Y] |= analog(k[SDL_SCANCODE_TAB] || SDL_GetTicks() < wheel_press_until_ms);
 	pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] |= analog(k[SDL_SCANCODE_Q]);
+#endif
 	pad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] |= analog(k[SDL_SCANCODE_X]);
 	pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] |= analog(k[SDL_SCANCODE_G] || (mouse && m[SDL_BUTTON_RIGHT]));
 	pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] |= analog(mouse && m[SDL_BUTTON_LEFT]);

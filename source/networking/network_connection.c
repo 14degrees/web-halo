@@ -323,9 +323,20 @@ void network_connection_initialize(
 	return;
 }
 
+#ifdef HALO_WEB
+/* A broadcast's playback (port/linux/game/network_lobby.c): the client's
+connection carries nothing either way; the messages come from the
+recording, straight to the client's handler. It is always up. */
+struct network_connection *network_connection_playback;
+#endif
+
 boolean network_connection_connected(
 	struct network_connection *connection)
 {
+#ifdef HALO_WEB
+	if (connection && connection == network_connection_playback)
+		return TRUE;
+#endif
 	match_assert(
 		"c:\\halo\\SOURCE\\networking\\network_connection.c",
 		0x15C,
@@ -628,6 +639,10 @@ boolean network_connection_server_accept_client_connection(
 boolean network_connection_active(
 	struct network_connection *connection)
 {
+#ifdef HALO_WEB
+	if (connection && connection == network_connection_playback)
+		return TRUE;
+#endif
 	match_assert(
 		"c:\\halo\\SOURCE\\networking\\network_connection.c",
 		0x330,
@@ -639,6 +654,10 @@ boolean network_connection_active(
 boolean network_connection_going_stale(
 	struct network_connection *connection)
 {
+#ifdef HALO_WEB
+	if (connection && connection == network_connection_playback)
+		return FALSE;
+#endif
 	match_assert(
 		"c:\\halo\\SOURCE\\networking\\network_connection.c",
 		0x338,
@@ -823,6 +842,10 @@ boolean network_connection_write(
 	struct transport_address *dest_address,
 	boolean reliable)
 {
+#ifdef HALO_WEB
+	if (connection && connection == network_connection_playback)
+		return TRUE;
+#endif
 	message_header *header = message;
 	long result = 0;
 	boolean success;
@@ -1374,6 +1397,10 @@ boolean network_connection_read(
 	word *buffer_size,
 	struct transport_address *source_address)
 {
+#ifdef HALO_WEB
+	if (connection && connection == network_connection_playback)
+		return FALSE;
+#endif
 	boolean result;
 
 	if (TEST_FLAG(connection->flags, _connection_create_server_bit))
@@ -1451,6 +1478,10 @@ boolean network_server_close_client_connection(
 boolean network_connection_disconnect(
 	struct network_connection *connection)
 {
+#ifdef HALO_WEB
+	if (connection && connection == network_connection_playback)
+		return TRUE;
+#endif
 	boolean success = TRUE;
 
 	if (network_connection_connected(connection))
@@ -1620,6 +1651,10 @@ boolean network_connection_idle(
 	long timeout,
 	struct network_connection **new_client_connection)
 {
+#ifdef HALO_WEB
+	if (connection && connection == network_connection_playback)
+		return TRUE;
+#endif
 	byte buffer[DATAGRAM_MAXIMUM_SIZE + sizeof(unsigned long)];
 	unsigned long current_time = system_milliseconds();
 	unsigned long elapsed_time;

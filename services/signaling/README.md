@@ -9,6 +9,13 @@ when a direct path is impossible).
 The service deliberately has no account system or database. A random invite is
 the guest capability, and a separate random capability is retained by the host.
 
+Rooms are private by default. A **public** room is additionally listed in the
+lobby directory (one singleton Durable Object) so that **quick join** can seat a
+player in it without an invite. A public room's guests need no ticket; the room
+object mints a ticket-less guest session only for a public room. The directory
+holds ranking data, never a capability, so a stale listing costs a failed
+attempt, never an unauthorised join.
+
 ## Local development
 
 Use Node.js 22 or 24+.
@@ -46,6 +53,8 @@ Non-secret settings live in `wrangler.jsonc`:
 | `TURN_TTL_SECONDS` | TURN credential lifetime; default one hour, maximum two hours here |
 | `DEFAULT_ROOM_CAPACITY` | Capacity including the host; default 128 |
 | `MAX_ROOM_CAPACITY` | Hard capacity ceiling; 128 machines |
+| `DEDICATED_ROOM_TTL_SECONDS` | Room lifetime for a dedicated host between renewals; default one day |
+| `PUBLIC_LOBBY_MAP_INDEX`, `PUBLIC_LOBBY_MODE_INDEX` | The lobby quick join opens when no public room exists; default Blood Gulch (9) Slayer (0), in the order of `port/web/src/web_online_ui.h` |
 
 `wrangler types` generates `worker-configuration.d.ts` from this file. The only
 manual environment augmentation is the required room-signing secret and the two
@@ -59,6 +68,19 @@ Object:
 ```sh
 openssl rand -hex 32 | npx wrangler secret put ROOM_ID_SECRET
 ```
+
+A dedicated host (a server-run copy of the browser build that keeps a public
+lobby open; `services/dedicated-host/README.md`) authenticates with a
+separate bearer secret instead of Turnstile. It is optional; without it,
+public rooms are only ever hosted by players' browsers:
+
+```sh
+openssl rand -hex 32 | npx wrangler secret put HOST_SERVICE_TOKEN
+```
+
+Bounty playlists (playing for SOL through the escrow program) need two more
+secrets, `ESCROW_AUTHORITY_SECRET_KEY` and `ESCROW_SESSION_SECRET`; without
+them those playlists are off. Refer to [docs/wagers.md](../../docs/wagers.md).
 
 The configured rate-limit bindings cap room creation at 20 per minute and
 session creation at 512 per minute for one connecting address in one Cloudflare
@@ -144,6 +166,14 @@ Origin: https://play.example.com
 `identifier` is the lowercase 12-hex identifier used by the web transport's
 XNADDR mapping. Capacity includes the host.
 
+Optional fields:
+
+| Field | Meaning |
+| --- | --- |
+| `visibility` | `"private"` (default) or `"public"`. A public room is listed for quick join. |
+| `lobby` | `{ "mapIndex": 0-12, "modeIndex": 0-5 }`, shown to joiners and used by the host's game. A public room without one gets the configured default. |
+| `dedicated` | `true` only with `Authorization: Bearer <HOST_SERVICE_TOKEN>`. Skips Turnstile, defaults to public, uses `DEDICATED_ROOM_TTL_SECONDS`, and ranks first in quick join. Without the credential the request fails with `403 DEDICATED_HOST_UNAUTHORIZED`. |
+
 The response is:
 
 ```json
@@ -154,7 +184,10 @@ The response is:
     "buildId": "streamhash-2026-09-28",
     "protocolVersion": 1,
     "capacity": 128,
-    "expiresAt": 1790630000000
+    "expiresAt": 1790630000000,
+    "visibility": "private",
+    "dedicated": false,
+    "lobby": null
   },
   "host": {
     "ticket": "host-capability-kept-by-the-host",
@@ -200,7 +233,9 @@ Origin: https://play.example.com
 
 Each friend splits `invite.code` at the first period, using the first part as
 `:roomId` and the second as `ticket`. A host can use the same endpoint with its
-private host ticket to reconnect after its prior socket has closed.
+private host ticket to reconnect after its prior socket has closed. For a
+public room, `ticket` may be omitted: the room seats the caller as a guest.
+A ticket-less request against a private room shares the 404 of a bad ticket.
 
 Success returns:
 
@@ -231,6 +266,52 @@ the first successful upgrade. Invalid room IDs and invalid tickets intentionally
 share a 404 response. Important 409 codes are `BUILD_MISMATCH`,
 `PROTOCOL_MISMATCH`, `IDENTIFIER_IN_USE`, `ROOM_FULL`, and
 `HOST_ALREADY_CONNECTED`.
+
+### Quick join
+
+```http
+POST /v1/quickjoin
+Content-Type: application/json
+Origin: https://play.example.com
+```
+
+```json
+{
+  "protocolVersion": 1,
+  "buildId": "streamhash-2026-09-28",
+  "identifier": "66778899aabb",
+  "turnstileToken": "optional, the join_room action"
+}
+```
+
+The Worker asks the lobby directory for open public rooms on the same build
+(a dedicated host first, then the fullest, then the oldest) and mints a guest
+session in the first that accepts. The response is a session response with
+`"role": "guest"`. When no room accepts, the Worker creates a public room for
+the caller with the configured default lobby and returns a room response with
+`"role": "host"`: the caller hosts, and later callers land with it. One
+Turnstile token for the `join_room` action covers either outcome.
+
+`409 IDENTIFIER_IN_USE` means this identifier is already in the room it would
+have joined (a refresh still in flight); the caller is not sent elsewhere.
+
+### Renew a room
+
+```http
+POST /v1/rooms/:roomId/renew
+Content-Type: application/json
+```
+
+```json
+{ "ticket": "host-capability-kept-by-the-host" }
+```
+
+Extends the room to one room TTL from now (the dedicated TTL when the request
+also carries the service credential) and returns `{ "v": 1, "room": {...} }`.
+An optional `lobby` (`{ "mapIndex", "modeIndex" }`) replaces the settings the
+room advertises, which is how a dedicated host publishes its map rotation.
+The browser host calls this every 50 minutes; a dedicated host relies on it to
+keep its lobby open indefinitely.
 
 ### Open the signaling socket
 
@@ -406,7 +487,12 @@ signals for that `peerId`.
 - Guest capabilities are reusable until room expiry. Session tokens are
   30-second, single-use credentials suitable for a browser WebSocket URL.
 - One alarm deletes the room at its absolute TTL and closes connected sockets
-  with code 4001.
+  with code 4001. A host may push the TTL back with the renew route.
+- A public room publishes its player count and settings to the lobby
+  directory on every membership change and withdraws itself when it closes or
+  expires. The directory also drops entries whose rooms have expired or gone
+  quiet, and a listing that no longer accepts sessions is removed on the next
+  quick join that tries it.
 - WebSocket attachments store peer ID, role, identifier, join time, and the
   small validated display profile, so membership and the roster survive
   Durable Object hibernation.
@@ -440,5 +526,7 @@ npm run deploy:dry
 
 The tests cover room creation, origin rejection, build and identifier matching,
 capacity, single-use WebSocket credentials, peer membership, room revocation,
-signed-room rejection, SDP relay, STUN fallback, TURN TTL clipping, and browser
-port-53 filtering.
+signed-room rejection, SDP relay, STUN fallback, TURN TTL clipping, browser
+port-53 filtering, and the public lobby: quick join hosting and joining,
+private rooms staying unlisted, full rooms being skipped, closed rooms leaving
+the directory, the dedicated-host credential, and room renewal.

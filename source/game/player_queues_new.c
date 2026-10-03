@@ -654,6 +654,17 @@ static boolean update_client_dequeue_distributed(
 }
 
 #endif
+#ifdef HALO_LINUX
+/* A client that joined a game in progress: its updates are numbered from
+where the server's game is. */
+void update_client_join_in_progress(
+	long update_number)
+{
+	update_client_globals.next_update_number_to_dequeue = update_number;
+	update_client_globals.latest_update_number_received = update_number - 1;
+}
+#endif
+
 boolean update_client_dequeue(
 	struct player_action *actions)
 {
@@ -841,6 +852,12 @@ void update_client_build_client_update(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* port/linux/game/network_distributed.c */
+short network_distributed_local_player_index(short host_index);
+#endif
+
+
 void update_client_handle_server_update(
 	struct server_update *update,
 	long update_number)
@@ -856,9 +873,16 @@ void update_client_handle_server_update(
 			action_index < update->action_count && action_index < MAXIMUM_NUMBER_OF_PLAYERS;
 			action_index++)
 		{
-			update_client_relayed_actions[action_index].valid = TRUE;
-			update_client_relayed_actions[action_index].action = update->actions[action_index];
-			update_client_relayed_actions[action_index].pending_control_flags |= update->actions[action_index].control_flags;
+			/* the host numbers its players its own way; a machine that joined
+			a game in progress may number them otherwise (network_distributed.c):
+			each player's action drives that player here */
+			short local_index = network_distributed_local_player_index(action_index);
+
+			if (local_index < 0 || local_index >= MAXIMUM_NUMBER_OF_PLAYERS)
+				continue;
+			update_client_relayed_actions[local_index].valid = TRUE;
+			update_client_relayed_actions[local_index].action = update->actions[action_index];
+			update_client_relayed_actions[local_index].pending_control_flags |= update->actions[action_index].control_flags;
 		}
 	}
 #endif

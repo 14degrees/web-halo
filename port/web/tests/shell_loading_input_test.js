@@ -74,7 +74,7 @@ assert.match(shell,
   'fullscreen must hide the online sidebar and Duke legend');
 assert.match(shell, /id="duke-legend"[\s\S]*xbox-duke-controller\.png/,
   'the legend must use the high-resolution Duke image');
-assert.match(shell, /<dt>A<\/dt>[\s\S]*?<dd>- Space<\/dd>[\s\S]*?<dt>B<\/dt>[\s\S]*?<dd>- F<\/dd>[\s\S]*?<dt>X<\/dt><dd>- E \/ R<\/dd>[\s\S]*?<dt>Y<\/dt><dd>- Tab \/ Wheel<\/dd>[\s\S]*?<dt>White<\/dt><dd>- Q<\/dd>[\s\S]*?<dt>Black<\/dt><dd>- X<\/dd>[\s\S]*?<dt>LT<\/dt><dd>- G \/ RMB<\/dd>[\s\S]*?<dt>RT<\/dt><dd>- LMB<\/dd>[\s\S]*?<dt>Move<\/dt><dd>- WASD<\/dd>[\s\S]*?<dt>Aim<\/dt><dd>- Mouse<\/dd>[\s\S]*?<dt>L3<\/dt><dd>- C<\/dd>[\s\S]*?<dt>R3<\/dt><dd>- Z \/ MMB<\/dd>[\s\S]*?<dt>D-pad<\/dt><dd>- Arrows<\/dd>[\s\S]*?<dt>Start<\/dt><dd>- Esc<\/dd>[\s\S]*?<dt>Back<\/dt><dd>- F1<\/dd>/,
+assert.match(shell, /<dt>A<\/dt>[\s\S]*?<dd>- Space<\/dd>[\s\S]*?<dt>B<\/dt>[\s\S]*?<dd>- F<\/dd>[\s\S]*?<dt>X<\/dt><dd>- E \/ R<\/dd>[\s\S]*?<dt>Y<\/dt><dd>- Q \/ Wheel<\/dd>[\s\S]*?<dt>White<\/dt><dd>- T<\/dd>[\s\S]*?<dt>Black<\/dt><dd>- X<\/dd>[\s\S]*?<dt>LT<\/dt><dd>- G \/ RMB<\/dd>[\s\S]*?<dt>RT<\/dt><dd>- LMB<\/dd>[\s\S]*?<dt>Move<\/dt><dd>- WASD<\/dd>[\s\S]*?<dt>Aim<\/dt><dd>- Mouse<\/dd>[\s\S]*?<dt>L3<\/dt><dd>- C<\/dd>[\s\S]*?<dt>R3<\/dt><dd>- Z \/ MMB<\/dd>[\s\S]*?<dt>D-pad<\/dt><dd>- Arrows<\/dd>[\s\S]*?<dt>Start<\/dt><dd>- Esc<\/dd>[\s\S]*?<dt>Back<\/dt><dd>- Tab \/ F1<\/dd>/,
   'the high-resolution Duke legend must document the complete keyboard mapping');
 assert.doesNotMatch(shell, /<figcaption>Duke<\/figcaption>/,
   'the controller image must not carry a redundant Duke caption');

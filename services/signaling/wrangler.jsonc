@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "halo-web-signaling",
+  "name": "halo-signaling",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-29",
   "compatibility_flags": ["nodejs_compat"],
@@ -8,26 +8,50 @@
     // Safe-by-default deployment settings. The exact public game origin is
     // allowed alongside the two deterministic local-development origins.
     "ENVIRONMENT": "production",
-    "ALLOWED_ORIGINS": "https://halo-web.otherness-bugs.workers.dev,https://mitchellhynes.com,http://127.0.0.1:8765,http://localhost:8765",
+    // The game server pool's Fly app, which the matchmaker scales (its
+    // FLY_API_TOKEN is a secret; services/game-server/fly/pool.py).
+    "FLY_APP_NAME": "halo-game-lilchocobo",
+    "ALLOWED_ORIGINS": "https://halo.lilchocobo2.workers.dev,http://127.0.0.1:8765,http://localhost:8765",
     "ALLOW_NO_ORIGIN": "false",
-    "PUBLIC_GAME_URL": "https://mitchellhynes.com/halo",
+    "PUBLIC_GAME_URL": "https://halo.lilchocobo2.workers.dev",
     "ROOM_TTL_SECONDS": "21600",
     "SESSION_TTL_SECONDS": "30",
     "TURN_TTL_SECONDS": "3600",
-    "TURNSTILE_HOSTNAMES": "halo-web.otherness-bugs.workers.dev,mitchellhynes.com",
-    "CLOUDFLARE_ACCOUNT_ID": "bea51ed443abd5b18e9e56723daa7a79",
+    "TURNSTILE_HOSTNAMES": "",
+    "CLOUDFLARE_ACCOUNT_ID": "86f73ff8d0ff09a24168f22d41b88b8b",
     "TURN_ACTOR_HOURLY_EGRESS_CAP_BYTES": "1000000000",
     "TURN_GLOBAL_DAILY_EGRESS_CAP_BYTES": "10000000000",
     "DEFAULT_ROOM_CAPACITY": "128",
-    "MAX_ROOM_CAPACITY": "128"
+    "MAX_ROOM_CAPACITY": "128",
+    // Rooms a dedicated host creates live this long between renewals.
+    "DEDICATED_ROOM_TTL_SECONDS": "86400",
+    // The game quick join starts when no public room is open:
+    // Blood Gulch (9) Slayer (0); see port/web/src/web_online_ui.h.
+    "PUBLIC_LOBBY_MAP_INDEX": "9",
+    "PUBLIC_LOBBY_MODE_INDEX": "0",
+    // Wallets and the escrow program's cluster.
+    "SOLANA_CLUSTER": "devnet",
+    // Tried in order: Solana's own devnet endpoint refuses Cloudflare.
+    "SOLANA_RPC_URL": "https://api.devnet.solana.com,https://solana-devnet.api.onfinality.io/public",
+    // The escrow program (services/escrow) on SOLANA_CLUSTER: where its fee
+    // goes and the fee's rate (it may not exceed the program's own setting).
+    // Its authority key and session secret are secrets.
+    "ESCROW_FEE_VAULT": "8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM",
+    "ESCROW_FEE_BPS": "500"
   },
   "triggers": {
     "crons": ["*/5 * * * *"]
   },
+  "r2_buckets": [
+    {
+      "binding": "BROADCASTS",
+      "bucket_name": "halo-broadcasts"
+    }
+  ],
   "kv_namespaces": [
     {
       "binding": "HALO_ABUSE",
-      "id": "39abc5d59c85450e82f75b2abe3e3afa"
+      "id": "0360e1b80a7f43a095ecdbd714e9934d"
     }
   ],
   "analytics_engine_datasets": [
@@ -41,6 +65,22 @@
       {
         "name": "ROOMS",
         "class_name": "SignalingRoom"
+      },
+      {
+        "name": "LOBBY_DIRECTORY",
+        "class_name": "LobbyDirectory"
+      },
+      {
+        "name": "MATCHMAKER",
+        "class_name": "Matchmaker"
+      },
+      {
+        "name": "WAGERS",
+        "class_name": "Wager"
+      },
+      {
+        "name": "PARTIES",
+        "class_name": "Party"
       }
     ]
   },
@@ -74,6 +114,31 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["SignalingRoom"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["LobbyDirectory"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["Bank"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["Matchmaker"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["Wager"]
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": ["Party"]
+    },
+    {
+      // the house ledger, replaced by the escrow program's vaults
+      "tag": "v7",
+      "deleted_classes": ["Bank"]
     }
   ],
   "observability": {

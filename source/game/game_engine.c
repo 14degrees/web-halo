@@ -582,6 +582,9 @@ symbols in this file:
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
 /* port/linux/game/network_distributed.c's */
+/* port/linux/game/network_lobby.c's: the browser's scoreboard */
+void network_lobby_scoreboard_shown(real alpha, boolean over);
+void network_lobby_note_kill(long killing_player_index, long dead_player_index, boolean friendly_fire);
 void network_distributed_player_killed(long *killing_player_index, long *killing_object_index,
 	long dead_player_index, boolean *friendly_fire);
 #endif
@@ -1406,6 +1409,35 @@ static void game_engine_generate_title_string(
 	return;
 }
 
+#ifdef HALO_WEB
+/* port: a wagered match's money (port/web/src/web_online_ui.c), by ASCII
+player name; both are FALSE outside a wagered match */
+int web_wager_label(char const *name, char *label, int label_size);
+int web_wager_footer(char *text, int text_size);
+
+/* A player's SOL label for the scoreboard, as a wide string; FALSE when the
+match is not wagered or the player is not in it. */
+static boolean in_game_score_wager_label(
+	struct player_datum const *player,
+	wchar_t *label,
+	long label_size)
+{
+	char name[12];
+	char ascii_label[12];
+	long index;
+
+	for (index = 0; index < 11 && player->name[index]; index++)
+		name[index] = player->name[index] < 128 ? (char)player->name[index] : '?';
+	name[index] = 0;
+	if (!web_wager_label(name, ascii_label, sizeof(ascii_label)))
+		return FALSE;
+	for (index = 0; index < label_size - 1 && ascii_label[index]; index++)
+		label[index] = (wchar_t)ascii_label[index];
+	label[index] = 0;
+	return TRUE;
+}
+#endif
+
 static void rasterize_in_game_score_draw_line(
 	wchar_t const *string,
 	boolean brighten,
@@ -1413,8 +1445,8 @@ static void rasterize_in_game_score_draw_line(
 	long row_index)
 {
 	rectangle2d bounds = render.camera.window_bounds;
-	short narrow_tab_stops[3];
-	short wide_tab_stops[3];
+	short narrow_tab_stops[4];
+	short wide_tab_stops[4];
 	short *tab_stops;
 	boolean splitscreen;
 	long font_index;
@@ -1427,6 +1459,9 @@ static void rasterize_in_game_score_draw_line(
 	wide_tab_stops[0] = 130;
 	wide_tab_stops[1] = 195;
 	wide_tab_stops[2] = 315;
+	/* port: a wagered match's SOL column (HALO_WEB) */
+	narrow_tab_stops[3] = 250;
+	wide_tab_stops[3] = 385;
 
 	if (bounds.x1 - bounds.x0 > 320)
 		tab_stops = wide_tab_stops;
@@ -1434,7 +1469,7 @@ static void rasterize_in_game_score_draw_line(
 		tab_stops = narrow_tab_stops;
 
 	if (row_index)
-		draw_string_set_tab_stops(tab_stops, 3);
+		draw_string_set_tab_stops(tab_stops, 4);
 	else
 		draw_string_set_tab_stops(NULL, 0);
 
@@ -1782,6 +1817,14 @@ static void game_engine_rasterize_in_game_score(
 
 	game_engine->format_score_name(score_string);
 	usprintf(row_string, L"\t%s\t%s\t%s", column_name, score_name, score_string);
+#ifdef HALO_WEB
+	{
+		char footer[48];
+
+		if (web_wager_footer(footer, sizeof(footer)))
+			usprintf(row_string, L"\t%s\t%s\t%s\tSOL", column_name, score_name, score_string);
+	}
+#endif
 	rasterize_in_game_score_draw_line(row_string, FALSE, &color, 1);
 
 	entry_index = 0;
@@ -1872,6 +1915,22 @@ static void game_engine_rasterize_in_game_score(
 					place_string,
 					player->name,
 					status_string);
+#ifdef HALO_WEB
+				{
+					wchar_t wager_label[12];
+
+					if (in_game_score_wager_label(player, wager_label, NUMBEROF(wager_label)))
+					{
+						usprintf(
+							row_string,
+							L"\t%s\t%s\t%s\t%s",
+							place_string,
+							player->name,
+							status_string,
+							wager_label);
+					}
+				}
+#endif
 
 				if (has_teams)
 					row_color = &team_colors[PIN(player->team_index, 0, 1)];
@@ -1890,6 +1949,30 @@ static void game_engine_rasterize_in_game_score(
 		}
 		while (entry_index < entry_count);
 	}
+
+#ifdef HALO_WEB
+	/* port: a wagered match's pot, under the rows */
+	{
+		char footer[48];
+		wchar_t footer_string[48];
+		long index;
+
+		if (web_wager_footer(footer, sizeof(footer)))
+		{
+			for (index = 0; index < NUMBEROF(footer_string) - 1 && footer[index]; index++)
+				footer_string[index] = (wchar_t)footer[index];
+			footer_string[index] = 0;
+			/* Halo clips each column at the next tab stop: the label under
+			Name, the amount under SOL */
+			usprintf(row_string, L"\t\tPot\t\t%s", footer_string);
+			color.red = 1.0f;
+			color.green = 0.84f;
+			color.blue = 0.35f;
+			color.alpha = alpha;
+			rasterize_in_game_score_draw_line(row_string, FALSE, &color, entry_count + 2);
+		}
+	}
+#endif
 
 	return;
 }
@@ -1935,6 +2018,11 @@ void game_engine_post_rasterize_post_game(
 
 	if (!game_engine)
 		return;
+#ifdef HALO_WEB
+	/* (the browser's scoreboard: game over) */
+	network_lobby_scoreboard_shown(1.0f, TRUE);
+	return;
+#endif
 
 	tab_stops[0] = 50;
 	tab_stops[1] = 125;
@@ -3210,6 +3298,11 @@ static void game_engine_post_rasterize_in_game(
 
 	local_player_index = render.local_player_index;
 	player_index = local_player_get_player_index(local_player_index);
+#ifdef HALO_WEB
+	/* a spectator's view has no player (network_lobby.c) */
+	if (player_index == NONE)
+		return;
+#endif
 	player = player_get(player_index);
 
 	match_assert(
@@ -3258,7 +3351,13 @@ static void game_engine_post_rasterize_in_game(
 	if (fade > 0.0f)
 	{
 		real alpha = (real)pow((double)fade, 1.9f);
+#ifdef HALO_WEB
+		/* the browser draws the scores itself, Halo 3's way
+		(network_lobby_scoreboard_json, port/web/online_client.js) */
+		network_lobby_scoreboard_shown(alpha, game_engine_globals.postgame_state == 1);
+#else
 		game_engine_rasterize_in_game_score(player_index, alpha);
+#endif
 	}
 
 result:
@@ -4071,6 +4170,10 @@ void game_engine_player_killed(
 	network_distributed_player_killed(&killing_player_index, &killing_object_index, dead_player_index,
 		&friendly_fire);
 #endif
+#if defined(HALO_WEB) || defined(HALO_SERVER)
+	/* the browser's reward popup (port/linux/game/network_lobby.c) */
+	network_lobby_note_kill(killing_player_index, dead_player_index, friendly_fire);
+#endif
 	dead_player->death_time = game_time_get();
 	if (game_engine->player_killed_player)
 	{
@@ -4574,11 +4677,22 @@ void game_engine_playlist_next(
 	return;
 }
 
+#ifdef HALO_SERVER
+/* port/server/src/server_link.c */
+int server_link_game_persistent(void);
+#endif
+
 boolean game_engine_should_end_game(
 	void)
 {
 	boolean should_end_game = FALSE;
 
+#ifdef HALO_SERVER
+	/* a public server's game goes on as players come and go: it ends at its
+	score or time limit */
+	if (server_link_game_persistent())
+		return FALSE;
+#endif
 	if (game_engine && !multiple_teams_alive())
 		should_end_game = TRUE;
 
@@ -7432,10 +7546,15 @@ static boolean internal_rasterize_score(
 			message_character_count);
 		break;
 	case 29:
+#ifdef HALO_WEB
+		/* the browser game's Back is Tab (port/linux/src/xinput_sdl.c) */
+		ustrncpy(message, L"Hold TAB for score", message_character_count);
+#else
 		ustrncpy(
 			message,
 			GET_GAME_ENGINE_HUD_FORMAT(0x64),
 			message_character_count);
+#endif
 		break;
 	default:
 		result = FALSE;

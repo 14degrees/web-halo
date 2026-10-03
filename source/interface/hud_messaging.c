@@ -147,6 +147,11 @@ symbols in this file:
 
 #include <stddef.h>
 
+#ifdef HALO_WEB
+/* port/linux/game/network_lobby.c */
+boolean network_lobby_preview_active(void);
+#endif
+
 /* ---------- constants */
 
 enum
@@ -481,6 +486,9 @@ static void render_state_text(
 	rectangle2d *cursor_bounds,
 	wchar_t const *text,
 	boolean custom);
+#ifdef HALO_WEB
+wchar_t const *web_keyboard_name(short icon_index);
+#endif
 static void render_state_bitmap(
 	rectangle2d *bounds,
 	rectangle2d *cursor_bounds,
@@ -1335,6 +1343,10 @@ void hud_messaging_update(
 {
 	if (!cinematic_in_progress() &&
 		local_player_index != NONE &&
+#ifdef HALO_WEB
+		/* port: a map preview shows the map alone (network_lobby.c) */
+		!network_lobby_preview_active() &&
+#endif
 		game_engine_hud_draw_messages(local_player_get_player_index(local_player_index)))
 	{
 		long font_index = hud_get_font_index();
@@ -1647,6 +1659,14 @@ void hud_messaging_update(
 								icon_index = element->data;
 							}
 
+#ifdef HALO_WEB
+							/* the keyboard's key, not the button (ui_widget.c) */
+							if (web_keyboard_name(icon_index))
+							{
+								render_state_text(&line_bounds, &line_cursor, web_keyboard_name(icon_index), FALSE);
+								break;
+							}
+#endif
 							if (icon_index < hud_globals->messaging.button_icons.count)
 							{
 								struct icon_hud_element_definition const *icon;

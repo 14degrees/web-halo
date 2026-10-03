@@ -66,7 +66,18 @@ The public multiplayer build is available at
 It includes the stock multiplayer maps. Campaign missions are streamed in
 chunks from the deployment's private R2 game-data bucket.
 
-To play with friends:
+To play:
+
+1. Select **Play online**, then **Join multiplayer**. If a public game is open,
+   Halo joins it. If nobody is playing yet, you host it, and everyone who
+   presses the button next lands in your game.
+
+The public game is hosted by whoever pressed the button first, until a
+dedicated host is running: a headless copy of the browser build on a server,
+which keeps a lobby open around the clock and rotates maps between games.
+Refer to [services/dedicated-host/README.md](services/dedicated-host/README.md).
+
+To play with friends privately:
 
 1. Select **Play online**, choose the map and mode, then create a private lobby.
 2. Copy the invite link and send the same link to up to 127 friends.
@@ -80,6 +91,42 @@ The signaling Worker deploys from GitHub Actions after its tests pass. The
 browser executable and game data are deliberately excluded from Git history;
 they are built and deployed from an entitled local copy of the game. See
 [docs/telemetry.md](docs/telemetry.md) for performance and TURN operations.
+
+### Run your own copy of the browser version
+
+The checked-in configuration names the public deployment above. To host the
+game yourself, on your own Cloudflare account, with your own always-open
+lobby:
+
+1. Create a free Cloudflare account. Note the workers.dev subdomain shown
+   under Workers & Pages.
+2. From the repository root, log in and run the setup once. It rewrites the
+   two Worker configurations and the page for your account, creates the KV
+   namespace, generates the secrets, and deploys the signaling Worker:
+
+   ```sh
+   cd services/signaling && npm ci && npx wrangler login && cd ../..
+   python3 tools/web_setup_deployment.py --name halo \
+       --game-url https://halo.YOUR-SUBDOMAIN.workers.dev
+   ```
+
+   Add `--turnstile-sitekey` and `--turnstile-secret` to keep the
+   human-verification widget; without them the deployment relies on its rate
+   limits. Add `--campaign` to keep the streamed campaign maps, which need
+   the R2 bucket described in [services/web/README.md](services/web/README.md).
+3. On a Mac with your Halo disc image, build the game and publish the page:
+
+   ```sh
+   python3 tools/web_run.py --iso "$HOME/Downloads/Halo.iso"
+   cd services/web && npm ci && npm run deploy
+   ```
+
+4. Commit the rewritten configuration and page.
+5. For a lobby that is open whenever nobody is playing, run the dedicated
+   host with the `HOST_SERVICE_TOKEN` the setup printed. Refer to
+   [services/dedicated-host/README.md](services/dedicated-host/README.md).
+
+Only deploy game data that you are entitled to host and distribute.
 
 ### Build the browser version on macOS
 
@@ -118,9 +165,19 @@ The game can play system link games on a local network and on the internet:
 - A system link game can have up to 128 players on up to 128 machines.
 - Linux, Windows and Android machines can play in the same game.
 - The browser build supports one host and up to 127 friends per reusable private
-  invite link. The Cloudflare service exchanges connection metadata; gameplay
-  travels directly between each friend and the host when their networks permit it.
+  invite link, and a public game that anyone can join with one button. The
+  Cloudflare service exchanges connection metadata and lists the public games;
+  gameplay travels directly between each friend and the host when their
+  networks permit it.
 - Native builds can use an invite link without a server from this project.
+- The browser build opens on **click to play**: one click drops you into the
+  fullest public server's Slayer game in progress (always-on servers that
+  take players mid-match; `services/game-server`, open mode). It also has
+  matchmaking on dedicated servers, including
+  playlists played for SOL on Solana devnet
+  ([docs/wagers.md](docs/wagers.md)), and parties: friends join by a code
+  or link, then search together or play a custom game on a server of their
+  own (`services/signaling/src/party.ts`).
 - The default netcode is new. Each machine moves its own player at once,
   and the host makes the decisions for the game. Refer to
   [port/linux/NETCODE.md](port/linux/NETCODE.md).

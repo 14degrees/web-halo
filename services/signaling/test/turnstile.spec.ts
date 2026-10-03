@@ -24,6 +24,16 @@ function verificationEnv(): RuntimeEnv {
 }
 
 describe("Turnstile verification", () => {
+  it("is skipped entirely when no hostnames are configured", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    const env = { ...verificationEnv(), TURNSTILE_HOSTNAMES: "", TURNSTILE_SECRET: "" } as RuntimeEnv;
+    const request = new Request("https://api.example/v1/rooms");
+    await requireHumanVerification(request, env, "actor", undefined, "create_room");
+    await requireHumanVerification(request, env, "actor", "any-token", "join_room");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("always verifies a supplied token and rejects a replay", async () => {
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({

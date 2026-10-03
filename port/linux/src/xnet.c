@@ -47,7 +47,7 @@ every peer.
 #include "port_config.h"
 #include "p2p.h"
 
-#ifdef HALO_WEB
+#if defined(HALO_WEB) || defined(HALO_SERVER)
 #include "../../web/src/web_loopback_net.h"
 #endif
 
@@ -850,7 +850,7 @@ INT WSAAPI XNetXnAddrToInAddr(const XNADDR *address, const XNKID *key_identifier
 
 	(void)key_identifier;
 	/* an internet play peer's XNADDR carries its identifier */
-#ifdef HALO_WEB
+#if defined(HALO_WEB) || defined(HALO_SERVER)
 	if (web_net_peer_address(address->abEnet, &peer))
 		result->s_addr = peer;
 	else

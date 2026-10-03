@@ -10,17 +10,30 @@ import {
   verificationIdFor,
 } from "./abuse";
 import { roomIdSignatureMatches, signedRoomId } from "./crypto";
+import { HttpError } from "./errors";
 import type { RuntimeEnv } from "./env";
+import { DEDICATED_HOST_LEASE_MS, LOBBY_DIRECTORY_NAME } from "./lobby";
+import { MATCHMAKER_NAME, isPlaylist, playlistWager } from "./matchmaker";
 import {
+  LOBBY_MAP_COUNT,
+  LOBBY_MODE_COUNT,
+  IDENTIFIER_PATTERN,
   MAX_HTTP_BODY_BYTES,
+  PLAYER_KEY_PATTERN,
   ROOM_ID_PATTERN,
   SIGNALING_PROTOCOL_VERSION,
   TOKEN_PATTERN,
+  isBuildId,
   parseCreateRoomInput,
   parseCreateSessionInput,
+  parseLobbySettings,
+  parseQuickJoinInput,
   type CreateRoomResponse,
   type CreateSessionResponse,
-  type PublicRoomDescriptor,
+  type LobbySettings,
+  type QuickJoinResponse,
+  type RenewRoomResponse,
+  type RoomVisibility,
   type SessionDescriptor,
 } from "./protocol";
 import {
@@ -32,17 +45,31 @@ import {
 import { generateIceServersWithFallback, revokeTurnCredential } from "./turn";
 import { enforceTurnBandwidthCaps, turnIsDisabled, turnUsageSummary } from "./turn_cap";
 import { requireHumanVerification } from "./turnstile";
+import { checkSettlementWallet } from "./alerts";
+import { handleBroadcastRequest } from "./broadcast";
+import { handlePartyRequest } from "./parties";
+import { handleEscrowRequest } from "./vault";
+import { type MatchResult, stakeProblem } from "./wager";
+import { handleWalletRequest, walletForToken } from "./wallet";
 
+export { LobbyDirectory } from "./lobby";
+export { Matchmaker } from "./matchmaker";
 export { SignalingRoom } from "./room";
+export { Wager } from "./wager";
+export { Party } from "./party";
 export type {
   ClientMessage,
   CreateRoomResponse,
   CreateSessionResponse,
   IceCandidateSignal,
   IceServerDescriptor,
+  LobbySettings,
   PlayerProfile,
   PlayerStyle,
   PublicRoomDescriptor,
+  QuickJoinResponse,
+  RenewRoomResponse,
+  RoomVisibility,
   SessionDescriptionSignal,
   SessionDescriptor,
   WebRtcSignal,
@@ -50,20 +77,40 @@ export type {
 
 const ROOM_ROUTE = /^\/v1\/rooms\/([^/]+)$/u;
 const SESSION_ROUTE = /^\/v1\/rooms\/([^/]+)\/sessions$/u;
+const RENEW_ROUTE = /^\/v1\/rooms\/([^/]+)\/renew$/u;
 const WEBSOCKET_ROUTE = /^\/v1\/rooms\/([^/]+)\/ws$/u;
 const ADMIN_BAN_ROUTE = /^\/v1\/admin\/bans\/([0-9a-f]{32})$/u;
+const QUEUE_TICKET_ROUTE = /^\/v1\/queue\/([A-Za-z0-9_-]{16,64})$/u;
+/* A dedicated server's match result (services/game-server/gateway,
+   matchResult), as far as it is well formed; null otherwise. */
+function parseMatchResult(value: unknown): MatchResult | null {
+  if (typeof value !== "object" || value === null) return null;
+  const result = value as Record<string, unknown>;
+  const scores = result.teamScores;
+  if (typeof result.teams !== "boolean" || !Array.isArray(scores) || scores.length !== 2 ||
+      !scores.every((score) => Number.isSafeInteger(score)) || !Array.isArray(result.players)) {
+    return null;
+  }
+  const players: MatchResult["players"] = [];
+  for (const entry of result.players.slice(0, 16)) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const player = entry as Record<string, unknown>;
+    if (typeof player.name !== "string" || player.name.length > 12 || !Number.isSafeInteger(player.team) ||
+        !Number.isSafeInteger(player.score) || typeof player.quit !== "boolean") {
+      return null;
+    }
+    players.push({ name: player.name, team: player.team as number, score: player.score as number, quit: player.quit });
+  }
+  return { teams: result.teams, teamScores: [scores[0] as number, scores[1] as number], players };
+}
+
+const WAGER_ROUTE = /^\/v1\/wagers\/([A-Za-z0-9_-]{8,64})$/u;
+const POOL_HEARTBEAT_ROUTE = /^\/v1\/pool\/servers\/([A-Za-z0-9_-]{16,64})\/heartbeat$/u;
+const POOL_MATCH_ROUTE =
+  /^\/v1\/pool\/servers\/([A-Za-z0-9_-]{16,64})\/matches\/([A-Za-z0-9_-]{8,64})\/(ready|end)$/u;
 const MINIMUM_ROOM_CAPACITY = 2;
 const MAXIMUM_ROOM_CAPACITY = 128;
 
-class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 function jsonResponse(
   value: unknown,
@@ -138,6 +185,41 @@ async function requireAllowedActor(
     throw new HttpError(403, "PLAYER_BANNED", "This player is not allowed to create or join rooms.");
   }
   return actorId;
+}
+
+/* The dedicated host presents HOST_SERVICE_TOKEN as a bearer credential. It
+   is a server-to-server secret: it never appears in the page or an invite. */
+async function requestIsDedicatedHost(
+  request: Request,
+  env: RuntimeEnv,
+): Promise<boolean> {
+  const configured = env.HOST_SERVICE_TOKEN;
+  const supplied = request.headers.get("Authorization")?.replace(/^Bearer\s+/iu, "");
+  if (typeof configured !== "string" || configured.length < 32 || !supplied) {
+    return false;
+  }
+  const [configuredDigest, suppliedDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(configured)),
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(supplied)),
+  ]);
+  return crypto.subtle.timingSafeEqual(configuredDigest, suppliedDigest);
+}
+
+function defaultLobby(env: RuntimeEnv): LobbySettings {
+  return {
+    mapIndex: parsePositiveInteger(
+      env.PUBLIC_LOBBY_MAP_INDEX,
+      "PUBLIC_LOBBY_MAP_INDEX",
+      0,
+      LOBBY_MAP_COUNT - 1,
+    ),
+    modeIndex: parsePositiveInteger(
+      env.PUBLIC_LOBBY_MODE_INDEX,
+      "PUBLIC_LOBBY_MODE_INDEX",
+      0,
+      LOBBY_MODE_COUNT - 1,
+    ),
+  };
 }
 
 function parseBanInput(value: unknown): { actorId: string; reason: string; ttlSeconds?: number } {
@@ -374,29 +456,22 @@ function sessionDescriptor(
   };
 }
 
-function publicRoom(
-  roomId: string,
-  buildId: string,
-  protocolVersion: number,
-  capacity: number,
-  expiresAt: number,
-): PublicRoomDescriptor {
-  if (protocolVersion !== SIGNALING_PROTOCOL_VERSION) {
-    throw new Error("Durable Object returned an unsupported protocol version.");
-  }
-  return {
-    buildId,
-    capacity,
-    expiresAt,
-    id: roomId,
-    protocolVersion,
-  };
-}
-
 function inviteUrl(env: RuntimeEnv, inviteCode: string): string {
   const url = new URL(env.PUBLIC_GAME_URL);
   url.hash = `join=${encodeURIComponent(inviteCode)}`;
   return url.toString();
+}
+
+interface RoomAllocation {
+  actorId: string;
+  wallet?: string;
+  buildId: string;
+  capacity?: number;
+  dedicated: boolean;
+  identifier: string;
+  lobby: LobbySettings | null;
+  protocolVersion: typeof SIGNALING_PROTOCOL_VERSION;
+  visibility: RoomVisibility;
 }
 
 async function createRoom(
@@ -409,13 +484,37 @@ async function createRoom(
     throw new HttpError(400, "VALIDATION_FAILED", parsed.message);
   }
   const actorId = await requireAllowedActor(request, env);
-  const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
-  try {
-    await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "create_room");
-  } catch {
-    throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
+  const dedicated = parsed.value.dedicated === true;
+  if (dedicated && !(await requestIsDedicatedHost(request, env))) {
+    throw new HttpError(403, "DEDICATED_HOST_UNAUTHORIZED", "Dedicated hosting needs the service credential.");
   }
+  if (!dedicated) {
+    const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
+    try {
+      await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "create_room");
+    } catch {
+      throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
+    }
+  }
+  const visibility: RoomVisibility = parsed.value.visibility ?? (dedicated ? "public" : "private");
+  const body = await allocateRoom(request, env, {
+    actorId,
+    buildId: parsed.value.buildId,
+    ...(parsed.value.capacity === undefined ? {} : { capacity: parsed.value.capacity }),
+    dedicated,
+    identifier: parsed.value.identifier,
+    lobby: parsed.value.lobby ?? (visibility === "public" ? defaultLobby(env) : null),
+    protocolVersion: parsed.value.protocolVersion,
+    visibility,
+  });
+  return withCors(jsonResponse(body, 201), origin);
+}
 
+async function allocateRoom(
+  request: Request,
+  env: RuntimeEnv,
+  allocation: RoomAllocation,
+): Promise<CreateRoomResponse> {
   const defaultCapacity = parsePositiveInteger(
     env.DEFAULT_ROOM_CAPACITY,
     "DEFAULT_ROOM_CAPACITY",
@@ -428,7 +527,7 @@ async function createRoom(
     MINIMUM_ROOM_CAPACITY,
     MAXIMUM_ROOM_CAPACITY,
   );
-  const capacity = parsed.value.capacity ?? defaultCapacity;
+  const capacity = allocation.capacity ?? defaultCapacity;
   if (capacity > maximumCapacity) {
     throw new HttpError(
       400,
@@ -437,9 +536,7 @@ async function createRoom(
     );
   }
 
-  const roomTtlMs =
-    parsePositiveInteger(env.ROOM_TTL_SECONDS, "ROOM_TTL_SECONDS", 300, 86_400) *
-    1_000;
+  const roomTtlMs = roomTtlMilliseconds(env, allocation.dedicated);
   const sessionTtlMs =
     parsePositiveInteger(
       env.SESSION_TTL_SECONDS,
@@ -454,14 +551,20 @@ async function createRoom(
   for (let attempt = 0; attempt < 3; attempt += 1) {
     roomId = await signedRoomId(requireRoomIdSecret(env));
     result = await env.ROOMS.getByName(roomId).createRoom({
-      buildId: parsed.value.buildId,
+      buildId: allocation.buildId,
       capacity,
-      identifier: parsed.value.identifier,
+      dedicated: allocation.dedicated,
+      identifier: allocation.identifier,
+      lobby: allocation.lobby,
       now,
-      protocolVersion: parsed.value.protocolVersion,
+      protocolVersion: allocation.protocolVersion,
       roomId,
       roomTtlMs,
       sessionTtlMs,
+      visibility: allocation.visibility,
+      ...(allocation.wallet === undefined ? {} : { wallet: allocation.wallet }),
+      /* where the host is, as the Cloudflare data centre it reached (LAX) */
+      ...(typeof request.cf?.colo === "string" ? { colo: request.cf.colo } : {}),
     });
     if (result.ok) {
       break;
@@ -477,17 +580,8 @@ async function createRoom(
 
   const requestUrl = new URL(request.url);
   const code = `${roomId}.${result.guestTicket}`;
-  const ice = (await turnIsDisabled(env)) ?
-    { expiresAt: null, iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }], turnUsernames: [] } :
-    await generateIceServersWithFallback(
-    env,
-    result.expiresAt,
-    Date.now(),
-    actorId,
-  );
-  await rememberTurnUsernames(env, actorId, ice.turnUsernames, ice.expiresAt);
-  recordTurnEvent(env, ice.turnUsernames.length ? "issued" : "stun-only", actorId, ice.turnUsernames.length);
-  const body: CreateRoomResponse = {
+  const ice = await issueIceServers(env, result.expiresAt, allocation.actorId);
+  return {
     host: {
       session: sessionDescriptor(requestUrl, roomId, result.hostSession),
       ticket: result.hostTicket,
@@ -495,16 +589,47 @@ async function createRoom(
     iceServers: ice.iceServers,
     iceServersExpiresAt: ice.expiresAt,
     invite: { code, url: inviteUrl(env, code) },
-    room: publicRoom(
-      roomId,
-      parsed.value.buildId,
-      parsed.value.protocolVersion,
+    room: {
+      buildId: allocation.buildId,
       capacity,
-      result.expiresAt,
-    ),
+      dedicated: allocation.dedicated,
+      expiresAt: result.expiresAt,
+      id: roomId,
+      lobby: allocation.lobby,
+      protocolVersion: allocation.protocolVersion,
+      visibility: allocation.visibility,
+    },
     v: SIGNALING_PROTOCOL_VERSION,
   };
-  return withCors(jsonResponse(body, 201), origin);
+}
+
+function roomTtlMilliseconds(env: RuntimeEnv, dedicated: boolean): number {
+  const seconds = dedicated
+    ? parsePositiveInteger(
+        env.DEDICATED_ROOM_TTL_SECONDS,
+        "DEDICATED_ROOM_TTL_SECONDS",
+        300,
+        86_400,
+      )
+    : parsePositiveInteger(env.ROOM_TTL_SECONDS, "ROOM_TTL_SECONDS", 300, 86_400);
+  return seconds * 1_000;
+}
+
+function sessionTtlMilliseconds(env: RuntimeEnv): number {
+  return parsePositiveInteger(env.SESSION_TTL_SECONDS, "SESSION_TTL_SECONDS", 30, 600) * 1_000;
+}
+
+async function issueIceServers(
+  env: RuntimeEnv,
+  roomExpiresAt: number,
+  actorId: string,
+): Promise<{ expiresAt: number | null; iceServers: CreateRoomResponse["iceServers"] }> {
+  const ice = (await turnIsDisabled(env)) ?
+    { expiresAt: null, iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }], turnUsernames: [] } :
+    await generateIceServersWithFallback(env, roomExpiresAt, Date.now(), actorId);
+  await rememberTurnUsernames(env, actorId, ice.turnUsernames, ice.expiresAt);
+  recordTurnEvent(env, ice.turnUsernames.length ? "issued" : "stun-only", actorId, ice.turnUsernames.length);
+  return { expiresAt: ice.expiresAt, iceServers: ice.iceServers };
 }
 
 function sessionError(result: Extract<CreateSessionResult, { ok: false }>): HttpError {
@@ -543,6 +668,77 @@ function sessionError(result: Extract<CreateSessionResult, { ok: false }>): Http
   }
 }
 
+/* One session request against a room, shared by the invite and quick-join
+   routes. */
+async function mintSession(
+  env: RuntimeEnv,
+  roomId: string,
+  input: { buildId: string; identifier: string; protocolVersion: number; ticket?: string; spectator?: boolean },
+  wallet?: string | null,
+): Promise<CreateSessionResult> {
+  return env.ROOMS.getByName(roomId).createSession({
+    buildId: input.buildId,
+    identifier: input.identifier,
+    now: Date.now(),
+    protocolVersion: input.protocolVersion,
+    sessionTtlMs: sessionTtlMilliseconds(env),
+    ...(input.ticket === undefined ? {} : { ticket: input.ticket }),
+    ...(wallet && !input.spectator ? { wallet } : {}),
+    ...(input.spectator ? { spectator: true } : {}),
+  });
+}
+
+/* Watch a matchmade match (a match for SOL, say): a spectator's place in its
+   private room, by the invite the matchmaker keeps, which never leaves the
+   service. A spectator has no player in the game; the server refuses one. */
+async function spectateMatch(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+): Promise<Response> {
+  const body = await readJsonBody(request);
+  const parsed = parseQuickJoinInput(body);
+  if (!parsed.ok) throw new HttpError(400, "VALIDATION_FAILED", parsed.message);
+  const matchId = (body as Record<string, unknown>).matchId;
+  if (typeof matchId !== "string" || !/^[A-Za-z0-9_-]{6,64}$/u.test(matchId)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "matchId is required.");
+  }
+  const actorId = await requireAllowedActor(request, env);
+  const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
+  try {
+    await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "join_room");
+  } catch {
+    throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
+  }
+  const invite = await env.MATCHMAKER.getByName(MATCHMAKER_NAME).spectateInvite(matchId);
+  const separator = invite ? invite.indexOf(".") : -1;
+  if (!invite || separator <= 0) throw new HttpError(404, "MATCH_NOT_LIVE", "That match isn't on right now.");
+  const roomId = invite.slice(0, separator);
+  const result = await mintSession(env, roomId, {
+    ...parsed.value, ticket: invite.slice(separator + 1), spectator: true,
+  });
+  if (!result.ok) throw sessionError(result);
+  const response: QuickJoinResponse = { ...(await sessionResponse(request, env, roomId, actorId, result)), role: "guest" };
+  return withCors(jsonResponse(response, 201), origin);
+}
+
+async function sessionResponse(
+  request: Request,
+  env: RuntimeEnv,
+  roomId: string,
+  actorId: string,
+  result: Extract<CreateSessionResult, { ok: true }>,
+): Promise<CreateSessionResponse> {
+  const ice = await issueIceServers(env, result.room.expiresAt, actorId);
+  return {
+    iceServers: ice.iceServers,
+    iceServersExpiresAt: ice.expiresAt,
+    room: result.room,
+    session: sessionDescriptor(new URL(request.url), roomId, result.session),
+    v: SIGNALING_PROTOCOL_VERSION,
+  };
+}
+
 async function createSession(
   request: Request,
   env: RuntimeEnv,
@@ -562,59 +758,332 @@ async function createSession(
     throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
   }
 
-  const sessionTtlMs =
-    parsePositiveInteger(
-      env.SESSION_TTL_SECONDS,
-      "SESSION_TTL_SECONDS",
-      30,
-      600,
-    ) * 1_000;
-  const result = await env.ROOMS.getByName(roomId).createSession({
-    buildId: parsed.value.buildId,
-    identifier: parsed.value.identifier,
-    now: Date.now(),
-    protocolVersion: parsed.value.protocolVersion,
-    sessionTtlMs,
-    ticket: parsed.value.ticket,
-  });
+  const wallet = await walletForToken(env, parsed.value.walletToken);
+  const result = await mintSession(env, roomId, parsed.value, wallet);
   if (!result.ok) {
     throw sessionError(result);
   }
+  const body = await sessionResponse(request, env, roomId, actorId, result);
+  return withCors(jsonResponse(body, 201), origin);
+}
 
-  const ice = (await turnIsDisabled(env)) ?
-    { expiresAt: null, iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }], turnUsernames: [] } :
-    await generateIceServersWithFallback(
-    env,
-    result.expiresAt,
+/* Quick join: seat the caller in the best open public room, or make the
+   caller the host of a new one. One Turnstile token (the join action) covers
+   either outcome, so the page needs a single button. */
+async function quickJoin(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+): Promise<Response> {
+  const parsed = parseQuickJoinInput(await readJsonBody(request));
+  if (!parsed.ok) {
+    throw new HttpError(400, "VALIDATION_FAILED", parsed.message);
+  }
+  const actorId = await requireAllowedActor(request, env);
+  const verificationId = await verificationIdFor(request, parsed.value.identifier, env);
+  try {
+    await requireHumanVerification(request, env, verificationId, parsed.value.turnstileToken, "join_room");
+  } catch {
+    throw new HttpError(403, "TURNSTILE_REJECTED", "Complete the human verification and try again.");
+  }
+
+  const directory = env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME);
+  const candidates = await directory.candidates(
+    parsed.value.buildId,
+    parsed.value.protocolVersion,
     Date.now(),
-    actorId,
+    /* (more to choose from when only some game types will do) */
+    parsed.value.modes ? 32 : 8,
   );
-  await rememberTurnUsernames(env, actorId, ice.turnUsernames, ice.expiresAt);
-  recordTurnEvent(env, ice.turnUsernames.length ? "issued" : "stun-only", actorId, ice.turnUsernames.length);
-  const body: CreateSessionResponse = {
-    iceServers: ice.iceServers,
-    iceServersExpiresAt: ice.expiresAt,
-    room: publicRoom(
-      roomId,
-      result.buildId,
-      result.protocolVersion,
-      result.capacity,
-      result.expiresAt,
-    ),
-    session: sessionDescriptor(new URL(request.url), roomId, result.session),
-    v: SIGNALING_PROTOCOL_VERSION,
+  const wallet = await walletForToken(env, parsed.value.walletToken);
+  for (const candidate of candidates) {
+    if (parsed.value.serversOnly && !candidate.dedicated) continue;
+    /* a spectator watches a server's game with someone in it */
+    if (parsed.value.spectator && (!candidate.dedicated || candidate.players === 0)) continue;
+    if (parsed.value.modes && !parsed.value.modes.includes(candidate.modeIndex ?? 0)) continue;
+    const result = await mintSession(env, candidate.roomId, parsed.value, wallet);
+    if (result.ok) {
+      const body: QuickJoinResponse = {
+        ...(await sessionResponse(request, env, candidate.roomId, actorId, result)),
+        role: "guest",
+      };
+      return withCors(jsonResponse(body, 201), origin);
+    }
+    if (result.code === "IDENTIFIER_IN_USE") {
+      /* This browser is already in that room (a refresh in flight). Sending it
+         to another room would split it from the players it was with. */
+      throw sessionError(result);
+    }
+    if (
+      result.code === "ROOM_NOT_FOUND" ||
+      result.code === "ROOM_EXPIRED" ||
+      result.code === "INVALID_TICKET"
+    ) {
+      await directory.remove(candidate.roomId);
+    }
+    /* Full, or a build the directory mislisted: try the next room. */
+  }
+
+  /* click to play never makes a browser the host: the servers are busy */
+  if (parsed.value.spectator) {
+    throw new HttpError(404, "NOTHING_TO_WATCH", "Nobody is playing on the public servers right now.");
+  }
+  if (parsed.value.serversOnly) {
+    throw new HttpError(503, "NO_PUBLIC_SERVER", "Every server is full right now. Try again in a moment.");
+  }
+
+  /* Nobody to join: the caller hosts. Creating a room counts against the
+     same limit as the wizard's route, so quick join cannot mint rooms faster. */
+  await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
+  const body: QuickJoinResponse = {
+    ...(await allocateRoom(request, env, {
+      actorId,
+      buildId: parsed.value.buildId,
+      dedicated: false,
+      identifier: parsed.value.identifier,
+      lobby: defaultLobby(env),
+      protocolVersion: parsed.value.protocolVersion,
+      visibility: "public",
+      ...(wallet ? { wallet } : {}),
+    })),
+    role: "host",
   };
   return withCors(jsonResponse(body, 201), origin);
 }
 
-async function closeRoom(
+/* The public lobby's view before joining: the open public rooms on a build,
+   with their players' names, map and mode. No capability is listed. */
+async function listLobbies(
+  _request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+  url: URL,
+): Promise<Response> {
+  const buildId = url.searchParams.get("buildId") ?? "";
+  if (!/^[A-Za-z0-9._:+-]{1,96}$/u.test(buildId)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "buildId must be 1-96 URL-safe characters.");
+  }
+  const now = Date.now();
+  const entries = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).list(now);
+  const lobbies = entries
+    /* A room whose host is gone is dead even while stranded guests linger. */
+    .filter((entry) => entry.buildId === buildId && entry.protocolVersion === SIGNALING_PROTOCOL_VERSION &&
+      entry.hostConnected && (!entry.dedicated || entry.hostSeenAt > now - DEDICATED_HOST_LEASE_MS))
+    .slice(0, 16)
+    .map((entry) => ({
+      capacity: entry.capacity,
+      dedicated: entry.dedicated,
+      mapIndex: entry.mapIndex,
+      modeIndex: entry.modeIndex,
+      /* A dedicated host's own player is not a person. */
+      names: entry.dedicated ? entry.names.filter((player) => !player.host) : entry.names,
+      players: entry.players,
+      /* a dedicated server's match (lobby, countdown, ingame, postgame) */
+      matchState: entry.matchState || null,
+    }));
+  return withCors(jsonResponse({ lobbies, v: SIGNALING_PROTOCOL_VERSION }), origin);
+}
+
+/* The server dashboard (servers.html on the game site): every dedicated
+   server the directory knows, live or lapsed, with its match and players.
+   A room's short name is its ID's first two groups, which grant nothing. */
+const SERVER_HISTORY_MS = 10 * 60_000;
+
+async function listServers(env: RuntimeEnv, origin: string | null): Promise<Response> {
+  const now = Date.now();
+  const entries = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).list(now);
+  const servers = entries
+    /* a server gone more than ten minutes is history, not news */
+    .filter((entry) => entry.dedicated && entry.hostSeenAt > now - SERVER_HISTORY_MS)
+    .slice(0, 64)
+    .map((entry) => ({
+      name: entry.roomId.slice(0, 9),
+      buildId: entry.buildId,
+      colo: entry.colo || null,
+      live: entry.hostConnected && entry.hostSeenAt > now - DEDICATED_HOST_LEASE_MS,
+      lastSeenSeconds: entry.hostSeenAt ? Math.round((now - entry.hostSeenAt) / 1000) : null,
+      matchState: entry.matchState || null,
+      matchSeconds: entry.matchSince ? Math.round((now - entry.matchSince) / 1000) : null,
+      mapIndex: entry.mapIndex,
+      modeIndex: entry.modeIndex,
+      players: entry.players,
+      names: entry.names.filter((player) => !player.host).map((player) => player.name),
+      uptimeSeconds: Math.round((now - entry.createdAt) / 1000),
+    }));
+  const browserHosted = entries.filter((entry) => !entry.dedicated && entry.hostConnected).length;
+  return withCors(jsonResponse({ browserHosted, now, servers, v: SIGNALING_PROTOCOL_VERSION }), origin);
+}
+
+/* ---------- matchmaking (src/matchmaker.ts) */
+
+function matchmaker(env: RuntimeEnv) {
+  return env.MATCHMAKER.getByName(MATCHMAKER_NAME);
+}
+
+function record(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "The request body must be an object.");
+  }
+  return body as Record<string, unknown>;
+}
+
+/* A player joins the queue: their machine, build, playlist and (to wager)
+   wallet. */
+async function enqueue(request: Request, env: RuntimeEnv, origin: string | null): Promise<Response> {
+  const body = record(await readJsonBody(request));
+  if (body.protocolVersion !== SIGNALING_PROTOCOL_VERSION || !isBuildId(body.buildId) ||
+      typeof body.identifier !== "string" || !IDENTIFIER_PATTERN.test(body.identifier)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "protocolVersion, buildId and identifier are required.");
+  }
+  const playlist = body.playlist ?? "ffa";
+  if (!isPlaylist(playlist)) {
+    throw new HttpError(400, "VALIDATION_FAILED", "playlist is not one the matchmaker runs.");
+  }
+  await requireAllowedActor(request, env);
+  const walletToken = typeof body.walletToken === "string" ? body.walletToken : undefined;
+  const wallet = await walletForToken(env, walletToken);
+  /* a wagered playlist needs a wallet whose vault and session can stake */
+  const wager = playlistWager(playlist);
+  if (wager) {
+    if (wallet === null) throw new HttpError(401, "WALLET_SIGN_IN_REQUIRED", "Sign in with your wallet to play for SOL.");
+    const problem = await stakeProblem(env, wallet, wager.stake);
+    if (problem !== null) throw new HttpError(409, "STAKE_NOT_READY", problem);
+  }
+  const playerKey = typeof body.playerKey === "string" && PLAYER_KEY_PATTERN.test(body.playerKey) ?
+    body.playerKey : null;
+  const ticket = await matchmaker(env).enqueue({
+    buildId: body.buildId,
+    identifier: body.identifier,
+    playerKey,
+    now: Date.now(),
+    playlist,
+    wallet: wallet ?? null,
+  });
+  return withCors(jsonResponse({ ticket, v: SIGNALING_PROTOCOL_VERSION }, 201), origin);
+}
+
+async function requirePoolServer(request: Request, env: RuntimeEnv): Promise<void> {
+  if (!(await requestIsDedicatedHost(request, env))) {
+    throw new HttpError(403, "DEDICATED_HOST_UNAUTHORIZED", "Pool servers need the service credential.");
+  }
+}
+
+async function handleMatchmaking(
   request: Request,
   env: RuntimeEnv,
   origin: string | null,
-  roomId: string,
-): Promise<Response> {
-  await requireValidRoomId(roomId, env);
-  const body = await readJsonBody(request);
+  url: URL,
+): Promise<Response | null> {
+  const now = Date.now();
+  if (request.method === "POST" && url.pathname === "/v1/queue") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "session-create");
+    return enqueue(request, env, origin);
+  }
+  const ticketMatch = QUEUE_TICKET_ROUTE.exec(url.pathname);
+  if (ticketMatch) {
+    const ticketId = ticketMatch[1]!;
+    if (request.method === "GET") {
+      const ticket = await matchmaker(env).poll(ticketId, now);
+      if (!ticket) throw new HttpError(404, "TICKET_NOT_FOUND", "That queue ticket is unknown or has expired.");
+      return withCors(jsonResponse({ ticket, v: SIGNALING_PROTOCOL_VERSION }), origin);
+    }
+    if (request.method === "DELETE") {
+      const cancelled = await matchmaker(env).cancel(ticketId, now);
+      return withCors(jsonResponse({ cancelled, v: SIGNALING_PROTOCOL_VERSION }), origin);
+    }
+  }
+  /* the broadcasts (src/broadcast.ts) */
+  const broadcast = await handleBroadcastRequest(request, env, url, {
+    requestIsDedicatedHost,
+    requireValidRoomId,
+    publicRoom: async (buildId) => {
+      const rooms = await env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME)
+        .candidates(buildId, SIGNALING_PROTOCOL_VERSION, Date.now(), 32);
+      return rooms.find((room) => room.dedicated && room.players > 0)?.roomId ?? null;
+    },
+    matchRoom: async (matchId) => {
+      const invite = await env.MATCHMAKER.getByName(MATCHMAKER_NAME).spectateInvite(matchId);
+      const separator = invite ? invite.indexOf(".") : -1;
+      return invite && separator > 0 ? invite.slice(0, separator) : null;
+    },
+  });
+  if (broadcast !== null) return broadcast;
+
+  /* the matches on now that can be watched (those for SOL) */
+  if (request.method === "GET" && url.pathname === "/v1/live") {
+    const matches = await env.MATCHMAKER.getByName(MATCHMAKER_NAME).liveMatches(Date.now());
+    return withCors(jsonResponse({ matches, v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/spectate") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "session-create");
+    await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
+    return spectateMatch(request, env, origin);
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/playlists") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
+    const playlists = await matchmaker(env).playlists(now);
+    return withCors(jsonResponse({ playlists, v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
+  if (request.method === "GET" && url.pathname === "/v1/matchmaker") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
+    const snapshot = await matchmaker(env).snapshot(now);
+    return withCors(jsonResponse({
+      events: snapshot.events.map((event) => ({ ...event, detail: event.detail ? JSON.parse(event.detail) : null })),
+      machines: snapshot.machines,
+      matches: snapshot.matches,
+      now,
+      queues: snapshot.queues,
+      servers: snapshot.servers,
+      v: SIGNALING_PROTOCOL_VERSION,
+    }), origin);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/pool/servers") {
+    await requirePoolServer(request, env);
+    const body = record(await readJsonBody(request));
+    if (!isBuildId(body.buildId)) throw new HttpError(400, "VALIDATION_FAILED", "buildId is required.");
+    const colo = typeof request.cf?.colo === "string" ? request.cf.colo : null;
+    const machineId = typeof body.machineId === "string" && /^[0-9a-z]{6,32}$/u.test(body.machineId) ?
+      body.machineId : null;
+    const serverId = await matchmaker(env).registerServer(body.buildId, colo, machineId, now);
+    return withCors(jsonResponse({ serverId, v: SIGNALING_PROTOCOL_VERSION }, 201), origin);
+  }
+  const heartbeatMatch = POOL_HEARTBEAT_ROUTE.exec(url.pathname);
+  if (heartbeatMatch && request.method === "POST") {
+    await requirePoolServer(request, env);
+    const body = record(await readJsonBody(request));
+    const result = await matchmaker(env).heartbeat({
+      serverId: heartbeatMatch[1]!,
+      now,
+      ...(typeof body.matchState === "string" ? { matchState: body.matchState.slice(0, 16) } : {}),
+      ...(typeof body.players === "number" && Number.isInteger(body.players) ? { players: body.players } : {}),
+    });
+    if (!result.known) throw new HttpError(404, "SERVER_NOT_FOUND", "Register again.");
+    return withCors(jsonResponse({ assignment: result.assignment, v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
+  const poolMatch = POOL_MATCH_ROUTE.exec(url.pathname);
+  if (poolMatch && request.method === "POST") {
+    await requirePoolServer(request, env);
+    const [, serverId, matchId, action] = poolMatch;
+    const body = record(await readJsonBody(request));
+    let ok: boolean;
+    if (action === "ready") {
+      if (typeof body.roomId !== "string" || !ROOM_ID_PATTERN.test(body.roomId) ||
+          typeof body.inviteCode !== "string" || body.inviteCode.length > 512) {
+        throw new HttpError(400, "VALIDATION_FAILED", "roomId and inviteCode are required.");
+      }
+      ok = await matchmaker(env).matchReady(serverId!, matchId!, body.roomId, body.inviteCode, now);
+    } else {
+      const reason = typeof body.reason === "string" ? body.reason.slice(0, 64) : "finished";
+      ok = await matchmaker(env).matchEnded(serverId!, matchId!, reason, now, parseMatchResult(body.result));
+    }
+    if (!ok) throw new HttpError(409, "MATCH_NOT_ASSIGNED", "That match is not this server's.");
+    return withCors(jsonResponse({ ok, v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
+  return null;
+}
+
+function readTicketBody(body: unknown): string {
   if (
     typeof body !== "object" ||
     body === null ||
@@ -624,9 +1093,53 @@ async function closeRoom(
   ) {
     throw new HttpError(400, "VALIDATION_FAILED", "ticket is malformed.");
   }
-  const result = await env.ROOMS.getByName(roomId).closeRoom(
-    (body as { ticket: string }).ticket,
+  return (body as { ticket: string }).ticket;
+}
+
+async function renewRoom(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+  roomId: string,
+): Promise<Response> {
+  await requireValidRoomId(roomId, env);
+  const payload = await readJsonBody(request);
+  const ticket = readTicketBody(payload);
+  let lobby: LobbySettings | undefined;
+  if ((payload as Record<string, unknown>).lobby !== undefined) {
+    const parsedLobby = parseLobbySettings((payload as Record<string, unknown>).lobby);
+    if (!parsedLobby.ok) {
+      throw new HttpError(400, "VALIDATION_FAILED", parsedLobby.message);
+    }
+    lobby = parsedLobby.value;
+  }
+  const dedicated = await requestIsDedicatedHost(request, env);
+  const result = await env.ROOMS.getByName(roomId).renewRoom(
+    ticket,
+    Date.now(),
+    roomTtlMilliseconds(env, dedicated),
+    lobby,
   );
+  if (!result.ok) {
+    throw new HttpError(
+      404,
+      "ROOM_NOT_FOUND_OR_TICKET_INVALID",
+      "The room or host ticket is invalid.",
+    );
+  }
+  const body: RenewRoomResponse = { room: result.room, v: SIGNALING_PROTOCOL_VERSION };
+  return withCors(jsonResponse(body, 200), origin);
+}
+
+async function closeRoom(
+  request: Request,
+  env: RuntimeEnv,
+  origin: string | null,
+  roomId: string,
+): Promise<Response> {
+  await requireValidRoomId(roomId, env);
+  const ticket = readTicketBody(await readJsonBody(request));
+  const result = await env.ROOMS.getByName(roomId).closeRoom(ticket);
   if (!result.ok) {
     throw new HttpError(
       404,
@@ -651,8 +1164,8 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
   if (request.method === "OPTIONS") {
     const response = new Response(null, {
       headers: {
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Methods": "POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
         "Access-Control-Max-Age": "86400",
       },
       status: 204,
@@ -665,11 +1178,62 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     return createRoom(request, env, origin);
   }
 
+  if (url.pathname.startsWith("/v1/parties")) {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "party");
+    const partyResponse = await handlePartyRequest(request, env, url, () => readJsonBody(request));
+    if (partyResponse !== null) return withCors(jsonResponse(partyResponse), origin);
+  }
+
+  const escrowResponse = await handleEscrowRequest(request, env, url, () => readJsonBody(request));
+  if (escrowResponse !== null) {
+    return withCors(jsonResponse(escrowResponse), origin);
+  }
+
+  /* A wagered match's balances and payouts, for the lobby and scoreboard. */
+  const wagerMatch = WAGER_ROUTE.exec(url.pathname);
+  if (request.method === "GET" && wagerMatch) {
+    const view = await env.WAGERS.getByName(wagerMatch[1]!).snapshot();
+    if (view === null) throw new HttpError(404, "NOT_FOUND", "No wager for that match.");
+    return withCors(jsonResponse({ wager: view }), origin);
+  }
+
+  const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
+  if (walletResponse !== null) {
+    return withCors(jsonResponse(walletResponse), origin);
+  }
+
+  const matchmakingResponse = await handleMatchmaking(request, env, origin, url);
+  if (matchmakingResponse !== null) {
+    return matchmakingResponse;
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/servers") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
+    return listServers(env, origin);
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/lobbies") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
+    return listLobbies(request, env, origin, url);
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/quickjoin") {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "session-create");
+    await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
+    return quickJoin(request, env, origin);
+  }
+
   const sessionMatch = SESSION_ROUTE.exec(url.pathname);
   if (request.method === "POST" && sessionMatch?.[1] !== undefined) {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "session-create");
     await requireRateLimit(env.TURN_ISSUE_LIMITER, request, "turn-issue");
     return createSession(request, env, origin, sessionMatch[1]);
+  }
+
+  const renewMatch = RENEW_ROUTE.exec(url.pathname);
+  if (request.method === "POST" && renewMatch?.[1] !== undefined) {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "room-renew");
+    return renewRoom(request, env, origin, renewMatch[1]);
   }
 
   const websocketMatch = WEBSOCKET_ROUTE.exec(url.pathname);
@@ -760,5 +1324,6 @@ export default {
   },
   async scheduled(_controller: ScheduledController, env: RuntimeEnv, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(enforceTurnBandwidthCaps(env));
+    ctx.waitUntil(checkSettlementWallet(env));
   },
 } satisfies ExportedHandler<RuntimeEnv>;

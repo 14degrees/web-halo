@@ -3,8 +3,10 @@
 #include "platform.h"
 #include "posix.h"
 #include "gl.h"
+#include "web_online_ui.h"
 
 #include <emscripten/emscripten.h>
+#include <emscripten/em_asm.h>
 #include <emscripten/heap.h>
 #include <emscripten/wasmfs.h>
 #include <errno.h>
@@ -26,6 +28,21 @@ static const char *const map_files[] =
 	"damnation.map", "hangemhigh.map", "longest.map", "prisoner.map",
 	"putput.map", "ratrace.map", "sidewinder.map", "ui.map", "wizard.map"
 };
+
+/* The page's shape, which it reports before the game starts: the game then
+draws as many columns of its 480-line picture as the window's shape gives
+(d3d8_gl.c, screen_mode_choose), a wider view rather than a stretched one. */
+static int web_display_width;
+static int web_display_height;
+
+EMSCRIPTEN_KEEPALIVE void platform_web_set_display_size(int width, int height)
+{
+	if (width > 0 && height > 0)
+	{
+		web_display_width = width;
+		web_display_height = height;
+	}
+}
 
 EMSCRIPTEN_KEEPALIVE void platform_web_set_muted(int muted)
 {
@@ -140,6 +157,39 @@ void platform_web_initialize(void)
 	setenv("HALO_NET_JOIN_FROM_CLIPBOARD", "false", 1);
 	setenv("HALO_FULLSCREEN", "false", 1);
 	setenv("HALO_WINDOW_SCALE", "1", 1);
+	/* Ask the page directly: the game starts on its own thread, so a value
+	the page pushes from onRuntimeInitialized can arrive after this runs. */
+	if (web_display_width <= 0 || web_display_height <= 0)
+	{
+		web_display_width = MAIN_THREAD_EM_ASM_INT({
+			return typeof window !== "undefined" ? (window.innerWidth | 0) : 0;
+		});
+		web_display_height = MAIN_THREAD_EM_ASM_INT({
+			return typeof window !== "undefined" ? (window.innerHeight | 0) : 0;
+		});
+	}
+	if (MAIN_THREAD_EM_ASM_INT({
+		return typeof window !== "undefined" && window.HALO_DEDICATED &&
+			window.HALO_DEDICATED.headless !== false ? 1 : 0;
+	}))
+	{
+		platform_web_online_set_headless(1);
+	}
+	if (web_display_width > 0 && web_display_height > 0)
+	{
+		char columns[16];
+
+		snprintf(columns, sizeof(columns), "%ld",
+			(480L * web_display_width + web_display_height / 2) / web_display_height);
+		setenv("HALO_DISPLAY_WIDTH", columns, 1);
+	}
+	/* A dedicated host (web_online_ui.h) runs on a server with no screen:
+	the page says so before the game starts. */
+	if (platform_web_online_is_headless())
+	{
+		setenv("HALO_NULL_RENDERER", "true", 1);
+		platform_log("web: headless, drawing nothing");
+	}
 }
 
 int host_gl_has_extension(const char *name)

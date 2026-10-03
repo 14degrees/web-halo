@@ -10,10 +10,29 @@
   if (!global || global.HaloOnline) return;
 
   var PROTOCOL_VERSION = 1;
+  /* Playing for SOL (the wallet, its balance and prompts, the SOL playlists,
+     Play for SOL, the live matches for SOL): hidden unless this browser asked
+     for it, with ?sol=1 once (?sol=0 hides it again), so the game reads as a
+     game. Matches for SOL themselves are unchanged. */
+  var WALLET_ENABLED = (function() {
+    var asked = /[?&#]sol=([01])\b/.exec(String((global.location && global.location.search) || "") +
+      String((global.location && global.location.hash) || ""));
+    try {
+      if (asked) global.localStorage.setItem("halo-sol", asked[1] === "1" ? "on" : "off");
+      return global.localStorage.getItem("halo-sol") === "on";
+    } catch (error) {
+      return !!asked && asked[1] === "1";
+    }
+  })();
   var ROOM_CAPACITY = 128;
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
   var GAME_POLL_MILLISECONDS = 200;
+  /* A host extends its room before the service's six-hour room life ends. */
+  var ROOM_RENEW_MILLISECONDS = 50 * 60 * 1000;
+  /* The map and mode the page assumes when quick join makes it host and the
+     service sends no lobby settings (Blood Gulch Slayer). */
+  var DEFAULT_PUBLIC_LOBBY = Object.freeze({ mapIndex: 9, modeIndex: 0 });
   var TURNSTILE_RENDER_ATTEMPTS = 80;
   var HOST_SETTINGS_STORAGE_KEY = "halo.web.host-settings.v1";
   var PLAYER_PROFILE_STORAGE_KEY = "halo.web.player-profile.v1";
@@ -56,6 +75,23 @@
     JOINED: 6,
     ERROR: 7,
   });
+  /* web_online_ui.h's enum web_online_match_state */
+  var MATCH_STATE = Object.freeze({
+    NONE: 0,
+    LOBBY: 1,
+    COUNTDOWN: 2,
+    INGAME: 3,
+    POSTGAME: 4,
+  });
+  var MATCH_STATE_NAMES = Object.freeze(["none", "lobby", "countdown", "ingame", "postgame"]);
+  /* A dedicated host's defaults (services/dedicated-host) */
+  var DEDICATED_DEFAULTS = Object.freeze({
+    name: "Server",
+    style: "white",
+    minimumPlayers: 1,
+    countdownSeconds: 20,
+    postgameSeconds: 15,
+  });
   var TRANSPORT_STATE = Object.freeze({
     DISCONNECTED: 0,
     CONNECTING: 1,
@@ -69,6 +105,48 @@
     4: "The host rejected or ended the join.",
     5: "The host lobby did not answer within 90 seconds.",
   });
+
+  var MAP_SLUGS = Object.freeze([
+    "battle-creek", "sidewinder", "damnation", "rat-race", "prisoner", "hang-em-high",
+    "chill-out", "derelict", "boarding-action", "blood-gulch", "wizard", "chiron-tl-34", "longest",
+  ]);
+  /* The browser that hosts a public game because nobody else was playing runs
+     the same lobby driver as a dedicated host, so nobody presses Start. */
+  var PLAYER_HOST_DRIVER = Object.freeze({ minimumPlayers: 1, countdownSeconds: 15, postgameSeconds: 12 });
+  var LOBBY_TICK_MILLISECONDS = 250;
+  var LOBBY_STALE_MILLISECONDS = 6000;
+  var LOBBY_REJOIN_ATTEMPTS = 6;
+  var CLIENT_STATE = Object.freeze({ NONE: -1, SEARCHING: 0, JOINING: 1, PREGAME: 2, INGAME: 3, POSTGAME: 4 });
+
+  /* The matchmaking lobby that covers the game until a match begins. */
+  var lobby = {
+    installed: false,
+    wantsPlay: false,
+    rejoinTimer: 0,
+    rejoinAttempts: 0,
+    staleSince: 0,
+    deployed: false,
+    error: null,
+    elements: {},
+    /* The public rooms before joining (GET /v1/lobbies), refreshed while idle. */
+    listing: null,
+    listingAt: 0,
+    listingBusy: false,
+    /* Host: guests that said they are waiting, by peer ID, with when. */
+    waitingPeers: new Map(),
+    /* Guest: since when this tab has been trying to join, and its last note. */
+    joiningSince: 0,
+    waitingSentAt: 0,
+    /* What this host last told its guests about the match. */
+    sentMatch: "",
+    sentMatchAt: 0,
+  };
+  var LOBBY_LISTING_MILLISECONDS = 5000;
+  /* How long a connected player may wait for a running match before the
+     host restarts it to let them in. */
+  var WAITING_NOTE_EXPIRY_MILLISECONDS = 10000;
+  /* A match runs at least this long before a newcomer may restart it. */
+  var MINIMUM_MATCH_MILLISECONDS = 60000;
 
   var elements = {};
   var humanVerification = {
@@ -96,6 +174,7 @@
     socketGeneration: 0,
     operationGeneration: 0,
     heartbeatTimer: 0,
+    renewTimer: 0,
     reconnectTimer: 0,
     reconnectAttempts: 0,
     gamePollTimer: 0,
@@ -111,12 +190,21 @@
     roster: new Map(),
     messageChain: Promise.resolve(),
     pendingInvite: null,
+    /* The join view is asking for a name before quick join, not an invite. */
+    pendingQuick: false,
+    /* This session is in a public room, hosting or joined through quick join. */
+    publicLobby: false,
     profile: null,
     hostWasReady: false,
     hostSettings: null,
     guestWasJoined: false,
     leavePromise: null,
     wizardStep: "map",
+    /* The lobby driver's settings when this browser hosts a public game. */
+    lobbyDriver: null,
+    /* A dedicated host: its credential, rotation and progress through it. */
+    dedicated: null,
+    matchState: MATCH_STATE.NONE,
   };
 
   function byId(id) {
@@ -144,6 +232,8 @@
     elements.status = byId("online-status");
     elements.description = byId("online-description");
     elements.setup = byId("online-setup");
+    elements.quick = byId("online-quick");
+    elements.quickJoin = byId("online-quick-join");
     elements.hostForm = byId("online-host-form");
     elements.host = byId("online-host");
     elements.map = byId("online-map");
@@ -380,6 +470,8 @@
   }
 
   function showDialog() {
+    /* The lobby speaks for public play; the dialog is for private games. */
+    if (lobby.wantsPlay) return;
     if (!elements.dialog.open) elements.dialog.showModal();
   }
 
@@ -414,6 +506,7 @@
 
   function setBusy(busy) {
     humanVerification.busy = !!busy;
+    if (elements.quickJoin) elements.quickJoin.disabled = !!busy || !session.runtimeReady;
     elements.map.disabled = !!busy;
     elements.mode.disabled = !!busy;
     setPickerLocked(elements.mapOptions, "halo-map-choice", !!busy);
@@ -496,6 +589,73 @@
     return "Spartan " + value;
   }
 
+  /* ---------- emblems and ranks (Halo 3's emblem_foregrounds_ui.png and
+     exp_med_ui.png, from the halo-3-menus-remake art) */
+  var EMBLEM_COUNT = 70;
+  var EMBLEM_COLUMNS = 12;
+  var RANK_COUNT = 42;
+  var RANK_COLUMNS = 11;
+  var PLAYER_KEY_STORAGE_KEY = "halo-player-key";
+  var EMBLEM_STORAGE_KEY = "halo-emblem";
+  var cachedPlayerKey = null;
+
+  /* This browser's lasting player ID: the matchmaker counts its matches
+     (its rank), where the machine identifier changes on every load. */
+  function playerKey() {
+    if (cachedPlayerKey) return cachedPlayerKey;
+    try { cachedPlayerKey = global.localStorage.getItem(PLAYER_KEY_STORAGE_KEY); } catch (error) { cachedPlayerKey = null; }
+    if (!cachedPlayerKey || !/^[A-Za-z0-9_-]{16,64}$/.test(cachedPlayerKey)) {
+      var bytes = new Uint8Array(18);
+      global.crypto.getRandomValues(bytes);
+      cachedPlayerKey = btoa(String.fromCharCode.apply(null, bytes)).replace(/\+/g, "-").replace(/\//g, "_");
+      try { global.localStorage.setItem(PLAYER_KEY_STORAGE_KEY, cachedPlayerKey); } catch (error) { /* this load only */ }
+    }
+    return cachedPlayerKey;
+  }
+
+  function validEmblem(value) {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < EMBLEM_COUNT;
+  }
+
+  function textHash(text) {
+    var hash = 0;
+    for (var index = 0; index < text.length; index++) hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+    return hash;
+  }
+
+  /* the emblem this player chose, or one their player ID picks */
+  function chosenEmblem() {
+    var stored = NaN;
+    try { stored = Number(global.localStorage.getItem(EMBLEM_STORAGE_KEY)); } catch (error) { stored = NaN; }
+    return validEmblem(stored) ? stored : textHash(playerKey()) % EMBLEM_COUNT;
+  }
+
+  /* the rank icon for a number of finished matches: a step up the ladder
+     early, slower later (0 recruit, 3 a step, 12 two, 48 four, 588 general) */
+  function rankIndex(matches) {
+    return Math.min(RANK_COUNT - 1, Math.floor(Math.sqrt(Math.max(0, matches) * 3)));
+  }
+
+  function emblemElement(index) {
+    var plate = document.createElement("span");
+    plate.className = "emblem";
+    var symbol = document.createElement("span");
+    symbol.style.setProperty("--emblem-column", String(index % EMBLEM_COLUMNS));
+    symbol.style.setProperty("--emblem-row", String(Math.floor(index / EMBLEM_COLUMNS)));
+    plate.appendChild(symbol);
+    return plate;
+  }
+
+  function rankElement(matches) {
+    var icon = document.createElement("span");
+    icon.className = "rank";
+    var index = rankIndex(matches);
+    icon.style.setProperty("--rank-column", String(index % RANK_COLUMNS));
+    icon.style.setProperty("--rank-row", String(Math.floor(index / RANK_COLUMNS)));
+    icon.title = "Rank " + (index + 1) + " · " + matches + (matches === 1 ? " match" : " matches");
+    return icon;
+  }
+
   function normalizePlayerProfile(value) {
     var source = value || {};
     var name = String(source.name || "").replace(/\s+/g, " ").trim();
@@ -507,7 +667,8 @@
     if (PLAYER_STYLES.indexOf(style) < 0) {
       throw new Error("Choose a valid player style.");
     }
-    return { name: name, style: style };
+    return validEmblem(source.emblem) ? { name: name, style: style, emblem: source.emblem } :
+      { name: name, style: style };
   }
 
   function selectedPlayerStyle() {
@@ -521,7 +682,7 @@
     if (elements.profilePreviewName) elements.profilePreviewName.textContent = profile.name;
     if (elements.spartanImage) {
       if (elements.spartanImage.dataset.style !== profile.style) {
-        elements.spartanImage.src = "assets/ui/spartan/" + profile.style + ".png";
+        elements.spartanImage.src = "assets/ui/spartan/" + profile.style + ".png?art=2";
         elements.spartanImage.dataset.style = profile.style;
       }
       elements.spartanImage.alt = profile.name + " in " + profile.style + " armor";
@@ -541,6 +702,7 @@
       name: elements.playerName ? elements.playerName.value :
         (session.profile && session.profile.name),
       style: selectedPlayerStyle(),
+      emblem: chosenEmblem(),
     });
   }
 
@@ -612,7 +774,11 @@
     if (value.profile !== null && value.profile !== undefined) {
       try { profile = normalizePlayerProfile(value.profile); } catch (error) { return null; }
     }
-    return { peerId: value.peerId, role: value.role, profile: profile };
+    return {
+      peerId: value.peerId, role: value.role, profile: profile,
+      matches: typeof value.matches === "number" && value.matches >= 0 ? value.matches : null,
+      spectator: value.spectator === true,
+    };
   }
 
   function renderRoster() {
@@ -766,7 +932,17 @@
   }
 
   function connectedFriendsLabel(count) {
-    return count === 1 ? "1 friend connected" : count + " friends connected";
+    var noun = session.publicLobby ? "player" : "friend";
+    return count === 1 ? "1 " + noun + " connected" : count + " " + noun + "s connected";
+  }
+
+  /* The other side, as the status lines name it. */
+  function hostNoun() {
+    return session.publicLobby ? "the host" : "your friend";
+  }
+
+  function setQuickVisible(visible) {
+    if (elements.quick) elements.quick.hidden = !visible;
   }
 
   function requireCurrentOperation(generation) {
@@ -786,21 +962,26 @@
   function showSetup() {
     if (elements.dialog) elements.dialog.dataset.view = "setup";
     if (elements.wizardSteps) elements.wizardSteps.hidden = false;
+    setQuickVisible(true);
     elements.setup.hidden = false;
     elements.invite.hidden = true;
     elements.progress.hidden = true;
     if (elements.joinConfirm) elements.joinConfirm.hidden = true;
+    session.pendingQuick = false;
     setWizardStep("map");
     setProfileLocked(false);
     renderTurnstile("create_room");
     setStatus("");
     elements.description.textContent =
-      "Pick a map and mode, then send the invite link to your friends.";
+      "Join the public game, or pick a map and mode and invite friends.";
   }
 
   function showProgress() {
     if (elements.dialog) elements.dialog.dataset.view = "progress";
-    if (elements.wizardSteps) elements.wizardSteps.hidden = session.role === "guest";
+    if (elements.wizardSteps) {
+      elements.wizardSteps.hidden = session.role === "guest" || session.publicLobby;
+    }
+    setQuickVisible(false);
     elements.setup.hidden = true;
     elements.invite.hidden = true;
     elements.progress.hidden = false;
@@ -809,6 +990,7 @@
 
   function showInvite() {
     if (elements.wizardSteps) elements.wizardSteps.hidden = true;
+    setQuickVisible(false);
     elements.setup.hidden = true;
     elements.progress.hidden = true;
     elements.invite.hidden = false;
@@ -820,18 +1002,23 @@
     if (elements.dialog.open) elements.dialog.close();
   }
 
-  function showJoinConfirmation(invite) {
-    session.pendingInvite = invite;
+  /* The name-and-armor step before a join: of an invite, or (quick) of the
+     public game. Both verify the join_room Turnstile action. */
+  function showJoinConfirmation(invite, quick) {
+    session.pendingInvite = quick ? null : invite;
+    session.pendingQuick = !!quick;
     if (elements.dialog) elements.dialog.dataset.view = "join";
     if (elements.wizardSteps) elements.wizardSteps.hidden = true;
+    setQuickVisible(false);
     elements.setup.hidden = true;
     elements.invite.hidden = true;
     elements.progress.hidden = true;
     if (elements.joinConfirm) elements.joinConfirm.hidden = false;
-    if (elements.joinSummary) elements.joinSummary.textContent =
+    if (elements.joinSummary) elements.joinSummary.textContent = quick ?
+      "Choose your name and color, then jump into the public game." :
       "Choose your name and color, then join your friend's game.";
-    elements.description.textContent = "You're invited.";
-    setHeader("Ready to join", "waiting");
+    elements.description.textContent = quick ? "Public game." : "You're invited.";
+    setHeader(quick ? "Ready to play" : "Ready to join", "waiting");
     setStatus(session.runtimeReady ? "" : "Loading Halo…");
     setProfileLocked(false);
     renderTurnstile("join_room");
@@ -924,6 +1111,14 @@
   function requestGame(command) {
     if (!wasmFunction("platform_web_online_request")(command)) {
       throw new Error("Halo could not accept the online-play request.");
+    }
+  }
+
+  function requestDedicatedHost(settings, dedicated) {
+    var fn = wasmFunction("platform_web_online_host_dedicated");
+    if (!fn(settings.mapIndex, settings.modeIndex, dedicated.minimumPlayers,
+        dedicated.countdownSeconds, dedicated.postgameSeconds)) {
+      throw new Error("Halo rejected the dedicated host settings.");
     }
   }
 
@@ -1102,10 +1297,11 @@
       if (connected) {
         setHeader(connectedFriendsLabel(connected), "connected");
         setStatus(connected === 1 ?
-          "Your friend is connected. Press Start Game in Halo when ready." :
-          connected + " friends are connected. Press Start Game in Halo when ready.");
+          (session.publicLobby ? "A player" : "Your friend") +
+            " is connected. Press Start Game in Halo when ready." :
+          connectedFriendsLabel(connected) + ". Press Start Game in Halo when ready.");
       } else if (session.active) {
-        setHeader("Waiting for friends", "waiting");
+        setHeader(session.publicLobby ? "Waiting for players" : "Waiting for friends", "waiting");
       }
     }
   }
@@ -1123,7 +1319,8 @@
           requestGame(COMMAND.JOIN);
           session.gameCommandIssued = true;
           startGamePolling();
-          setStatus("Connected. Finding your friend's Halo lobby…");
+          setStatus("Connected. Finding " + (session.publicLobby ? "the game's" : "your friend's") +
+            " Halo lobby…");
         } catch (error) {
           fail(error);
         }
@@ -1135,7 +1332,7 @@
         }, 700);
       }
     } else if (event.state === "connecting" && session.role === "guest") {
-      setStatus("Connecting directly to your friend…");
+      setStatus("Connecting directly to " + hostNoun() + "…");
     } else if (event.state === "failed" && session.role === "guest") {
       fail(new Error(event.detail || "Could not connect to the host."));
     }
@@ -1210,6 +1407,37 @@
       if (session.role === "guest" && message.reason === "host-disconnected") {
         fail(new Error("The host closed the room."));
       }
+      return;
+    }
+    if (message.type === "wager") {
+      applyWagerView(message.wager);
+      return;
+    }
+    if (message.type === "out_of_sol") {
+      /* a bounty match: this player's stake is spent, so they are out; the
+         others play on, and it pays out when it ends */
+      lobby.wantsPlay = false;
+      lobby.error = "You ran out of SOL, so you're out of this match. It pays out when it ends.";
+      cancelQueue();
+      leave(false).catch(function() {});
+      return;
+    }
+    if (message.type === "pings") {
+      /* the server's measure of everyone's ping, by name (the scoreboard) */
+      if (message.pings && typeof message.pings === "object") session.pings = message.pings;
+      return;
+    }
+    if (message.type === "waiting") {
+      if (session.role === "host" && typeof message.from === "string") lobby.waitingPeers.set(message.from, Date.now());
+      return;
+    }
+    if (message.type === "match") {
+      /* The host's match status: the lobby's countdown. */
+      session.matchInfo = {
+        state: message.state,
+        startsIn: typeof message.startsIn === "number" ? message.startsIn : null,
+        receivedAt: Date.now(),
+      };
       return;
     }
     if (message.type === "roster") {
@@ -1388,8 +1616,10 @@
       protocolVersion: PROTOCOL_VERSION,
       buildId: buildId(),
       identifier: localIdentifier(),
-      ticket: ticket,
     };
+    /* A public room's guests hold no ticket. */
+    if (ticket) body.ticket = ticket;
+    if (wallet.token) body.walletToken = wallet.token;
     if (turnstileToken) body.turnstileToken = turnstileToken;
     return fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id) + "/sessions", {
       method: "POST",
@@ -1454,6 +1684,7 @@
     await leave(false);
     showDialog();
     if (action === "join_room") showJoinConfirmation(invite);
+    else if (action === "quick_join") showJoinConfirmation(null, true);
     else showSetup();
     setVerificationState(
       "error",
@@ -1494,33 +1725,7 @@
         body: JSON.stringify(roomRequest),
       });
       requireCurrentOperation(operation);
-      var normalized = {
-        v: result.v,
-        room: result.room,
-        session: result.host && result.host.session,
-      };
-      validateRoomResponse(normalized);
-      session.room = result.room;
-      session.roomTicket = result.host.ticket;
-      session.selfPeerId = result.host.session.peerId;
-      updateLocalRoster();
-      session.inviteCode = result.invite && result.invite.code;
-      if (!session.inviteCode) throw new Error("The room did not return an invite.");
-      /* Keep the visible host and path that the player opened. This lets the
-         same signaling service support a staged origin without leaking its
-         canonical production URL into preview invites. */
-      session.inviteUrl = makeInviteUrl(session.inviteCode);
-      showInvite();
-      session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
-      configureTransport(session.iceServers);
-      await openSocket(result.host.session.websocketUrl, operation);
-      requireCurrentOperation(operation);
-      applyPlayerCustomization(profile);
-      requestConfiguredHost(settings);
-      session.gameCommandIssued = true;
-      startGamePolling();
-      setHeader("Preparing lobby…", "waiting");
-      setStatus("Opening Halo's lobby with " + hostSettingsLabel() + "…");
+      await completeHostSetup(result, settings, profile, operation);
     } catch (error) {
       if (operation === session.operationGeneration && (!error || !error.haloCanceled)) {
         if (isTurnstileRejection(error)) {
@@ -1536,7 +1741,321 @@
     }
   }
 
-  async function join(value, turnstileToken) {
+  /* The host's side of a room the service just created for it, whether
+     through the wizard or because quick join found no open game. */
+  async function completeHostSetup(result, settings, profile, operation) {
+    var normalized = {
+      v: result.v,
+      room: result.room,
+      session: result.host && result.host.session,
+    };
+    validateRoomResponse(normalized);
+    session.room = result.room;
+    session.roomTicket = result.host.ticket;
+    session.selfPeerId = result.host.session.peerId;
+    updateLocalRoster();
+    session.inviteCode = result.invite && result.invite.code;
+    if (!session.inviteCode) throw new Error("The room did not return an invite.");
+    /* Keep the visible host and path that the player opened. This lets the
+       same signaling service support a staged origin without leaking its
+       canonical production URL into preview invites. */
+    session.inviteUrl = makeInviteUrl(session.inviteCode);
+    showInvite();
+    session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
+    configureTransport(session.iceServers);
+    await openSocket(result.host.session.websocketUrl, operation);
+    requireCurrentOperation(operation);
+    applyPlayerCustomization(profile);
+    if (session.dedicated || session.lobbyDriver) {
+      requestDedicatedHost(settings, session.dedicated || session.lobbyDriver);
+    } else {
+      requestConfiguredHost(settings);
+    }
+    session.gameCommandIssued = true;
+    startGamePolling();
+    startRoomRenewal();
+    setHeader("Preparing lobby…", "waiting");
+    setStatus("Opening Halo's lobby with " + hostSettingsLabel() + "…");
+  }
+
+  /* A guest's side of a session the service minted, from an invite or from
+     quick join. */
+  async function completeGuestJoin(result, operation) {
+    validateRoomResponse(result);
+    session.room = result.room;
+    session.selfPeerId = result.session.peerId;
+    updateLocalRoster();
+    session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
+    configureTransport(session.iceServers);
+    await openSocket(result.session.websocketUrl, operation);
+    requireCurrentOperation(operation);
+    setGameTransportState(TRANSPORT_STATE.CONNECTING);
+  }
+
+  function stopRoomRenewal() {
+    if (session.renewTimer) global.clearInterval(session.renewTimer);
+    session.renewTimer = 0;
+  }
+
+  function startRoomRenewal() {
+    stopRoomRenewal();
+    var operation = session.operationGeneration;
+    session.renewTimer = global.setInterval(function() {
+      if (operation !== session.operationGeneration || !session.active ||
+          session.role !== "host" || !session.room || !session.roomTicket) {
+        return;
+      }
+      renewRoom(operation).catch(function() {
+        /* The room keeps its current expiry; the next renewal retries. */
+      });
+    }, ROOM_RENEW_MILLISECONDS);
+  }
+
+  /* Pushes the room's expiry back and, for a dedicated host, publishes the
+     lobby it is on now. */
+  function renewRoom(operation, lobby) {
+    var body = { ticket: session.roomTicket };
+    if (lobby) body.lobby = { mapIndex: lobby.mapIndex, modeIndex: lobby.modeIndex };
+    return fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id) + "/renew", {
+      method: "POST",
+      headers: requestHeaders(),
+      body: JSON.stringify(body),
+    }).then(function(result) {
+      if (operation === session.operationGeneration && result && result.room) {
+        session.room = result.room;
+      }
+      return result;
+    });
+  }
+
+  /* JSON headers, with the dedicated host's credential when it has one. */
+  function requestHeaders() {
+    var headers = { "Content-Type": "application/json" };
+    if (session.dedicated && session.dedicated.serviceToken) {
+      headers.Authorization = "Bearer " + session.dedicated.serviceToken;
+    }
+    return headers;
+  }
+
+  function normalizeRotation(value) {
+    var entries = Array.isArray(value) && value.length ? value : [DEFAULT_PUBLIC_LOBBY];
+    return entries.map(function(entry) {
+      var settings = normalizeHostSettings(entry);
+      return { mapIndex: settings.mapIndex, modeIndex: settings.modeIndex };
+    });
+  }
+
+  function positiveInteger(value, fallback, maximum) {
+    var number = Number(value);
+    if (!Number.isInteger(number) || number < 0 || number > maximum) return fallback;
+    return number;
+  }
+
+  /* A dedicated host: the page runs on a server (services/dedicated-host)
+     with the service credential, keeps a public room open, and lets Halo's
+     driver (web_online_ui.c) start and restart games. The rotation advances
+     after each game. */
+  async function hostDedicated(config) {
+    config = config || {};
+    if (!session.runtimeReady) throw new Error("Halo is still starting.");
+    var serviceToken = String(config.serviceToken || "");
+    if (!serviceToken) throw new Error("A dedicated host needs the service credential.");
+    var rotation = normalizeRotation(config.rotation);
+    var profile = normalizePlayerProfile({
+      name: config.name || DEDICATED_DEFAULTS.name,
+      style: config.style || DEDICATED_DEFAULTS.style,
+    });
+    await leave(false);
+    var operation = ++session.operationGeneration;
+    session.active = true;
+    session.role = "host";
+    session.publicLobby = true;
+    session.dedicated = {
+      serviceToken: serviceToken,
+      rotation: rotation,
+      index: 0,
+      minimumPlayers: positiveInteger(config.minimumPlayers, DEDICATED_DEFAULTS.minimumPlayers, 127) || 1,
+      countdownSeconds: positiveInteger(config.countdownSeconds, DEDICATED_DEFAULTS.countdownSeconds, 255),
+      postgameSeconds: positiveInteger(config.postgameSeconds, DEDICATED_DEFAULTS.postgameSeconds, 255),
+      gamesPlayed: 0,
+      lastMatchState: MATCH_STATE.NONE,
+    };
+    syncTelemetryContext();
+    session.closing = false;
+    session.profile = profile;
+    writePlayerProfile(profile);
+    var settings = normalizeHostSettings(rotation[0]);
+    session.hostSettings = settings;
+    renderRoster();
+    showProgress();
+    setBusy(true);
+    setHeader("Opening public game…", "waiting");
+    setStatus("Preparing the dedicated lobby with " + hostSettingsLabel() + "…");
+    try {
+      var result = await fetchJson("/v1/rooms", {
+        method: "POST",
+        headers: requestHeaders(),
+        body: JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          buildId: buildId(),
+          capacity: ROOM_CAPACITY,
+          identifier: localIdentifier(),
+          visibility: "public",
+          dedicated: true,
+          lobby: { mapIndex: settings.mapIndex, modeIndex: settings.modeIndex },
+        }),
+      });
+      requireCurrentOperation(operation);
+      await completeHostSetup(result, settings, profile, operation);
+      setStatus("Dedicated lobby open on " + hostSettingsLabel() + ".");
+    } catch (error) {
+      if (operation === session.operationGeneration && (!error || !error.haloCanceled)) fail(error);
+      throw error;
+    } finally {
+      if (operation === session.operationGeneration) setBusy(false);
+    }
+  }
+
+  /* After each game, the next map and mode of the rotation, told to Halo for
+     the lobby that comes back and to the room service for the directory. */
+  function advanceRotation() {
+    var dedicated = session.dedicated;
+    if (!dedicated || !session.room) return;
+    dedicated.gamesPlayed++;
+    dedicated.index = (dedicated.index + 1) % dedicated.rotation.length;
+    var next = dedicated.rotation[dedicated.index];
+    try {
+      if (!wasmFunction("platform_web_online_set_next_game")(next.mapIndex, next.modeIndex)) return;
+    } catch (error) {
+      return;
+    }
+    try {
+      session.hostSettings = normalizeHostSettings(next);
+    } catch (error) {
+      /* The rotation was validated when it was set. */
+    }
+    renewRoom(session.operationGeneration, next).catch(function() {
+      /* The directory keeps the previous lobby until the next renewal. */
+    });
+  }
+
+  function pollDedicated() {
+    var dedicated = session.dedicated;
+    if (!dedicated) return;
+    var matchState;
+    try {
+      matchState = wasmFunction("platform_web_online_get_match_state")();
+    } catch (error) {
+      return;
+    }
+    session.matchState = matchState;
+    if (matchState !== dedicated.lastMatchState) {
+      telemetry("dedicated_" + (MATCH_STATE_NAMES[matchState] || "unknown"), "online");
+      /* The report has come up: the game just ended. */
+      if (matchState === MATCH_STATE.POSTGAME) advanceRotation();
+      dedicated.lastMatchState = matchState;
+    }
+  }
+
+  /* What the server's supervisor watches. */
+  function dedicatedStatus() {
+    var players = 0;
+    try {
+      players = wasmFunction("platform_web_online_get_player_count")();
+    } catch (error) {
+      players = 0;
+    }
+    return {
+      active: session.active,
+      dedicated: !!session.dedicated,
+      role: session.role,
+      roomId: session.room ? session.room.id : null,
+      roomExpiresAt: session.room ? session.room.expiresAt || null : null,
+      gameState: session.gameCommandIssued ? gameState() : GAME_STATE.IDLE,
+      matchState: MATCH_STATE_NAMES[session.matchState] || "none",
+      players: players,
+      connectedPeers: session.connectedPeerCount,
+      lobby: session.hostSettings ?
+        { mapIndex: session.hostSettings.mapIndex, modeIndex: session.hostSettings.modeIndex,
+          label: hostSettingsLabel() } : null,
+      rotationIndex: session.dedicated ? session.dedicated.index : 0,
+      gamesPlayed: session.dedicated ? session.dedicated.gamesPlayed : 0,
+    };
+  }
+
+  /* Quick join: the service seats this browser in the open public game, or
+     makes it the host of a new one when nobody is playing. */
+  async function quickJoin(turnstileToken) {
+    if (!session.runtimeReady) {
+      showDialog();
+      showJoinConfirmation(null, true);
+      return;
+    }
+    var profile = readPlayerProfile();
+    savePlayerProfile(profile);
+    await leave(false);
+    var operation = ++session.operationGeneration;
+    var recoveredVerification = false;
+    session.active = true;
+    /* Provisional: the service's answer decides. */
+    session.role = "guest";
+    session.publicLobby = true;
+    syncTelemetryContext();
+    session.closing = false;
+    session.profile = profile;
+    writePlayerProfile(profile);
+    renderRoster();
+    showDialog();
+    showProgress();
+    setBusy(true);
+    setHeader("Finding a game…", "waiting");
+    setStatus("Looking for an open public game…");
+    try {
+      var request = {
+        protocolVersion: PROTOCOL_VERSION,
+        buildId: buildId(),
+        identifier: localIdentifier(),
+      };
+      if (turnstileToken) request.turnstileToken = turnstileToken;
+      if (wallet.token) request.walletToken = wallet.token;
+      var result = await fetchJson("/v1/quickjoin", {
+        method: "POST",
+        body: JSON.stringify(request),
+      });
+      requireCurrentOperation(operation);
+      if (result && result.role === "host") {
+        session.role = "host";
+        session.lobbyDriver = PLAYER_HOST_DRIVER;
+        syncTelemetryContext();
+        var lobby = result.room && result.room.lobby ? result.room.lobby : DEFAULT_PUBLIC_LOBBY;
+        var settings = normalizeHostSettings(lobby);
+        session.hostSettings = settings;
+        await completeHostSetup(result, settings, profile, operation);
+        setStatus("Nobody was playing yet, so you're hosting " + hostSettingsLabel() +
+          ". Players who press Join multiplayer will land here.");
+      } else if (result && result.role === "guest") {
+        session.roomTicket = null;
+        await completeGuestJoin(result, operation);
+        setStatus("Game found. Connecting to the host…");
+      } else {
+        throw new Error("The room service returned an unexpected answer.");
+      }
+    } catch (error) {
+      if (operation === session.operationGeneration && (!error || !error.haloCanceled)) {
+        if (isTurnstileRejection(error)) {
+          recoveredVerification = true;
+          await recoverTurnstile("quick_join");
+        } else {
+          fail(error);
+        }
+      }
+    } finally {
+      if (!recoveredVerification) resetTurnstile();
+      if (operation === session.operationGeneration) setBusy(false);
+    }
+  }
+
+  async function join(value, turnstileToken, matchmade) {
     if (!session.runtimeReady) {
       showDialog();
       showJoinConfirmation(value);
@@ -1556,6 +2075,9 @@
     }
     session.active = true;
     session.role = "guest";
+    /* (known now, so the lobby stays up while the session is made) */
+    session.matchmade = !!matchmade;
+    session.publicLobby = session.matchmade;
     syncTelemetryContext();
     session.closing = false;
     session.room = { id: invite.roomId };
@@ -1570,16 +2092,12 @@
     try {
       var result = await createSession(invite.ticket, turnstileToken);
       requireCurrentOperation(operation);
-      validateRoomResponse(result);
-      session.room = result.room;
-      session.selfPeerId = result.session.peerId;
-      updateLocalRoster();
-      session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
-      configureTransport(session.iceServers);
-      await openSocket(result.session.websocketUrl, operation);
-      requireCurrentOperation(operation);
-      setGameTransportState(TRANSPORT_STATE.CONNECTING);
-      setStatus("Room found. Connecting directly to your friend…");
+      /* A matchmade match's room is private (only its players hold the
+         invite), but it plays in the public lobby's screens. */
+      session.matchmade = !!matchmade;
+      session.publicLobby = session.matchmade || !!(result && result.room && result.room.visibility === "public");
+      await completeGuestJoin(result, operation);
+      setStatus("Room found. Connecting directly to " + hostNoun() + "…");
     } catch (error) {
       if (operation === session.operationGeneration && (!error || !error.haloCanceled)) {
         if (isTurnstileRejection(error)) {
@@ -1614,6 +2132,7 @@
       return;
     }
     elements.dialog.dataset.gameState = String(state);
+    if (session.dedicated) pollDedicated();
     if (state === GAME_STATE.ERROR) {
       fail(new Error(GAME_ERRORS[gameError()] || "Halo could not enter the online lobby."));
       return;
@@ -1623,12 +2142,15 @@
         if (!session.hostWasReady) showInvite();
         session.hostWasReady = true;
         setHeader(session.connectedPeerCount ?
-          connectedFriendsLabel(session.connectedPeerCount) : "Waiting for friends",
+          connectedFriendsLabel(session.connectedPeerCount) :
+          (session.publicLobby ? "Waiting for players" : "Waiting for friends"),
           session.connectedPeerCount ? "connected" : "waiting");
         setStatus(session.connectedPeerCount ?
           connectedFriendsLabel(session.connectedPeerCount) + ". " + hostSettingsLabel() +
             " is ready — press Start Game in Halo." :
-          hostSettingsLabel() + " is ready — send the invite link to your friends.");
+          session.publicLobby ?
+            hostSettingsLabel() + " is open to everyone — players who press Join multiplayer land here." :
+            hostSettingsLabel() + " is ready — send the invite link to your friends.");
       } else if (state === GAME_STATE.WAITING) {
         setStatus("Waiting for Halo's main menu…");
       } else if (state === GAME_STATE.HOST_STARTING) {
@@ -1641,12 +2163,13 @@
     if (state === GAME_STATE.WAITING) {
       setStatus("Waiting for Halo's main menu…");
     } else if (state === GAME_STATE.JOIN_SEARCHING) {
-      setStatus("Connected. Finding your friend's Halo lobby…");
+      setStatus("Connected. Finding " + (session.publicLobby ? "the game's" : "your friend's") +
+        " Halo lobby…");
     } else if (state === GAME_STATE.JOIN_CONNECTING) {
       setStatus("Halo found the lobby. Joining…");
     } else if (state === GAME_STATE.JOINED) {
       session.guestWasJoined = true;
-      setHeader("Connected to friend", "connected");
+      setHeader(session.publicLobby ? "In the public game" : "Connected to friend", "connected");
       setStatus("You're in the lobby.");
       global.setTimeout(function() {
         if (elements.dialog.open && session.active) elements.dialog.close();
@@ -1659,7 +2182,9 @@
   }
 
   function resetSessionState() {
+    if (session.spectating) setSpectating(false);
     session.active = false;
+    session.matchmade = false;
     session.role = null;
     session.room = null;
     session.roomTicket = null;
@@ -1684,6 +2209,12 @@
     session.hostSettings = null;
     session.guestWasJoined = false;
     session.pendingInvite = null;
+    session.pendingQuick = false;
+    session.publicLobby = false;
+    session.dedicated = null;
+    session.lobbyDriver = null;
+    session.matchInfo = null;
+    session.matchState = MATCH_STATE.NONE;
     session.wizardStep = "map";
     syncTelemetryContext();
     renderRoster();
@@ -1696,15 +2227,18 @@
       session.closing = true;
       var pendingWork = [session.messageChain].concat(Array.from(session.peerPromises.values()));
       if (session.role === "host" && session.room && session.roomTicket) {
-        fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id), {
+        /* Awaited with the rest, so a host that is shutting down closes its
+           room before it exits instead of stranding its players. */
+        pendingWork.push(fetchJson("/v1/rooms/" + encodeURIComponent(session.room.id), {
           method: "DELETE",
           body: JSON.stringify({ ticket: session.roomTicket }),
         }).catch(function() {
           /* The room expires automatically if revocation cannot reach the service. */
-        });
+        }));
       }
       stopHeartbeat();
       stopGamePolling();
+      stopRoomRenewal();
       if (session.reconnectTimer) global.clearTimeout(session.reconnectTimer);
       session.reconnectTimer = 0;
       session.socketGeneration++;
@@ -1738,6 +2272,18 @@
 
   function fail(error) {
     var message = error && error.message ? error.message : "Online play failed.";
+    if (lobby.quickPlay) {
+      lobby.quickPlay = false;
+      telemetry("online_error", "online");
+      leave(false).then(function() { setLandingStatus(message, "error"); });
+      return;
+    }
+    if (lobby.wantsPlay) {
+      telemetry("online_error", "online");
+      if (message === GAME_ERRORS[5]) lobby.rejoinAttempts = 0;
+      leave(false).then(function() { scheduleRejoin(message); });
+      return;
+    }
     telemetry("online_error", "online");
     var wasActive = session.active;
     leave(false).then(function() {
@@ -1854,10 +2400,17 @@
         setStatus(error.message, "error");
       }
     });
+    if (elements.quickJoin) {
+      elements.quickJoin.addEventListener("click", function() {
+        showDialog();
+        showJoinConfirmation(null, true);
+      });
+    }
     if (elements.joinProfile) {
       elements.joinProfile.addEventListener("click", function() {
+        var quick = session.pendingQuick;
         var invite = session.pendingInvite;
-        if (!invite) {
+        if (!quick && !invite) {
           setStatus("That invite is no longer available.", "error");
           return;
         }
@@ -1868,7 +2421,8 @@
           return;
         }
         try {
-          join(invite, consumeTurnstile("join_room")).catch(fail);
+          if (quick) quickJoin(consumeTurnstile("join_room")).catch(fail);
+          else join(invite, consumeTurnstile("join_room")).catch(fail);
         } catch (error) {
           setStatus(error.message, "error");
         }
@@ -1912,13 +2466,2970 @@
     elements.cancel.addEventListener("click", function() { leave(true).catch(fail); });
   }
 
+
+  /* ---------- The matchmaking lobby */
+
+  function lobbyElement(id) {
+    return lobby.elements[id] || (lobby.elements[id] = byId(id));
+  }
+
+  function clientState() {
+    try {
+      var fn = global.Module && global.Module._platform_web_online_get_client_state;
+      return typeof fn === "function" ? fn() : CLIENT_STATE.NONE;
+    } catch (error) {
+      return CLIENT_STATE.NONE;
+    }
+  }
+
+  function hostMatchState() {
+    try {
+      var fn = global.Module && global.Module._platform_web_online_get_match_state;
+      return typeof fn === "function" ? fn() : MATCH_STATE.NONE;
+    } catch (error) {
+      return MATCH_STATE.NONE;
+    }
+  }
+
+  function currentProfile() {
+    if (session.profile) return session.profile;
+    try { return readPlayerProfile(); } catch (error) { return { name: generatedPlayerName(), style: "sage", emblem: chosenEmblem() }; }
+  }
+
+  function startQuickPlay() {
+    lobby.error = null;
+    if (!session.runtimeReady) return;
+    try {
+      savePlayerProfile(currentProfile());
+    } catch (error) {
+      /* An invalid edit keeps the last good profile. */
+    }
+    enqueueForMatch();
+  }
+
+  /* ---------- matchmaking (services/signaling/src/matchmaker.ts)
+
+     Play queues this machine (and wallet) for a playlist. The page polls
+     its ticket every second; the matchmaker groups players, gives the match
+     a server, and the poll returns the server's invite once its room is
+     open. Matches are accepted automatically. */
+
+  var QUEUE_POLL_MILLISECONDS = 1000;
+  /* what Play queues for (services/signaling/src/matchmaker.ts, PLAYLISTS) */
+  var DEFAULT_PLAYLIST = "ffa";
+
+  async function enqueueForMatch() {
+    if (lobby.queue) return;
+    if (partyView()) {
+      if (partyLeader() && lobbyKind() === "matchmaking") startParty();
+      else lobby.wantsPlay = false;
+      return;
+    }
+    var queue = { id: null, state: "joining", queued: 0, playlist: selectedPlaylist().id, polledAt: 0 };
+    lobby.queue = queue;
+    try {
+      var request = {
+        protocolVersion: PROTOCOL_VERSION,
+        buildId: buildId(),
+        identifier: localIdentifier(),
+        playlist: queue.playlist,
+        playerKey: playerKey(),
+      };
+      if (WALLET_ENABLED && wallet.token) request.walletToken = wallet.token;
+      var result = await fetchJson("/v1/queue", { method: "POST", body: JSON.stringify(request) });
+      if (lobby.queue !== queue) return;
+      applyTicket(result.ticket);
+    } catch (error) {
+      if (lobby.queue !== queue) return;
+      lobby.queue = null;
+      lobby.started = false;
+      if (error && (error.haloCode === "STAKE_NOT_READY" || error.haloCode === "WALLET_SIGN_IN_REQUIRED")) {
+        /* a wagered playlist this wallet cannot stake in yet */
+        lobby.wantsPlay = false;
+        refreshWallet();
+        openLoadUp(error.message);
+        return;
+      }
+      scheduleRejoin(error && error.message ? error.message : "Could not join the queue.");
+    }
+  }
+
+  function applyTicket(ticket) {
+    var queue = lobby.queue;
+    if (!queue || !ticket) return;
+    queue.id = ticket.id;
+    queue.state = ticket.state;
+    queue.queued = ticket.queued;
+    queue.waited = ticket.waitedSeconds;
+    if (typeof ticket.matches === "number") lobby.matches = ticket.matches;
+    queue.match = ticket.match || null;
+    if (ticket.state === "ready" && ticket.match && ticket.match.inviteCode && !queue.joined && !session.active) {
+      queue.joined = true;
+      /* a free match after a wagered one: the old wager stays only as the
+         lobby's result card */
+      if (ticket.match.wager) startWager(ticket.match);
+      else lobby.wager = null;
+      join(ticket.match.inviteCode, null, true).catch(function(error) { fail(error); });
+      return;
+    }
+    if ((ticket.state === "ended" || ticket.state === "cancelled" || ticket.state === "expired") && !session.active) {
+      /* the match is over or never happened: back in the queue, if still
+         wanted */
+      lobby.queue = null;
+      lobby.started = false;
+    }
+  }
+
+  function pollQueue() {
+    var queue = lobby.queue;
+    if (!queue || !queue.id || queue.polling || session.active) return;
+    if (Date.now() - queue.polledAt < QUEUE_POLL_MILLISECONDS) return;
+    queue.polling = true;
+    queue.polledAt = Date.now();
+    fetchJson("/v1/queue/" + encodeURIComponent(queue.id), { method: "GET" })
+      .then(function(result) { if (lobby.queue === queue) applyTicket(result.ticket); })
+      .catch(function(error) {
+        if (lobby.queue === queue && error && /unknown or has expired/.test(error.message || "")) {
+          lobby.queue = null;
+          lobby.started = false;
+        }
+      })
+      .then(function() { queue.polling = false; });
+  }
+
+  function cancelQueue() {
+    var queue = lobby.queue;
+    lobby.queue = null;
+    if (queue && queue.id && queue.state === "queued") {
+      fetchJson("/v1/queue/" + encodeURIComponent(queue.id), { method: "DELETE" }).catch(function() {});
+    }
+  }
+
+  /* ---------- playlists (services/signaling/src/matchmaker.ts, GET
+     /v1/playlists): what the lobby offers, with who is searching and
+     playing; until the service answers, this copy */
+  var PLAYLIST_STORAGE_KEY = "halo-playlist";
+  var FALLBACK_PLAYLISTS = [
+    { id: "team", label: "Team Doubles", description: "Two on two Team Slayer.", minimum: 2, maximum: 4, teams: true,
+      maps: [0, 6, 4], modes: [1, 1, 1], searching: 0, playing: 0 },
+    { id: "ffa", label: "Rumble Pit", description: "Free-for-all Slayer.", minimum: 2, maximum: 8, teams: false,
+      maps: [5, 4, 3, 6], modes: [0, 0, 0, 0], searching: 0, playing: 0 },
+  ];
+  var PLAYLIST_REFRESH_MILLISECONDS = 5000;
+
+  function playlists() {
+    var list = lobby.playlists && lobby.playlists.length ? lobby.playlists : FALLBACK_PLAYLISTS;
+    /* (the playlists for SOL only where playing for SOL shows) */
+    return WALLET_ENABLED ? list : list.filter(function(playlist) { return !playlist.wager; });
+  }
+
+  function playlistById(id) {
+    var list = playlists();
+    for (var index = 0; index < list.length; index++) if (list[index].id === id) return list[index];
+    return null;
+  }
+
+  /* the playlist Find match queues for: the player's pick, kept */
+  function selectedPlaylist() {
+    if (!lobby.playlist) {
+      try { lobby.playlist = global.localStorage.getItem(PLAYLIST_STORAGE_KEY); } catch (error) { lobby.playlist = null; }
+    }
+    return playlistById(lobby.playlist) || playlistById(DEFAULT_PLAYLIST) || playlists()[0];
+  }
+
+  function teamSize(playlist) {
+    if (playlist.teams) {
+      var side = Math.floor(playlist.maximum / 2);
+      return playlist.minimum === playlist.maximum || side <= 2 ? side + " on " + side : "Up to " + side + " on " + side;
+    }
+    return playlist.maximum === 2 ? "One on one" : "Up to " + playlist.maximum + " players, free-for-all";
+  }
+
+  function playlistCounts(playlist) {
+    var parts = [];
+    if (playlist.searching) parts.push(playlist.searching + " searching");
+    if (playlist.playing) parts.push(playlist.playing + " playing");
+    return parts.length ? parts.join(" · ") : "Nobody searching yet";
+  }
+
+  function refreshPlaylists() {
+    if (lobby.playlistsBusy || Date.now() - (lobby.playlistsAt || 0) < PLAYLIST_REFRESH_MILLISECONDS) return;
+    lobby.playlistsBusy = true;
+    lobby.playlistsAt = Date.now();
+    fetchJson("/v1/playlists", { method: "GET" })
+      .then(function(result) {
+        if (result && Array.isArray(result.playlists)) lobby.playlists = result.playlists;
+        renderPlaylistDialog();
+      })
+      .catch(function() { /* the next refresh tries again */ })
+      .then(function() { lobby.playlistsBusy = false; });
+  }
+
+  function choosePlaylist(id) {
+    if (!playlistById(id) || id === selectedPlaylist().id) return;
+    if (partyView() && !partyLeader()) return;
+    if (partyView()) configureParty({ playlist: id });
+    lobby.playlist = id;
+    try { global.localStorage.setItem(PLAYLIST_STORAGE_KEY, id); } catch (error) { /* this load only */ }
+    /* searching already: search the new playlist instead */
+    if (lobby.queue && !session.active) {
+      cancelQueue();
+      lobby.started = false;
+    }
+  }
+
+  function renderPlaylistDialog() {
+    var dialog = lobbyElement("playlist-dialog");
+    if (!dialog || !dialog.open) return;
+    var focused = playlistById(lobby.playlistFocus) || selectedPlaylist();
+    var options = lobbyElement("playlist-options");
+    var signature = playlists().map(function(playlist) {
+      return playlist.id + ":" + playlist.searching + ":" + playlist.playing;
+    }).join("|") + "#" + focused.id;
+    if (options.dataset.signature !== signature) {
+      options.dataset.signature = signature;
+      options.replaceChildren.apply(options, playlists().map(function(playlist) {
+        var option = document.createElement("button");
+        option.type = "button";
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", playlist.id === focused.id ? "true" : "false");
+        option.append(playlist.label);
+        var count = document.createElement("small");
+        count.textContent = playlist.searching ? playlist.searching + " searching" : "";
+        if (playlist.wager && !playlist.searching) {
+          count.className = "wager";
+          count.textContent = "\u25ce " + formatSol(playlist.wager.stake);
+        }
+        option.appendChild(count);
+        option.addEventListener("click", function() {
+          lobby.playlistFocus = playlist.id;
+          renderPlaylistDialog();
+        });
+        option.addEventListener("dblclick", function() {
+          choosePlaylist(playlist.id);
+          dialog.close();
+        });
+        return option;
+      }));
+    }
+    lobbyElement("playlist-detail-name").textContent = focused.label;
+    lobbyElement("playlist-detail-size").textContent = teamSize(focused);
+    lobbyElement("playlist-detail-description").textContent = focused.description;
+    var wagerLine = lobbyElement("playlist-detail-wager");
+    wagerLine.hidden = !focused.wager;
+    wagerLine.textContent = !focused.wager ? "" : "\u25ce " + formatSol(focused.wager.stake) + " SOL buy-in · " +
+      (focused.wager.mode === "team" ? "the winning team takes the pot" :
+        formatSol(focused.wager.perKill) + " SOL a kill") + " · 5% fee on winnings";
+    lobbyElement("playlist-detail-counts").textContent = playlistCounts(focused);
+    var maps = lobbyElement("playlist-detail-maps");
+    if (maps.dataset.playlist !== focused.id) {
+      maps.dataset.playlist = focused.id;
+      maps.replaceChildren.apply(maps, focused.maps.map(function(mapIndex, index) {
+        var figure = document.createElement("figure");
+        var image = document.createElement("img");
+        image.src = "assets/ui/maps/preview/" + (MAP_SLUGS[mapIndex] || "blood-gulch") + ".png";
+        image.alt = "";
+        var caption = document.createElement("figcaption");
+        caption.textContent = (selectedLabel(elements.map, mapIndex) || "") + " · " +
+          (selectedLabel(elements.mode, focused.modes[index]) || "");
+        figure.appendChild(image);
+        figure.appendChild(caption);
+        return figure;
+      }));
+    }
+    lobbyElement("playlist-dialog-select").textContent =
+      focused.id === selectedPlaylist().id ? "Selected" : "Select " + focused.label;
+  }
+
+  /* ---------- the landing: click to play (Quick Play)
+
+     The site opens here. A click anywhere drops the player into the fullest
+     public server's game in progress (services/game-server, open mode: it
+     runs Slayer on a rotation and takes players while it plays), with no
+     dialog and no queue. Matchmaking, Custom Games and Play for SOL lead to
+     the Halo 3 lobby. Leaving a Quick Play game comes back here. */
+
+  function setLandingVisible(visible) {
+    var element = lobbyElement("landing");
+    if (!element) return;
+    if (visible) {
+      /* the page owns the mouse and keys while the landing shows, even with
+         the live backdrop's map running behind it */
+      if (document.body.dataset.lobby !== "open") document.body.dataset.lobby = "open";
+      if (document.pointerLockElement && typeof document.exitPointerLock === "function") document.exitPointerLock();
+    }
+    if (element.hidden === !visible) return;
+    element.hidden = !visible;
+  }
+
+  /* the landing, or the lobby: a party or a search in progress is the lobby's */
+  function homeScreen() {
+    if (partyView() || lobby.pendingParty || (lobby.queue && !lobby.quickPlay)) return "lobby";
+    return lobby.screen || "landing";
+  }
+
+  function setLandingStatus(text, tone) {
+    lobby.landingStatus = { text: text || "", tone: tone || null };
+  }
+
+  function renderLanding() {
+    var setText = function(id, text) {
+      var element = lobbyElement(id);
+      if (element && element.textContent !== text) element.textContent = text;
+    };
+    var root = lobbyElement("landing");
+    if (!root) return;
+    /* the live map shows through once the game has it up; paused, the game
+       itself is behind */
+    var live = (backdropState() === 2 || backgroundBroadcastPlaying()) && gameInView() &&
+      !session.active && !lobby.joining;
+    if (live) root.dataset.live = "true";
+    else delete root.dataset.live;
+    if (lobby.paused) root.dataset.pause = "true";
+    else delete root.dataset.pause;
+    setText("landing-quick", lobby.paused ? "Resume" : "Quick Play");
+    var leaveLink = lobbyElement("landing-leave");
+    if (leaveLink) leaveLink.hidden = !lobby.paused;
+    var busy = lobby.quickPlay && (session.active || lobby.joining);
+    if (busy) root.dataset.busy = "true";
+    else delete root.dataset.busy;
+    setText("landing-play-text", lobby.paused ? "Click to play" :
+      busy ? "Dropping in…" : session.runtimeReady ? "Click to play" : "Loading Halo…");
+    var status = lobby.landingStatus || { text: "" };
+    var statusText = status.text || (lobby.pendingQuickPlay && !session.runtimeReady ?
+      "You'll drop in as soon as Halo has loaded." : "");
+    var statusElement = lobbyElement("landing-status");
+    if (statusElement) {
+      if (statusElement.textContent !== statusText) statusElement.textContent = statusText;
+      if (status.tone) statusElement.dataset.tone = status.tone;
+      else delete statusElement.dataset.tone;
+    }
+    /* what the fullest public server is playing; paused, your own game */
+    var servers = publicServers();
+    var room = servers[0];
+    if (lobby.paused && session.room && session.room.lobby) room = session.room.lobby;
+    if (room) {
+      var mapName = selectedLabel(elements.map, Number(room.mapIndex)) || "Blood Gulch";
+      var modeName = selectedLabel(elements.mode, Number(room.modeIndex)) || "Slayer";
+      setText("landing-now", "Now playing: " + modeName + " on " + mapName);
+      var playing = servers.reduce(function(sum, entry) { return sum + (entry.players || 0); }, 0);
+      setText("landing-now-detail", lobby.paused ? "Paused · Esc menu" : playing === 0 ? "Servers ready, be the first in" :
+        playing + (playing === 1 ? " player" : " players") + " online");
+    } else {
+      setText("landing-now", "Now playing: Slayer");
+      setText("landing-now-detail", "");
+    }
+    var profile = currentProfile();
+    setText("landing-name", profile.name);
+    var art = lobbyElement("landing-spartan-art");
+    if (art && art.dataset.style !== profile.style) {
+      art.dataset.style = profile.style;
+      art.src = "assets/ui/spartan/" + profile.style + ".png?art=2";
+    }
+    var emblem = lobbyElement("landing-emblem");
+    var key = profile.style + ":" + profile.emblem;
+    if (emblem && emblem.dataset.key !== key) {
+      emblem.dataset.key = key;
+      emblem.dataset.style = profile.style;
+      emblem.replaceChildren(emblemElement(validEmblem(profile.emblem) ? profile.emblem : textHash(profile.name) % EMBLEM_COUNT));
+    }
+  }
+
+  /* The live backdrop: the game plays the map behind the landing offline,
+     a camera turning over it (port/linux/game/network_lobby.c). It asks
+     once Halo is idle at its menu; joining a game ends it on its own. */
+  function backdropState() {
+    return wasmNumber("platform_web_background_state", 0);
+  }
+
+  /* ---------- the landing's backdrop: someone playing, from the broadcast,
+     when anyone is on a public server; the map, flown over, when nobody is */
+
+  var BACKGROUND_SWITCH_MILLISECONDS = 20000;
+  /* a broadcast with nobody to follow this long (longer than a respawn)
+     gives way to the map */
+  var BACKGROUND_EMPTY_MILLISECONDS = 15000;
+  var BACKGROUND_RETRY_MILLISECONDS = 15000;
+
+  function broadcastPhase() {
+    return wasmNumber("platform_web_broadcast_state", 0) % 16;
+  }
+
+  /* a game on the screen, not Halo's own menu (which never shows through) */
+  function gameInView() {
+    return wasmNumber("platform_web_game_in_view", 0) === 1;
+  }
+
+  function backgroundBroadcastPlaying() {
+    return !!(lobby.broadcast && lobby.broadcast.background) && broadcastPhase() === 3;
+  }
+
+  function stopBackgroundBroadcast() {
+    if (lobby.broadcast && lobby.broadcast.background) {
+      stopBroadcast(true);
+      lobby.backdropAskedAt = 0;
+    }
+  }
+
+  /* a public game with players: its broadcast behind the landing */
+  function tickBackgroundBroadcast(onLanding) {
+    var watching = lobby.broadcast && lobby.broadcast.background ? lobby.broadcast : null;
+    if (watching && (!onLanding || session.active || lobby.paused)) {
+      stopBackgroundBroadcast();
+      return false;
+    }
+    if (watching) {
+      var target = global.Module && global.Module._platform_web_spectate_target;
+      var followed = typeof target === "function" ? readWasmString(target()) : "";
+      var now = Date.now();
+      if (followed) watching.followedAt = now;
+      /* the recording ended under it (Halo is back at its menu): the map */
+      if (broadcastPhase() === 3 && !gameInView()) {
+        stopBackgroundBroadcast();
+        lobby.backgroundRetryAt = now + BACKGROUND_RETRY_MILLISECONDS;
+        return false;
+      }
+      /* nobody left to follow: the map instead, for a while */
+      if (broadcastPhase() === 3 && now - (watching.followedAt || watching.startedAt) > BACKGROUND_EMPTY_MILLISECONDS) {
+        stopBackgroundBroadcast();
+        lobby.backgroundRetryAt = now + BACKGROUND_RETRY_MILLISECONDS;
+        return false;
+      }
+      /* a different player now and then */
+      if (followed && now - (watching.switchedAt || watching.startedAt) > BACKGROUND_SWITCH_MILLISECONDS) {
+        watching.switchedAt = now;
+        var next = global.Module && global.Module._platform_web_spectate_next;
+        if (typeof next === "function") next();
+      }
+      return true;
+    }
+    if (!onLanding || session.active || lobby.joining || lobby.paused || !session.runtimeReady) return false;
+    if (Date.now() < (lobby.backgroundRetryAt || 0)) return false;
+    var playing = publicServers().some(function(room) { return (room.players || 0) > 0; });
+    if (!playing) return false;
+    /* (out of the map's flyover first: the broadcast replaces the game) */
+    if (backdropState() !== 0) {
+      var stopMap = global.Module && global.Module._platform_web_background_stop;
+      if (typeof stopMap === "function" && Date.now() - (lobby.backdropStoppedAt || 0) > 3000) {
+        lobby.backdropStoppedAt = Date.now();
+        stopMap();
+      }
+      return true;
+    }
+    lobby.backgroundRetryAt = Date.now() + BACKGROUND_RETRY_MILLISECONDS;
+    watchBroadcast({ background: true });
+    return true;
+  }
+
+  function tickBackdrop(onLanding) {
+    if (tickBackgroundBroadcast(onLanding)) return;
+    var start = global.Module && global.Module._platform_web_background_start;
+    var stop = global.Module && global.Module._platform_web_background_stop;
+    if (typeof start !== "function") return;
+    var state = backdropState();
+    if (!onLanding || session.active || lobby.joining) {
+      if (state !== 0 && !session.active && !lobby.joining && typeof stop === "function" &&
+          Date.now() - (lobby.backdropStoppedAt || 0) > 3000) {
+        lobby.backdropStoppedAt = Date.now();
+        stop();
+      }
+      return;
+    }
+    if (!session.runtimeReady || state !== 0 || Date.now() - (lobby.backdropAskedAt || 0) < 4000) return;
+    if (wasmNumber("platform_web_online_get_state", 0) !== 0) return;
+    var room = publicServers()[0];
+    lobby.backdropAskedAt = Date.now();
+    start(room ? Number(room.mapIndex) : 5);
+  }
+
+  /* the public servers, fullest first */
+  function publicServers() {
+    return (lobby.listing || []).filter(function(room) { return room.dedicated; });
+  }
+
+  /* Click to play: once Halo has loaded, into a server's game in progress. */
+  function landingQuickPlay() {
+    if (session.active || lobby.joining) return;
+    stopBackgroundBroadcast();
+    setLandingStatus("");
+    lobby.screen = "landing";
+    if (!session.runtimeReady) {
+      lobby.pendingQuickPlay = true;
+      return;
+    }
+    lobby.pendingQuickPlay = false;
+    seamlessQuickJoin();
+  }
+
+  /* ---------- watching (a spectator): a public server's game, or a match
+     for SOL, with no player of one's own; the game follows a player from
+     behind (port/linux/game/network_lobby.c) */
+
+  function setSpectating(on) {
+    session.spectating = !!on;
+    var watch = global.Module && global.Module._platform_web_spectate;
+    if (typeof watch === "function") watch(on ? 1 : 0);
+    /* (the keys are the page's while watching; a broadcast behind the
+       landing leaves them to the landing) */
+    if (on && !(lobby.broadcast && lobby.broadcast.background)) document.body.dataset.spectate = "true";
+    else delete document.body.dataset.spectate;
+    var layer = byId("spectate");
+    if (layer && !on) layer.hidden = true;
+  }
+
+  function readWasmString(pointer) {
+    if (!pointer || typeof HEAPU8 === "undefined") return "";
+    var text = "";
+    for (var index = pointer; HEAPU8[index] && text.length < 64; index++) text += String.fromCharCode(HEAPU8[index]);
+    return text;
+  }
+
+  function renderSpectate() {
+    var layer = byId("spectate");
+    if (!layer) return;
+    if (layer.hidden) layer.hidden = false;
+    var target = global.Module && global.Module._platform_web_spectate_target;
+    var name = typeof target === "function" ? readWasmString(target()) : "";
+    var element = byId("spectate-name");
+    var text = name || "Waiting for a player…";
+    if (element && element.textContent !== text) element.textContent = text;
+  }
+
+  function stopSpectating() {
+    if (lobby.broadcast) {
+      stopBroadcast();
+      return;
+    }
+    lobby.wantsPlay = false;
+    cancelQueue();
+    leave(false).catch(function() {});
+  }
+
+  /* watch: the fullest public game (options.matchId: that match), from the
+     CDN a few seconds behind */
+  function landingSpectate(options) {
+    if (session.active || lobby.joining || !session.runtimeReady) return;
+    setLandingStatus("");
+    /* already playing behind the landing: the same broadcast, in front */
+    if (lobby.broadcast && lobby.broadcast.background && !(options && options.matchId)) {
+      lobby.broadcast.background = false;
+      document.body.dataset.spectate = "true";
+      return;
+    }
+    if (lobby.broadcast) stopBroadcast(true);
+    watchBroadcast(options || {});
+  }
+
+  /* ---------- the broadcast (services/signaling/src/broadcast.ts): a match
+     as a spectator receives it, recorded by its server in chunks of two
+     seconds while anyone watches, played here into the game a few seconds
+     behind (port/linux/game/network_lobby.c). The viewer has no connection
+     to the game: any number cost its server nothing more. */
+
+  var BROADCAST_POLL_MILLISECONDS = 1000;
+  /* how far behind the newest chunk playback starts (chunks of 2 s) */
+  var BROADCAST_START_BEHIND = 1;
+
+  async function watchBroadcast(options) {
+    if (lobby.broadcast || lobby.joining) return;
+    var start = global.Module && global.Module._platform_web_broadcast_start;
+    if (typeof start !== "function") return;
+    lobby.joining = true;
+    try {
+      var where = options.matchId ? "/v1/broadcast/match/" + encodeURIComponent(options.matchId) :
+        "/v1/broadcast/public?buildId=" + encodeURIComponent(buildId());
+      var found = await fetchJson(where, { method: "GET" });
+      if (!found || typeof found.roomId !== "string") throw new Error("Nothing to watch right now.");
+      lobby.broadcast = { roomId: found.roomId, next: null, busy: false, startedAt: Date.now(), fed: 0,
+        background: !!options.background };
+      setSpectating(true);
+      start();
+      lobby.broadcast.timer = global.setInterval(pollBroadcast, BROADCAST_POLL_MILLISECONDS);
+      pollBroadcast();
+      if (!options.background) telemetry("watch_broadcast", "online");
+    } catch (error) {
+      lobby.broadcast = null;
+      setSpectating(false);
+      if (!options.background) setLandingStatus((error && error.message) || "Couldn't find a game to watch.", "error");
+    } finally {
+      lobby.joining = false;
+    }
+  }
+
+  function stopBroadcast(quiet) {
+    var watching = lobby.broadcast;
+    if (!watching) return;
+    if (watching.timer) global.clearInterval(watching.timer);
+    lobby.broadcast = null;
+    var stop = global.Module && global.Module._platform_web_broadcast_stop;
+    if (typeof stop === "function") stop();
+    setSpectating(false);
+    if (!quiet) lobby.screen = "landing";
+  }
+
+  /* the newest chunk's number, and every chunk since the last one fed */
+  async function pollBroadcast() {
+    var watching = lobby.broadcast;
+    if (!watching || watching.busy) return;
+    watching.busy = true;
+    try {
+      var base = "/v1/broadcast/" + encodeURIComponent(watching.roomId) + "/";
+      var answer = await fetchJson(base + "latest", { method: "GET" });
+      var latest = answer && answer.latest ? answer.latest.sequence : 0;
+      if (!latest || lobby.broadcast !== watching) return;
+      if (watching.next === null) watching.next = Math.max(1, latest - BROADCAST_START_BEHIND);
+      while (watching.next <= latest && lobby.broadcast === watching) {
+        var response = await fetch(apiBase() + base + watching.next, { method: "GET", cache: "default" });
+        if (response.status === 404) break;
+        if (!response.ok) throw new Error("chunk " + watching.next + ": " + response.status);
+        feedBroadcastChunk(new Uint8Array(await response.arrayBuffer()));
+        watching.fed++;
+        watching.next++;
+      }
+    } catch (error) {
+      /* the next poll tries again */
+    } finally {
+      watching.busy = false;
+    }
+  }
+
+  function feedBroadcastChunk(bytes) {
+    var feed = global.Module && global.Module._platform_web_broadcast_feed;
+    var buffer = global.Module && global.Module._platform_web_broadcast_buffer;
+    if (typeof feed !== "function" || typeof buffer !== "function" || typeof HEAPU8 === "undefined") return;
+    var pointer = buffer(bytes.length);
+    if (!pointer) return;
+    HEAPU8.set(bytes, pointer);
+    feed(pointer, bytes.length);
+  }
+
+  /* the page while watching: the game, the Watching bar */
+  function tickBroadcast() {
+    setLobbyVisible(false);
+    setLandingVisible(false);
+    var prompt = lobbyElement("lobby-deploy");
+    if (prompt) prompt.hidden = true;
+    var leaveGame = lobbyElement("lobby-leave-game");
+    if (leaveGame) leaveGame.hidden = true;
+    renderSpectate();
+  }
+
+  /* the matches for SOL on now, for the lobby's Watch list */
+  var LIVE_REFRESH_MILLISECONDS = 6000;
+  function refreshLive() {
+    if (lobby.liveBusy || Date.now() - (lobby.liveAt || 0) < LIVE_REFRESH_MILLISECONDS) return;
+    lobby.liveBusy = true;
+    lobby.liveAt = Date.now();
+    fetchJson("/v1/live", { method: "GET" })
+      .then(function(result) { lobby.live = result && Array.isArray(result.matches) ? result.matches : []; })
+      .catch(function() { lobby.live = []; })
+      .then(function() { lobby.liveBusy = false; });
+  }
+
+  function renderLive() {
+    var root = lobbyElement("lobby-live");
+    var list = lobbyElement("lobby-live-list");
+    if (!root || !list) return;
+    var matches = (lobby.live || []).filter(function(match) { return match.matchState === "ingame" || match.matchState === "countdown"; });
+    root.hidden = !WALLET_ENABLED || matches.length === 0 || session.active;
+    var key = JSON.stringify(matches.map(function(match) { return [match.id, match.mapIndex, match.players]; }));
+    if (lobby.liveKey === key) return;
+    lobby.liveKey = key;
+    list.replaceChildren.apply(list, matches.slice(0, 6).map(function(match) {
+      var item = document.createElement("li");
+      var label = document.createElement("span");
+      label.textContent = match.label + " · " + (selectedLabel(elements.map, Number(match.mapIndex)) || "Halo") +
+        " · " + match.players + " players";
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Watch";
+      button.addEventListener("click", function() { landingSpectate({ matchId: match.id }); });
+      item.append(label, button);
+      return item;
+    }));
+  }
+
+  async function seamlessQuickJoin(options) {
+    options = options || {};
+    if (session.active || lobby.joining) return;
+    lobby.joining = true;
+    lobby.quickPlay = true;
+    cancelQueue();
+    lobby.wantsPlay = false;
+    var operation;
+    try {
+      var profile = readPlayerProfile();
+      savePlayerProfile(profile);
+      await leave(false);
+      operation = ++session.operationGeneration;
+      session.active = true;
+      session.role = "guest";
+      session.publicLobby = true;
+      session.closing = false;
+      session.profile = profile;
+      writePlayerProfile(profile);
+      syncTelemetryContext();
+      var request = {
+        protocolVersion: PROTOCOL_VERSION,
+        buildId: buildId(),
+        identifier: localIdentifier(),
+        serversOnly: true,
+      };
+      if (options.spectator) request.spectator = true;
+      if (options.matchId) request.matchId = options.matchId;
+      else if (wallet.token && !options.spectator) request.walletToken = wallet.token;
+      var result = await fetchJson(options.matchId ? "/v1/spectate" : "/v1/quickjoin",
+        { method: "POST", body: JSON.stringify(request) });
+      requireCurrentOperation(operation);
+      session.roomTicket = null;
+      if (options.spectator) setSpectating(true);
+      await completeGuestJoin(result, operation);
+      telemetry(options.spectator ? "spectate" : "quick_play", "online");
+    } catch (error) {
+      if (operation === undefined || operation === session.operationGeneration) {
+        lobby.quickPlay = false;
+        await leave(false).catch(function() {});
+        setLandingStatus((error && error.message) || "Couldn't find a game.", "error");
+      }
+    } finally {
+      lobby.joining = false;
+    }
+  }
+
+  /* ---------- parties (services/signaling/src/party.ts)
+
+     Friends together in the lobby, by a six-letter code (or a link with
+     #party=CODE). Every member's page polls the party each second; the
+     leader picks the lobby (matchmaking with a playlist, or a custom game
+     with a map and game type) and starts it, which gives every member a
+     ticket that their page then follows as its own. After the match, the
+     party is still together. */
+
+  var PARTY_STORAGE_KEY = "halo-party";
+  var PARTY_POLL_MILLISECONDS = 1000;
+
+  function partyMember() {
+    var profile = currentProfile();
+    var member = {
+      playerKey: playerKey(),
+      identifier: localIdentifier(),
+      profile: { name: profile.name, style: profile.style },
+    };
+    if (validEmblem(profile.emblem)) member.profile.emblem = profile.emblem;
+    if (WALLET_ENABLED && wallet.token) member.walletToken = wallet.token;
+    return member;
+  }
+
+  function partyView() {
+    return lobby.party && lobby.party.view ? lobby.party.view : null;
+  }
+
+  function partyLeader() {
+    var view = partyView();
+    return !view || view.leader;
+  }
+
+  /* the lobby shown: the party's, or this player's own pick */
+  function lobbyKind() {
+    var view = partyView();
+    return view ? view.lobby : (lobby.kind || "matchmaking");
+  }
+
+  function setPartyStatus(text, tone) {
+    var status = lobbyElement("party-status");
+    if (!status) return;
+    status.textContent = text || "";
+    if (tone) status.dataset.tone = tone;
+    else delete status.dataset.tone;
+  }
+
+  function rememberParty(code) {
+    try {
+      if (code) global.localStorage.setItem(PARTY_STORAGE_KEY, code);
+      else global.localStorage.removeItem(PARTY_STORAGE_KEY);
+    } catch (error) { /* this visit only */ }
+  }
+
+  function inviteLink(code) {
+    var base = global.location.origin + global.location.pathname;
+    return base + "#party=" + encodeURIComponent(code);
+  }
+
+  function applyParty(view) {
+    if (!view) return;
+    if (!lobby.party || lobby.party.code !== view.code) lobby.party = { code: view.code, adopted: null, polledAt: 0 };
+    lobby.party.view = view;
+    rememberParty(view.code);
+    adoptPartyActivity(view);
+    renderPartyDialog();
+  }
+
+  /* The party started something: this member follows their own ticket in
+     it. The leader stopping a search drops it. */
+  function adoptPartyActivity(view) {
+    var activity = view.activity;
+    var party = lobby.party;
+    if (activity && activity.ticket && activity.id !== party.adopted && !session.active) {
+      party.adopted = activity.id;
+      if (lobby.queue && lobby.queue.id !== activity.ticket) cancelQueue();
+      lobby.error = null;
+      lobby.queue = { id: activity.ticket, state: activity.kind === "custom" ? "assigning" : "queued", queued: 0,
+        playlist: activity.playlist, polledAt: 0, party: true };
+      /* matchmaking searches again after each match, as alone; a custom
+         game comes back to the lobby */
+      lobby.wantsPlay = activity.kind === "queue";
+      lobby.started = true;
+      return;
+    }
+    if (!activity && party.adopted && lobby.queue && lobby.queue.party && lobby.queue.state === "queued") {
+      lobby.queue = null;
+      lobby.wantsPlay = false;
+      lobby.started = false;
+      party.adopted = null;
+    }
+  }
+
+  async function partyRequest(action, extra) {
+    var body = partyMember();
+    if (extra) Object.keys(extra).forEach(function(key) { body[key] = extra[key]; });
+    var path = action === "create" ? "/v1/parties" : "/v1/parties/" + encodeURIComponent(lobby.party.code) + "/" + action;
+    return fetchJson(path, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async function createParty() {
+    if (!session.runtimeReady) {
+      setPartyStatus("Halo is still loading. Try again in a moment.");
+      return;
+    }
+    setPartyStatus("Starting your party…");
+    try {
+      var settings = { buildId: buildId(), lobby: lobbyKind(), playlist: selectedPlaylist().id,
+        mapIndex: lobby.customMap || 0, modeIndex: lobby.customMode === undefined ? 1 : lobby.customMode };
+      var result = await partyRequest("create", settings);
+      lobby.party = null;
+      applyParty(result.party);
+      setPartyStatus("");
+    } catch (error) {
+      setPartyStatus((error && error.message) || "Couldn't start a party.", "error");
+    }
+  }
+
+  async function joinParty(code) {
+    code = String(code || "").trim().toUpperCase();
+    if (!session.runtimeReady) {
+      lobby.pendingParty = { code: code, fromLink: true };
+      setPartyStatus("Halo is loading; you'll join " + code + " as soon as it's ready.");
+      return;
+    }
+    if (!/^[A-Z0-9]{6}$/.test(code)) {
+      setPartyStatus("A party code is six letters and numbers.", "error");
+      return;
+    }
+    if (lobby.party && lobby.party.code === code) return;
+    if (lobby.party) await leaveParty();
+    setPartyStatus("Joining " + code + "…");
+    try {
+      lobby.party = { code: code, adopted: null, polledAt: 0 };
+      var result = await partyRequest("join");
+      applyParty(result.party);
+      setPartyStatus("");
+      var dialog = lobbyElement("party-dialog");
+      if (dialog && dialog.open) dialog.close();
+    } catch (error) {
+      lobby.party = null;
+      rememberParty(null);
+      setPartyStatus((error && error.message) || "Couldn't join that party.", "error");
+      openPartyDialog();
+    }
+  }
+
+  async function leaveParty() {
+    var party = lobby.party;
+    if (!party) return;
+    lobby.party = null;
+    rememberParty(null);
+    if (lobby.queue && lobby.queue.party && !session.active) {
+      lobby.queue = null;
+      lobby.wantsPlay = false;
+      lobby.started = false;
+    }
+    try {
+      await fetchJson("/v1/parties/" + encodeURIComponent(party.code) + "/leave", {
+        method: "POST", body: JSON.stringify({ playerKey: playerKey() }),
+      });
+    } catch (error) { /* it times out anyway */ }
+    renderPartyDialog();
+  }
+
+  function pollParty() {
+    if (!session.runtimeReady) return;
+    var pending = lobby.pendingParty;
+    if (pending) {
+      lobby.pendingParty = null;
+      if (pending.fromLink) {
+        joinParty(pending.code);
+      } else {
+        lobby.party = { code: pending.code, adopted: null, polledAt: Date.now() };
+        partyRequest("join").then(function(result) { applyParty(result.party); }).catch(function() {
+          lobby.party = null;
+          rememberParty(null);
+        });
+      }
+      return;
+    }
+    var party = lobby.party;
+    if (!party || party.polling || Date.now() - party.polledAt < PARTY_POLL_MILLISECONDS) return;
+    party.polling = true;
+    party.polledAt = Date.now();
+    partyRequest("poll")
+      .then(function(result) { if (lobby.party === party) applyParty(result.party); })
+      .catch(function(error) {
+        var code = error && error.haloCode;
+        if (lobby.party === party && (code === "PARTY_NOT_FOUND" || code === "PARTY_NOT_MEMBER")) {
+          lobby.party = null;
+          rememberParty(null);
+          lobby.error = "You're no longer in that party.";
+        }
+      })
+      .then(function() { party.polling = false; });
+  }
+
+  async function configureParty(settings) {
+    if (!lobby.party) return;
+    try {
+      applyParty((await partyRequest("settings", settings)).party);
+    } catch (error) {
+      lobby.error = (error && error.message) || "Couldn't change the party's settings.";
+    }
+  }
+
+  /* The leader starts the party's search or custom game. */
+  async function startParty() {
+    if (!lobby.party || lobby.party.starting) return;
+    lobby.party.starting = true;
+    lobby.error = null;
+    try {
+      applyParty((await partyRequest("start")).party);
+    } catch (error) {
+      lobby.wantsPlay = false;
+      lobby.started = false;
+      if (error && error.haloCode === "STAKE_NOT_READY" && error.message.indexOf(wallet.name || "\u0000") === 0) {
+        openLoadUp(error.message);
+      }
+      lobby.error = (error && error.message) || "Couldn't start.";
+    } finally {
+      if (lobby.party) lobby.party.starting = false;
+    }
+  }
+
+  async function stopParty() {
+    if (!lobby.party) return;
+    try {
+      applyParty((await partyRequest("stop")).party);
+    } catch (error) { /* the next poll shows where things stand */ }
+  }
+
+  function openPartyDialog() {
+    var dialog = lobbyElement("party-dialog");
+    if (!dialog) return;
+    renderPartyDialog();
+    if (!dialog.open) dialog.showModal();
+  }
+
+  function renderPartyDialog() {
+    var inParty = !!partyView();
+    var out = lobbyElement("party-out");
+    var into = lobbyElement("party-in");
+    if (out) out.hidden = inParty;
+    if (into) into.hidden = !inParty;
+    var code = lobbyElement("party-code");
+    if (code && inParty && code.textContent !== partyView().code) code.textContent = partyView().code;
+  }
+
+  /* Halo 3's choosers: a game type or a map for the custom game. */
+  function openChooser(kind) {
+    var dialog = lobbyElement("choice-dialog");
+    var select = kind === "map" ? elements.map : elements.mode;
+    if (!dialog || !select) return;
+    var current = kind === "map" ? currentCustomMap() : currentCustomMode();
+    lobbyElement("choice-dialog-title").textContent = kind === "map" ? "Map" : "Game";
+    var options = lobbyElement("choice-options");
+    options.replaceChildren.apply(options, Array.prototype.map.call(select.options, function(option) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", Number(option.value) === current ? "true" : "false");
+      button.textContent = option.textContent;
+      button.addEventListener("click", function() {
+        var index = Number(option.value);
+        if (kind === "map") lobby.customMap = index;
+        else lobby.customMode = index;
+        if (partyView() && partyLeader()) {
+          configureParty(kind === "map" ? { mapIndex: index } : { modeIndex: index });
+        }
+        dialog.close();
+      });
+      return button;
+    }));
+    dialog.showModal();
+  }
+
+  function currentCustomMap() {
+    var view = partyView();
+    return view ? view.mapIndex : (lobby.customMap || 0);
+  }
+
+  function currentCustomMode() {
+    var view = partyView();
+    return view ? view.modeIndex : (lobby.customMode === undefined ? 1 : lobby.customMode);
+  }
+
+  /* the lobby's left column for its kind: matchmaking or custom games */
+  function renderLobbyKind() {
+    var custom = lobbyKind() === "custom";
+    var view = partyView();
+    var setText = function(id, text) {
+      var element = lobbyElement(id);
+      if (element && element.textContent !== text) element.textContent = text;
+    };
+    var show = function(id, visible) {
+      var element = lobbyElement(id);
+      if (element && element.hidden === visible) element.hidden = !visible;
+    };
+    setText("lobby-title", custom ? "Custom games lobby" : "Matchmaking lobby");
+    setText("lobby-network", view ? "Online (Party)" : "Online");
+    show("lobby-party-code", !!view);
+    if (view) setText("lobby-party-code-text", view.code);
+    show("lobby-playlist-open", !custom);
+    show("lobby-game-open", custom);
+    show("lobby-map-open", custom);
+    setText("lobby-game", selectedLabel(elements.mode, currentCustomMode()) || "Slayer");
+    setText("lobby-map", selectedLabel(elements.map, currentCustomMap()) || "Battle Creek");
+    /* friends: Leave Party once anyone else is in it; Invite while not in a
+       match */
+    show("lobby-party-leave", !!view && view.members.length > 1);
+    show("lobby-invite", !session.active && !lobby.queue);
+    var leaderOnly = !!view && !view.leader;
+    ["lobby-switch", "lobby-playlist-open", "lobby-game-open", "lobby-map-open"].forEach(function(id) {
+      var element = lobbyElement(id);
+      if (element) element.disabled = leaderOnly;
+    });
+  }
+
+  function queueStatus() {
+    var queue = lobby.queue;
+    var label = (playlistById(queue.playlist) || { label: queue.playlist }).label;
+    if (queue.state === "joining") return { text: "Joining the " + label + " queue…" };
+    if (queue.state === "queued") {
+      var others = Math.max(0, (queue.queued || 1) - 1);
+      return { text: "Searching for " + label + " players… " +
+        (others === 0 ? "nobody else is queued yet." : others + (others === 1 ? " other player" : " other players") + " queued.") };
+    }
+    var staking = queue.match && queue.match.wager && queue.match.wager.escrow === "locking";
+    if (queue.playlist === "custom") {
+      return { text: queue.state === "ready" ? "Joining your custom game…" : "Setting up a server for your custom game…" };
+    }
+    if (queue.state === "assigning") {
+      return { text: staking ? "Match found. Locking everyone's stakes on Solana…" : "Match found. Setting up a server…" };
+    }
+    if (queue.state === "ready") {
+      return { text: staking ? "Match found. Locking everyone's stakes on Solana…" : "Match found. Joining the server…" };
+    }
+    return { text: "Searching for players…" };
+  }
+
+  function scheduleRejoin(message) {
+    if (!lobby.wantsPlay) return;
+    if (lobby.rejoinTimer) return;
+    if (lobby.rejoinAttempts >= LOBBY_REJOIN_ATTEMPTS) {
+      lobby.wantsPlay = false;
+      lobby.rejoinAttempts = 0;
+      lobby.error = message || "Could not reach a game.";
+      return;
+    }
+    lobby.rejoinAttempts++;
+    lobby.rejoinTimer = global.setTimeout(function() {
+      lobby.rejoinTimer = 0;
+      if (lobby.wantsPlay && !session.active) startQuickPlay();
+    }, 1500 + 1000 * lobby.rejoinAttempts);
+  }
+
+  function refreshListing() {
+    if (lobby.listingBusy || Date.now() - lobby.listingAt < LOBBY_LISTING_MILLISECONDS) return;
+    lobby.listingBusy = true;
+    lobby.listingAt = Date.now();
+    fetchJson("/v1/lobbies?buildId=" + encodeURIComponent(buildId()), { method: "GET" })
+      .then(function(result) {
+        lobby.listing = result && Array.isArray(result.lobbies) ? result.lobbies : [];
+      })
+      .catch(function() { /* The next refresh tries again. */ })
+      .then(function() { lobby.listingBusy = false; });
+  }
+
+  /* The room quick join would pick: the first listed (fullest dedicated). */
+  function listedRoom() {
+    return lobby.listing && lobby.listing.length ? lobby.listing[0] : null;
+  }
+
+  function listedPlayerCount() {
+    return (lobby.listing || []).reduce(function(total, room) { return total + (room.players || 0); }, 0);
+  }
+
+  function lobbyStatus(state) {
+    if (lobby.error && !session.active) return { text: lobby.error, tone: "error" };
+    if (lobby.queue && !session.active) return queueStatus();
+    if (!session.runtimeReady) {
+      var label = byId("loading-label");
+      var text = (label && label.textContent) || "Loading Halo…";
+      return { text: lobby.wantsPlay ? text + " You'll join as soon as it's ready." : text };
+    }
+    if (lobby.rejoinTimer) return { text: "Connection lost. Reconnecting…" };
+    if (!session.active) return { text: "Ready" };
+    if (!session.room || !session.selfPeerId) return { text: "Finding a game…" };
+    if (session.role === "host") {
+      var match = hostMatchState();
+      if (match === MATCH_STATE.COUNTDOWN) return { text: "Players are in. The match is about to start…" };
+      if (match === MATCH_STATE.POSTGAME) return { text: "Match over. The next one starts shortly." };
+      if (match === MATCH_STATE.LOBBY) return { text: "Nobody else is playing yet. Anyone who presses Play lands here, and the match starts as soon as they do." };
+      return { text: "Opening the game…" };
+    }
+    if (!session.transportConnected) return { text: "Connecting to the game…" };
+    var info = session.matchInfo;
+    if (state === CLIENT_STATE.PREGAME && info && info.state === "countdown") {
+      return { text: "Get ready." };
+    }
+    if ((state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) &&
+        ((info && info.state === "ingame") ||
+        (lobby.searchingSince && Date.now() - lobby.searchingSince > 4000))) {
+      return { text: "Every server is in a match. You'll move to the first one that opens, or join this one's next match." };
+    }
+    if (state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) return { text: "Joining the match…" };
+    if (state === CLIENT_STATE.PREGAME && info && info.state === "lobby") {
+      return { text: session.matchmade ? "Waiting for the other players to connect…" :
+        "Waiting for another player. The countdown starts when someone joins." };
+    }
+    if (state === CLIENT_STATE.PREGAME) return { text: "In the lobby. The match starts automatically." };
+    if (state === CLIENT_STATE.POSTGAME) return { text: "Match over. The next one starts shortly." };
+    return { text: "Joining the match…" };
+  }
+
+  function renderLobbyPlayers() {
+    var list = lobbyElement("lobby-players");
+    if (!list || typeof document.createElement !== "function") return;
+    var players = Array.from(session.roster.values());
+    /* A dedicated server is in the room but not in the match: it has no
+       player, so it is not listed. */
+    if (session.room && session.room.dedicated) {
+      players = players.filter(function(player) { return player.role !== "host"; });
+    }
+    /* spectators watch; they are not in the match */
+    players = players.filter(function(player) { return !player.spectator; });
+    /* Halo 3's roster: you, then open slots up to the playlist's size while
+       the matchmaker looks for players */
+    var playlist = (lobby.queue && playlistById(lobby.queue.playlist)) || selectedPlaylist();
+    var slots = 0;
+    var party = partyView();
+    var maximum = lobbyKind() === "custom" ? 16 : playlist.maximum;
+    if (!session.active && party) {
+      /* the party, its leader starred */
+      players = party.members.map(function(member) {
+        return { peerId: "party:" + member.id, role: "guest", self: member.self, leader: member.leader,
+          profile: { name: member.name, style: member.style, emblem: member.emblem === null ? undefined : member.emblem } };
+      });
+      if (lobby.queue && lobbyKind() !== "custom") slots = Math.max(0, playlist.maximum - players.length);
+    } else if (!session.active) {
+      players = [{ peerId: "self", role: "guest", profile: currentProfile(), self: true }];
+      if (lobby.queue) slots = playlist.maximum - 1;
+    } else if (session.matchmade) {
+      slots = Math.max(0, ((lobby.queue && lobby.queue.match && lobby.queue.match.players) || players.length) - players.length);
+    }
+    var count = lobbyElement("lobby-count");
+    var total = players.length;
+    var searching = !!(lobby.queue && !session.active && lobby.queue.state !== "assigning" && lobby.queue.state !== "ready");
+    if (count) {
+      /* Halo 3's "1 Player (16 max)" */
+      var countText = total + (total === 1 ? " Player" : " Players") + " (" + maximum + " max)";
+      if (count.textContent !== countText) count.textContent = countText;
+    }
+    var signature = players.map(function(player) {
+      return player.peerId + (player.leader ? "*" : "") + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
+        player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches);
+    }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "");
+    if (list.dataset.signature === signature) return;
+    list.dataset.signature = signature;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!players.length) {
+      var empty = document.createElement("li");
+      empty.className = "empty";
+      empty.textContent = session.active ? "Connecting…" : "Nobody here yet. Press Play.";
+      list.appendChild(empty);
+      return;
+    }
+    players.sort(function(left, right) {
+      return left.role === right.role ? 0 : (left.role === "host" ? -1 : 1);
+    });
+    players.forEach(function(player) {
+      var profile = player.profile || {
+        name: playerFallbackName(player),
+        style: player.peerId === session.selfPeerId ? currentProfile().style : "sage",
+      };
+      var row = document.createElement("li");
+      row.dataset.style = profile.style;
+      var self = player.self || player.peerId === session.selfPeerId;
+      if (self) row.className = "self";
+      row.appendChild(emblemElement(validEmblem(profile.emblem) ? profile.emblem :
+        textHash(profile.name) % EMBLEM_COUNT));
+      var name = document.createElement("span");
+      name.className = "name";
+      name.textContent = profile.name;
+      var role = document.createElement("span");
+      role.className = "role";
+      role.textContent = player.peerId === session.selfPeerId ? "You" : (player.role === "host" ? "Host" : "");
+      row.appendChild(name);
+      if (player.leader) {
+        var star = document.createElement("span");
+        star.className = "leader";
+        star.title = "Party leader";
+        star.textContent = "\u2605";
+        row.appendChild(star);
+      }
+      row.appendChild(role);
+      var matches = typeof player.matches === "number" ? player.matches :
+        (self && typeof lobby.matches === "number" ? lobby.matches : null);
+      if (matches !== null) row.appendChild(rankElement(matches));
+      list.appendChild(row);
+    });
+    for (var slot = 0; slot < slots; slot++) {
+      var open = document.createElement("li");
+      open.className = "slot" + (searching ? " searching" : "");
+      open.textContent = searching ? "Searching…" : "Connecting…";
+      list.appendChild(open);
+    }
+  }
+
+  function renderLobbyGame() {
+    var playlist = (lobby.queue && playlistById(lobby.queue.playlist)) || selectedPlaylist();
+    var found = lobby.queue && lobby.queue.match;
+    var settings = (session.room && session.room.lobby) || session.hostSettings || found ||
+      { mapIndex: playlist.maps[0], modeIndex: playlist.modes[0] };
+    var playlistLabel = lobbyElement("lobby-playlist");
+    if (playlistLabel && playlistLabel.textContent !== playlist.label) playlistLabel.textContent = playlist.label;
+    var description = lobbyElement("lobby-playlist-description");
+    var party = partyView();
+    var line = party ? "This party is open to friends. Code " + party.code + "." :
+      lobbyKind() === "custom" ? "Custom games are for parties. Press Friends to start one." : playlist.description;
+    if (description && description.textContent !== line) description.textContent = line;
+    var counts = lobbyElement("lobby-playlist-counts");
+    var countText = teamSize(playlist) + " · " + playlistCounts(playlist);
+    if (counts && counts.textContent !== countText) counts.textContent = countText;
+    /* everyone searching or playing, across the playlists */
+    var online = playlists().reduce(function(sum, entry) {
+      return sum + (entry.searching || 0) + (entry.playing || 0);
+    }, 0) + (lobby.queue || session.active ? 0 : 1);
+    /* a party waiting in the lobby is online too */
+    if (partyView() && !lobby.queue && !session.active) online = Math.max(online, partyView().members.length);
+    var onlineText = online + (online === 1 ? " Gamer Online" : " Gamers Online");
+    var onlineElement = lobbyElement("lobby-online");
+    if (onlineElement && onlineElement.textContent !== onlineText) onlineElement.textContent = onlineText;
+    var mapIndex = Number(settings.mapIndex);
+    var modeIndex = Number(settings.modeIndex);
+    var mapName = selectedLabel(elements.map, mapIndex) || "Blood Gulch";
+    var modeName = selectedLabel(elements.mode, modeIndex) || "Slayer";
+    var mapLabel = lobbyElement("lobby-map-name");
+    if (mapLabel && mapLabel.dataset.key !== mapIndex + ":" + modeIndex) {
+      mapLabel.dataset.key = mapIndex + ":" + modeIndex;
+      mapLabel.textContent = mapName;
+      lobbyElement("lobby-mode").textContent = modeName;
+      lobbyElement("lobby-map-caption").textContent = modeName + " on " + mapName;
+      lobbyElement("lobby-map-image").src = "assets/ui/maps/preview/" + (MAP_SLUGS[mapIndex] || "blood-gulch") + ".png";
+    }
+    var plate = lobbyElement("lobby-nameplate");
+    var profile = currentProfile();
+    if (plate && (plate.dataset.style !== profile.style || lobbyElement("lobby-nameplate-name").textContent !== profile.name)) {
+      plate.dataset.style = profile.style;
+      lobbyElement("lobby-nameplate-name").textContent = profile.name;
+    }
+  }
+
+  function setLobbyVisible(visible) {
+    var element = lobbyElement("lobby");
+    if (!element) return;
+    if (visible) {
+      element.hidden = false;
+      element.classList.remove("fading");
+      document.body.dataset.lobby = "open";
+      if (document.pointerLockElement && typeof document.exitPointerLock === "function") {
+        document.exitPointerLock();
+      }
+      /* The match's fullscreen covers only the game; the lobby needs the page. */
+      if (document.fullscreenElement && typeof document.exitFullscreen === "function") {
+        document.exitFullscreen().catch(function() {});
+      }
+    } else if (!element.hidden) {
+      document.body.dataset.lobby = "closed";
+      element.classList.add("fading");
+      global.setTimeout(function() {
+        if (document.body.dataset.lobby === "closed") element.hidden = true;
+      }, 350);
+    }
+  }
+
+  /* back into the game from the pause menu: the keys and the mouse are the
+     game's again */
+  function resumeGame() {
+    lobby.paused = false;
+    var landing = lobbyElement("landing");
+    if (landing) landing.hidden = true;
+    document.body.dataset.lobby = "closed";
+    deploy();
+  }
+
+  /* the keys, for ten seconds the first time this page drops into a game */
+  var KEY_TIPS_MILLISECONDS = 10000;
+  function showKeyTips() {
+    var tips = byId("key-tips");
+    if (!tips || lobby.keyTipsShown) return;
+    lobby.keyTipsShown = true;
+    delete tips.dataset.fading;
+    tips.hidden = false;
+    global.setTimeout(function() { tips.dataset.fading = "true"; }, KEY_TIPS_MILLISECONDS - 800);
+    global.setTimeout(function() { tips.hidden = true; }, KEY_TIPS_MILLISECONDS);
+  }
+
+  function deploy() {
+    var prompt = lobbyElement("lobby-deploy");
+    if (prompt) prompt.hidden = true;
+    lobby.deployed = true;
+    showKeyTips();
+    /* Only the mouse: a fullscreen request would spend the click's user
+       activation, and Chrome then refuses the pointer lock. The game already
+       fills the window. */
+    var focus = byId("focus");
+    if (focus) focus.click();
+  }
+
+  function mouseCaptured() {
+    return document.pointerLockElement === byId("canvas");
+  }
+
+  /* The host's side: guests trying to join a running match say so (a
+     "waiting" note every few seconds). Once the match has run a minute,
+     wrap it up so the next one includes them. Connections that never say
+     so (an old tab, a stuck client) cannot cut matches short. */
+  function restartForWaitingPlayers() {
+    if (!session.active || session.role !== "host" || !session.publicLobby) return;
+    if (!(session.dedicated || session.lobbyDriver)) return;
+    var now = Date.now();
+    var waiting = 0;
+    lobby.waitingPeers.forEach(function(at, peerId) {
+      if (now - at > WAITING_NOTE_EXPIRY_MILLISECONDS) lobby.waitingPeers.delete(peerId);
+      else waiting++;
+    });
+    if (hostMatchState() !== MATCH_STATE.INGAME) {
+      lobby.matchSince = 0;
+      return;
+    }
+    if (!lobby.matchSince) lobby.matchSince = now;
+    if (waiting > 0 && now - lobby.matchSince >= MINIMUM_MATCH_MILLISECONDS) {
+      lobby.waitingPeers.clear();
+      lobby.matchSince = now;
+      try { global.Module._platform_web_online_request_restart(); } catch (error) { /* older build */ }
+    }
+  }
+
+  /* The guest's side: say so while trying to get into a running match. */
+  function announceWaiting(state) {
+    if (!session.active || session.role !== "guest" || !session.publicLobby || !session.transportConnected) return;
+    if (state !== CLIENT_STATE.SEARCHING && state !== CLIENT_STATE.JOINING) {
+      lobby.joiningSince = 0;
+      return;
+    }
+    var now = Date.now();
+    if (!lobby.joiningSince) lobby.joiningSince = now;
+    if (now - lobby.joiningSince < 3000 || now - lobby.waitingSentAt < 3000) return;
+    lobby.waitingSentAt = now;
+    try { sendSocket({ v: PROTOCOL_VERSION, type: "waiting" }); } catch (error) { /* next tick */ }
+  }
+
+  var MATCH_STATE_WIRE = Object.freeze({ 1: "lobby", 2: "countdown", 3: "ingame", 4: "postgame" });
+
+  /* The host tells its guests where the match is: on a change, and every few
+     seconds so a newcomer learns it promptly. */
+  function broadcastMatch() {
+    if (!session.active || session.role !== "host" || !(session.dedicated || session.lobbyDriver)) return;
+    var state = MATCH_STATE_WIRE[hostMatchState()];
+    if (!state) return;
+    var startsIn = null;
+    if (state === "countdown") {
+      try { startsIn = global.Module._platform_web_online_get_countdown_remaining(); } catch (error) { startsIn = null; }
+      if (startsIn < 0) startsIn = null;
+    }
+    var key = state + ":" + startsIn;
+    if (key === lobby.sentMatch && Date.now() - lobby.sentMatchAt < 3000) return;
+    lobby.sentMatch = key;
+    lobby.sentMatchAt = Date.now();
+    var message = { v: PROTOCOL_VERSION, type: "match", state: state };
+    if (startsIn !== null) message.startsIn = startsIn;
+    try { sendSocket(message); } catch (error) { /* The next tick retries. */ }
+  }
+
+  /* Seconds until the match starts, as this browser knows it, or null. */
+  function countdownSeconds() {
+    if (!session.active) return null;
+    if (session.role === "host") {
+      if (hostMatchState() !== MATCH_STATE.COUNTDOWN) return null;
+      try {
+        var left = global.Module._platform_web_online_get_countdown_remaining();
+        return left >= 0 ? left : null;
+      } catch (error) {
+        return null;
+      }
+    }
+    var info = session.matchInfo;
+    if (!info || info.state !== "countdown" || info.startsIn === null) return null;
+    return Math.max(0, Math.ceil(info.startsIn - (Date.now() - info.receivedAt) / 1000));
+  }
+
+  /* A guest seated on a server mid-match (quick join found none in its
+     lobby) moves when another server opens: the running match is never
+     cut short for it. */
+  function moveToOpenServer(state) {
+    var info = session.matchInfo;
+    var waiting = session.active && session.role === "guest" && session.publicLobby &&
+      (state === CLIENT_STATE.SEARCHING || state === CLIENT_STATE.JOINING) &&
+      info && info.state === "ingame";
+    if (!waiting) {
+      lobby.busySince = 0;
+      return;
+    }
+    if (!lobby.busySince) lobby.busySince = Date.now();
+    if (Date.now() - lobby.busySince < 8000) return;
+    if (session.matchmade) {
+      /* this match started without us (we loaded too late): queue again */
+      lobby.busySince = 0;
+      leave(false).then(function() { scheduleRejoin("The match started without you."); });
+      return;
+    }
+    refreshListing();
+    var open = (lobby.listing || []).some(function(room) {
+      return room.dedicated && (room.matchState === "lobby" || room.matchState === "countdown") &&
+        room.players < room.capacity;
+    });
+    if (!open || Date.now() - (lobby.movedAt || 0) < 20000) return;
+    lobby.movedAt = Date.now();
+    lobby.busySince = 0;
+    leave(false).then(function() { scheduleRejoin("Could not reach an open server."); });
+  }
+
+  function tickLobby() {
+    pollQueue();
+    pollParty();
+    /* watching a broadcast: no session; the game plays the recording (the
+       landing's own, behind it, leaves the page as it is) */
+    if (lobby.broadcast && !lobby.broadcast.background) {
+      tickBroadcast();
+      return;
+    }
+    if (document.body.dataset.lobby === "open") refreshPlaylists();
+    moveToOpenServer(clientState());
+    restartForWaitingPlayers();
+    broadcastMatch();
+    reportHostKills();
+    var state = clientState();
+    announceWaiting(state);
+    if (session.active && session.transportConnected && state === CLIENT_STATE.SEARCHING) {
+      if (!lobby.searchingSince) lobby.searchingSince = Date.now();
+    } else {
+      lobby.searchingSince = 0;
+    }
+    var publicPlay = !session.active || session.publicLobby;
+    var inMatch = session.active && session.publicLobby && state === CLIENT_STATE.INGAME &&
+      (session.role === "host" || session.transportConnected);
+
+    /* A guest whose host vanished still shows the old lobby; start over. */
+    if (lobby.wantsPlay && session.active && session.role === "guest" && !session.transportConnected &&
+        (state === CLIENT_STATE.PREGAME || state === CLIENT_STATE.INGAME || state === CLIENT_STATE.POSTGAME)) {
+      if (!lobby.staleSince) lobby.staleSince = Date.now();
+      if (Date.now() - lobby.staleSince > LOBBY_STALE_MILLISECONDS) {
+        lobby.staleSince = 0;
+        leave(false).then(function() { scheduleRejoin("Lost the connection to the game."); });
+      }
+    } else {
+      lobby.staleSince = 0;
+    }
+    if (session.active && (state === CLIENT_STATE.PREGAME || state === CLIENT_STATE.INGAME)) lobby.rejoinAttempts = 0;
+    if (lobby.wantsPlay && session.runtimeReady && !session.active && !lobby.rejoinTimer && !session.leavePromise &&
+        !lobby.error && !lobby.started) {
+      lobby.started = true;
+      startQuickPlay();
+    }
+    if (session.active) lobby.started = false;
+
+    var prompt = lobbyElement("lobby-deploy");
+    if (lobby.pendingQuickPlay && session.runtimeReady && !session.active) landingQuickPlay();
+    /* a link to watch a match (#watch=<match>), once Halo is up */
+    if (lobby.watchLink === undefined) {
+      var watchMatch = /(?:^|[#&])watch=([A-Za-z0-9_-]{6,64})/.exec(String(global.location && global.location.hash || ""));
+      lobby.watchLink = watchMatch ? watchMatch[1] : null;
+    }
+    if (lobby.watchLink && session.runtimeReady && !session.active && !lobby.joining && backdropState() !== 1) {
+      var watchId = lobby.watchLink;
+      lobby.watchLink = null;
+      landingSpectate({ matchId: watchId });
+    }
+    /* a Quick Play game that has ended (left, or lost) is over: home again */
+    if (lobby.quickPlay && !session.active && !lobby.joining) lobby.quickPlay = false;
+    if (!publicPlay) {
+      setLobbyVisible(false);
+      setLandingVisible(false);
+      if (prompt) prompt.hidden = true;
+      return;
+    }
+    tickWager();
+    renderWallet(inMatch);
+    renderLobbyKind();
+    if (inMatch && session.spectating) {
+      setLobbyVisible(false);
+      setLandingVisible(false);
+      if (prompt) prompt.hidden = true;
+      var leaveWatch = lobbyElement("lobby-leave-game");
+      if (leaveWatch) leaveWatch.hidden = true;
+      renderSpectate();
+      return;
+    }
+    if (inMatch) {
+      setLobbyVisible(false);
+      /* Esc in a match: the landing over the game, as Krunker's menu */
+      if (lobby.deployed && !mouseCaptured()) {
+        lobby.paused = true;
+        if (prompt) prompt.hidden = true;
+        var leaveNow = lobbyElement("lobby-leave-game");
+        if (leaveNow) leaveNow.hidden = true;
+        setLandingVisible(true);
+        renderLanding();
+        return;
+      }
+      lobby.paused = false;
+      setLandingVisible(false);
+      /* Whenever the mouse is free during a match, one click takes it back. */
+      if (prompt) {
+        var free = !mouseCaptured();
+        if (free && lobby.deployed && prompt.dataset.mode !== "resume") {
+          prompt.dataset.mode = "resume";
+          prompt.firstChild.textContent = "Click to resume";
+        } else if (!lobby.deployed && prompt.dataset.mode !== "start" + (lobby.quickPlay ? "-quick" : "")) {
+          prompt.dataset.mode = "start" + (lobby.quickPlay ? "-quick" : "");
+          prompt.firstChild.textContent = lobby.quickPlay ? "Click to play" : "Match found";
+        }
+        prompt.hidden = !free;
+        var leaveGame = lobbyElement("lobby-leave-game");
+        if (leaveGame) leaveGame.hidden = !free;
+      }
+      return;
+    }
+    lobby.deployed = false;
+    if (prompt) prompt.hidden = true;
+    var leaveButton = lobbyElement("lobby-leave-game");
+    if (leaveButton) leaveButton.hidden = true;
+    if (!session.active) refreshListing();
+    if (homeScreen() === "landing") {
+      setLobbyVisible(false);
+      setLandingVisible(true);
+      tickBackdrop(true);
+      renderLanding();
+      return;
+    }
+    tickBackdrop(false);
+    setLandingVisible(false);
+    setLobbyVisible(true);
+    refreshLive();
+    renderLive();
+
+    var countdown = lobbyElement("lobby-countdown");
+    var seconds = countdownSeconds();
+    if (countdown) {
+      countdown.hidden = seconds === null;
+      var number = lobbyElement("lobby-countdown-seconds");
+      if (seconds !== null && number && number.textContent !== String(seconds)) number.textContent = String(seconds);
+    }
+    var status = lobbyStatus(state);
+    var statusElement = lobbyElement("lobby-status");
+    if (statusElement && statusElement.textContent !== status.text) statusElement.textContent = status.text;
+    if (statusElement) {
+      if (status.tone) statusElement.dataset.tone = status.tone;
+      else delete statusElement.dataset.tone;
+    }
+    var play = lobbyElement("lobby-play");
+    if (play) {
+      var leaving = session.active || lobby.wantsPlay;
+      play.dataset.mode = leaving ? "leave" : "play";
+      var partyNow = partyView();
+      var customLobby = lobbyKind() === "custom";
+      var partyBusy = !!(lobby.queue && lobby.queue.party);
+      var waiting = !!partyNow && !partyNow.leader && !session.active && !partyBusy;
+      play.textContent = session.active ? "Leave match" :
+        waiting ? "Waiting for the party leader" :
+        customLobby ? (partyBusy ? "Starting the game…" : "Start game") :
+        lobby.wantsPlay || partyBusy ? "Stop searching" : "Start matchmaking";
+      play.disabled = waiting || (customLobby && partyBusy && !session.active);
+      if (waiting || (customLobby && partyBusy)) play.dataset.mode = "wait";
+    }
+    renderLobbyGame();
+    renderLobbyPlayers();
+  }
+
+  function renderLobbyColors() {
+    var colors = lobbyElement("lobby-colors");
+    if (!colors || typeof document.createElement !== "function") return;
+    var style = currentProfile().style;
+    if (!colors.firstChild) {
+      PLAYER_STYLES.forEach(function(name) {
+        var swatch = document.createElement("button");
+        swatch.type = "button";
+        swatch.dataset.style = name;
+        swatch.title = name;
+        swatch.setAttribute("aria-label", name);
+        swatch.addEventListener("click", function() {
+          var profile = currentProfile();
+          savePlayerProfile({ name: profile.name, style: name, emblem: chosenEmblem() });
+          sendProfileUpdate();
+          renderLobbyColors();
+        });
+        colors.appendChild(swatch);
+      });
+    }
+    Array.prototype.forEach.call(colors.children, function(swatch) {
+      swatch.setAttribute("aria-pressed", swatch.dataset.style === style ? "true" : "false");
+    });
+    renderLobbyEmblems();
+  }
+
+  function renderLobbyEmblems() {
+    var grid = lobbyElement("lobby-emblems");
+    if (!grid || typeof document.createElement !== "function") return;
+    var chosen = chosenEmblem();
+    if (!grid.firstChild) {
+      for (var index = 0; index < EMBLEM_COUNT; index++) {
+        (function(emblem) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.setAttribute("aria-label", "Emblem " + (emblem + 1));
+          button.appendChild(emblemElement(emblem));
+          button.addEventListener("click", function() {
+            try { global.localStorage.setItem(EMBLEM_STORAGE_KEY, String(emblem)); } catch (error) { /* this load only */ }
+            var profile = currentProfile();
+            savePlayerProfile({ name: profile.name, style: profile.style, emblem: emblem });
+            sendProfileUpdate();
+            renderLobbyEmblems();
+          });
+          grid.appendChild(button);
+        })(index);
+      }
+    }
+    Array.prototype.forEach.call(grid.children, function(button, index) {
+      button.setAttribute("aria-pressed", index === chosen ? "true" : "false");
+    });
+    /* the plates in the player's armor colour */
+    grid.dataset.style = currentProfile().style;
+    renderSpartanShowcase();
+  }
+
+  function renderSpartanShowcase(typedName) {
+    var showcase = lobbyElement("spartan-showcase");
+    if (!showcase) return;
+    var profile = currentProfile();
+    var name = typedName !== undefined ? typedName : profile.name;
+    showcase.dataset.style = profile.style;
+    var image = lobbyElement("spartan-showcase-image");
+    if (image.dataset.style !== profile.style) {
+      image.src = "assets/ui/spartan/" + profile.style + ".png?art=2";
+      image.dataset.style = profile.style;
+    }
+    lobbyElement("spartan-showcase-name").textContent = name || " ";
+    var holder = lobbyElement("spartan-showcase-emblem");
+    var emblem = validEmblem(profile.emblem) ? profile.emblem : chosenEmblem();
+    if (holder.dataset.emblem !== String(emblem)) {
+      holder.dataset.emblem = String(emblem);
+      holder.replaceChildren(emblemElement(emblem));
+    }
+  }
+
+  function sendProfileUpdate() {
+    if (!session.active || !session.profile) return;
+    try {
+      sendSocket({ v: PROTOCOL_VERSION, type: "profile", profile: session.profile });
+    } catch (error) {
+      /* The next connection sends it. */
+    }
+  }
+
+
+  /* ---------- Wallets (the wager experiment, Solana devnet)
+
+     Sign-in with a Solana wallet through the Wallet Standard (Phantom,
+     Solflare, Backpack, ...). The room service checks the signature, holds
+     the balance, and moves the wager between wallets on each kill a
+     dedicated server reports. A wallet player plays under the wallet's
+     short name. */
+
+  var WALLET_STORAGE_KEY = "halo.web.wallet.v1";
+  var WALLET_CHAIN = "solana:devnet";
+  var LAMPORTS_PER_SOL = 1000000000;
+  var BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  var wallet = {
+    standard: [],
+    provider: null,
+    account: null,
+    address: null,
+    token: null,
+    name: null,
+    onchainLamports: null,
+    enabled: false,
+    /* the player's vault in the escrow program (GET /v1/escrow) */
+    vault: null,
+    playSession: null,
+    busy: false,
+    status: "",
+    tone: null,
+  };
+
+  function base58(bytes) {
+    var zeros = 0;
+    while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
+    var digits = [];
+    for (var index = zeros; index < bytes.length; index++) {
+      var carry = bytes[index];
+      for (var digit = 0; digit < digits.length; digit++) {
+        carry += digits[digit] << 8;
+        digits[digit] = carry % 58;
+        carry = (carry / 58) | 0;
+      }
+      while (carry > 0) {
+        digits.push(carry % 58);
+        carry = (carry / 58) | 0;
+      }
+    }
+    var text = "";
+    for (var zero = 0; zero < zeros; zero++) text += "1";
+    for (var position = digits.length - 1; position >= 0; position--) text += BASE58_ALPHABET[digits[position]];
+    return text;
+  }
+
+  function fromBase64(text) {
+    var binary = global.atob(text);
+    var bytes = new Uint8Array(binary.length);
+    for (var index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+
+  function formatSol(lamports) {
+    return (lamports / LAMPORTS_PER_SOL).toFixed(3);
+  }
+
+  /* "+0.019" / "\u22120.010" / "0.000" */
+  function formatSigned(lamports) {
+    if (lamports > 0) return "+" + formatSol(lamports);
+    if (lamports < 0) return "\u2212" + formatSol(-lamports);
+    return formatSol(0);
+  }
+
+  function walletHeaders() {
+    var headers = { "Content-Type": "application/json" };
+    if (wallet.token) headers.Authorization = "Bearer " + wallet.token;
+    return headers;
+  }
+
+  function setWalletStatus(text, tone) {
+    wallet.status = text || "";
+    wallet.tone = tone || null;
+  }
+
+  /* The Wallet Standard: wallets announce themselves to the page. */
+  function registerStandardWallets() {
+    var wallets = Array.prototype.slice.call(arguments);
+    wallets.forEach(function(candidate) {
+      var features = candidate && candidate.features;
+      if (!features || !features["standard:connect"] || !features["solana:signMessage"] ||
+          !(features["solana:signTransaction"] || features["solana:signAndSendTransaction"])) return;
+      if (wallet.standard.indexOf(candidate) < 0) wallet.standard.push(candidate);
+    });
+    return function() {};
+  }
+
+  function discoverWallets() {
+    if (typeof global.addEventListener !== "function" || typeof global.CustomEvent !== "function") return;
+    var api = { register: registerStandardWallets };
+    global.addEventListener("wallet-standard:register-wallet", function(event) {
+      try { event.detail(api); } catch (error) { /* a broken wallet is skipped */ }
+    });
+    try {
+      global.dispatchEvent(new global.CustomEvent("wallet-standard:app-ready", { detail: api }));
+    } catch (error) {
+      /* No wallets. */
+    }
+  }
+
+  function preferredWallet() {
+    var named = function(name) {
+      return wallet.standard.find(function(candidate) { return /phantom/i.test(candidate.name); });
+    };
+    return named() || wallet.standard[0] || null;
+  }
+
+  async function connectProvider(silent) {
+    var provider = wallet.provider || preferredWallet();
+    if (!provider) return null;
+    var result = await provider.features["standard:connect"].connect(silent ? { silent: true } : undefined);
+    var accounts = (result && result.accounts) || provider.accounts || [];
+    var account = wallet.address ?
+      accounts.find(function(candidate) { return candidate.address === wallet.address; }) || accounts[0] :
+      accounts[0];
+    if (!account) return null;
+    wallet.provider = provider;
+    wallet.account = account;
+    return account;
+  }
+
+  function applyWalletSummary(summary) {
+    if (!summary) return;
+    wallet.address = summary.wallet || wallet.address;
+    wallet.name = summary.name || wallet.name;
+    /* a vault summary (/v1/escrow) */
+    if (typeof summary.enabled === "boolean") {
+      wallet.enabled = summary.enabled;
+      wallet.vault = summary.vault || null;
+      wallet.playSession = summary.session || null;
+      if (summary.walletLamports === null || typeof summary.walletLamports === "number") {
+        wallet.onchainLamports = summary.walletLamports;
+      }
+    }
+    if (wallet.name) {
+      /* A wallet plays under its own short name. */
+      var profile = currentProfile();
+      if (profile.name !== wallet.name) {
+        try { savePlayerProfile({ name: wallet.name, style: profile.style }); } catch (error) { /* keep */ }
+      }
+    }
+  }
+
+  function saveWallet() {
+    try {
+      if (wallet.token) {
+        global.localStorage.setItem(WALLET_STORAGE_KEY, JSON.stringify({ token: wallet.token, address: wallet.address }));
+      } else {
+        global.localStorage.removeItem(WALLET_STORAGE_KEY);
+      }
+    } catch (error) {
+      /* Sign-in lasts the visit. */
+    }
+  }
+
+  async function refreshWallet() {
+    if (!wallet.token || wallet.refreshing) return;
+    wallet.refreshing = true;
+    try {
+      applyWalletSummary(await fetchJson("/v1/escrow", { method: "GET", headers: walletHeaders() }));
+    } catch (error) {
+      if (error && error.haloCode === "WALLET_SIGN_IN_REQUIRED") signOutWallet();
+    } finally {
+      wallet.refreshing = false;
+    }
+  }
+
+  async function restoreWallet() {
+    var saved = null;
+    try { saved = JSON.parse(global.localStorage.getItem(WALLET_STORAGE_KEY)); } catch (error) { saved = null; }
+    if (!saved || typeof saved.token !== "string") return;
+    wallet.token = saved.token;
+    wallet.address = saved.address || null;
+    try {
+      applyWalletSummary(await fetchJson("/v1/escrow", { method: "GET", headers: walletHeaders() }));
+    } catch (error) {
+      if (error && error.haloCode === "WALLET_SIGN_IN_REQUIRED") {
+        wallet.token = null;
+        wallet.address = null;
+        saveWallet();
+      }
+    }
+  }
+
+  async function signInWithWallet() {
+    if (wallet.busy) return;
+    if (!preferredWallet()) {
+      setWalletStatus("No Solana wallet found. Install Phantom (or another Solana wallet), then reload.", "error");
+      return;
+    }
+    wallet.busy = true;
+    setWalletStatus("Approve the connection in your wallet…");
+    try {
+      var account = await connectProvider(false);
+      if (!account) throw new Error("The wallet shared no account.");
+      wallet.address = account.address;
+      var challenge = await fetchJson("/v1/auth/challenge", {
+        method: "POST",
+        body: JSON.stringify({ wallet: account.address }),
+      });
+      setWalletStatus("Sign the message in your wallet to sign in…");
+      var signed = await wallet.provider.features["solana:signMessage"].signMessage({
+        account: account,
+        message: new TextEncoder().encode(challenge.message),
+      });
+      var output = Array.isArray(signed) ? signed[0] : signed;
+      var result = await fetchJson("/v1/auth/verify", {
+        method: "POST",
+        body: JSON.stringify({ wallet: account.address, nonce: challenge.nonce, signature: base58(output.signature) }),
+      });
+      wallet.token = result.token;
+      applyWalletSummary(result);
+      saveWallet();
+      await refreshWallet();
+      setWalletStatus("Signed in as " + wallet.name + ".");
+    } catch (error) {
+      setWalletStatus((error && error.message) || "Wallet sign-in failed.", "error");
+    } finally {
+      wallet.busy = false;
+    }
+  }
+
+  function signOutWallet() {
+    wallet.token = null;
+    wallet.address = null;
+    wallet.account = null;
+    wallet.name = null;
+    wallet.vault = null;
+    wallet.playSession = null;
+    saveWallet();
+    setWalletStatus("Signed out.");
+  }
+
+  /* ---------- the vault (services/escrow; services/signaling/src/vault.ts)
+
+     Load up is one wallet prompt: open the vault (the first time), deposit,
+     and approve a day's play session, which lets the game stake up to
+     SESSION_LIMIT_LAMPORTS of the vault in matches. Withdraw sends the free
+     balance back to the wallet. The Worker builds each transaction; the
+     wallet signs and sends it. */
+
+  var LOAD_UP_CHOICES = [50000000, 100000000, 250000000];
+  var SESSION_LIMIT_LAMPORTS = 500000000;
+
+  function playSessionLeft() {
+    var session_ = wallet.playSession;
+    return session_ ? Math.max(0, session_.limit - session_.spent) : 0;
+  }
+
+  /* Why this wallet cannot stake `stake` yet, or null when it can. */
+  function stakeBlocker(stake) {
+    if (!wallet.token) return "Connect a wallet to play for SOL.";
+    if (!wallet.enabled) return "Playing for SOL is not set up on this server.";
+    if (!wallet.vault || wallet.vault.free < stake) return "Load up your vault to play for SOL.";
+    if (!wallet.playSession || playSessionLeft() < stake) return "Approve a new play session to keep playing for SOL.";
+    return null;
+  }
+
+  /* The wallet signs; the Worker sends it to the game's cluster, whatever
+     network the wallet itself is set to (Phantom on mainnet would send a
+     devnet transaction to mainnet, where it fails). */
+  async function signAndSend(transaction) {
+    var account = wallet.account || await connectProvider(true) || await connectProvider(false);
+    if (!account) throw new Error("Reconnect your wallet.");
+    var signer = wallet.provider.features["solana:signTransaction"];
+    if (signer) {
+      var signed = await signer.signTransaction({ account: account, chain: WALLET_CHAIN, transaction: fromBase64(transaction) });
+      var signedOutput = Array.isArray(signed) ? signed[0] : signed;
+      var bytes = signedOutput.signedTransaction;
+      var binary = "";
+      for (var index = 0; index < bytes.length; index++) binary += String.fromCharCode(bytes[index]);
+      var submitted = await fetchJson("/v1/escrow/submit", {
+        method: "POST",
+        headers: walletHeaders(),
+        body: JSON.stringify({ transaction: global.btoa(binary) }),
+      });
+      return submitted.signature;
+    }
+    var sent = await wallet.provider.features["solana:signAndSendTransaction"].signAndSendTransaction({
+      account: account,
+      chain: WALLET_CHAIN,
+      transaction: fromBase64(transaction),
+    });
+    var output = Array.isArray(sent) ? sent[0] : sent;
+    return base58(output.signature);
+  }
+
+  /* Waits (up to a minute) for the vault to show a change. */
+  async function awaitVault(changed) {
+    for (var attempt = 0; attempt < 30; attempt++) {
+      await new Promise(function(resolve) { global.setTimeout(resolve, 2000); });
+      await refreshWallet();
+      if (changed()) return true;
+    }
+    return false;
+  }
+
+  async function loadUp(deposit) {
+    if (wallet.busy || !wallet.token) return false;
+    wallet.busy = true;
+    var before = wallet.vault ? wallet.vault.free : -1;
+    try {
+      setWalletStatus(deposit > 0 ? "Approve the " + formatSol(deposit) + " SOL load-up in your wallet…" :
+        "Approve the play session in your wallet…");
+      var prepared = await fetchJson("/v1/escrow/load", {
+        method: "POST",
+        headers: walletHeaders(),
+        body: JSON.stringify({ deposit: deposit, limit: SESSION_LIMIT_LAMPORTS }),
+      });
+      await signAndSend(prepared.transaction);
+      setWalletStatus("Sent. Waiting for Solana to confirm…");
+      var done = await awaitVault(function() {
+        return !!wallet.playSession && (deposit === 0 || (wallet.vault && wallet.vault.free > before));
+      });
+      setWalletStatus(done ? "Loaded up. You're ready to play for SOL." :
+        "Still confirming; your balance updates when it does.", done ? null : "error");
+      return done;
+    } catch (error) {
+      setWalletStatus((error && error.message) || "The load-up failed.", "error");
+      return false;
+    } finally {
+      wallet.busy = false;
+    }
+  }
+
+  async function withdrawVault() {
+    if (wallet.busy || !wallet.token || !wallet.vault || wallet.vault.free <= 0) return;
+    wallet.busy = true;
+    var before = wallet.vault.free;
+    try {
+      setWalletStatus("Approve the withdrawal in your wallet…");
+      var prepared = await fetchJson("/v1/escrow/withdraw", {
+        method: "POST",
+        headers: walletHeaders(),
+        body: JSON.stringify({ lamports: "all" }),
+      });
+      await signAndSend(prepared.transaction);
+      setWalletStatus("Sent. Waiting for Solana to confirm…");
+      var done = await awaitVault(function() { return wallet.vault && wallet.vault.free < before; });
+      setWalletStatus(done ? "Withdrawn to your wallet." : "Still confirming; your balance updates when it does.");
+    } catch (error) {
+      setWalletStatus((error && error.message) || "The withdrawal failed.", "error");
+    } finally {
+      wallet.busy = false;
+    }
+  }
+
+  /* The load-up modal: connect, then pick an amount. `reason` says why it
+     opened (a wagered playlist the wallet cannot stake in yet). */
+  function openLoadUp(reason) {
+    lobbyElement("wallet-gate").hidden = false;
+    lobby.loadUpReason = reason || null;
+    setWalletStatus("");
+    renderLoadUp();
+  }
+
+  function renderLoadUp() {
+    var gate = lobbyElement("wallet-gate");
+    if (!gate || gate.hidden) return;
+    var connect = lobbyElement("wallet-gate-connect");
+    var amounts = lobbyElement("wallet-gate-amounts");
+    var renew = lobbyElement("wallet-gate-renew");
+    connect.hidden = !!wallet.token;
+    connect.disabled = wallet.busy;
+    amounts.hidden = !wallet.token;
+    Array.prototype.forEach.call(amounts.querySelectorAll("button"), function(button) {
+      var lamports = Number(button.dataset.lamports);
+      button.disabled = wallet.busy || (wallet.onchainLamports !== null && wallet.onchainLamports < lamports + 5000000);
+    });
+    /* a funded vault whose session ran out needs only a new session */
+    var needsSessionOnly = !!wallet.token && !!wallet.vault && wallet.vault.free > 0 && playSessionLeft() <= 0;
+    renew.hidden = !needsSessionOnly;
+    renew.disabled = wallet.busy;
+    var reason = lobbyElement("wallet-gate-reason");
+    /* why it opened, kept current: connecting answers "connect a wallet" */
+    var wagered = selectedPlaylist().wager;
+    var text = lobby.loadUpReason ? (wagered ? stakeBlocker(wagered.stake) || "" : "") : "";
+    if (reason.textContent !== text) reason.textContent = text;
+    var funds = lobbyElement("wallet-gate-funds");
+    var fundsText = wallet.token && wallet.onchainLamports !== null ?
+      "Your wallet: " + formatSol(wallet.onchainLamports) + " SOL" +
+        (wallet.onchainLamports < LOAD_UP_CHOICES[0] + 5000000 ? " — get devnet SOL at faucet.solana.com" : "") : "";
+    if (funds.textContent !== fundsText) funds.textContent = fundsText;
+  }
+
+  function renderWallet(inMatch) {
+    if (!WALLET_ENABLED) return;
+    var out = lobbyElement("lobby-wallet-out");
+    var signedIn = lobbyElement("lobby-wallet-in");
+    var chip = lobbyElement("lobby-wallet-chip");
+    if (out) out.hidden = !!wallet.token;
+    if (chip) chip.hidden = !wallet.token;
+    if (signedIn) signedIn.hidden = !wallet.token || !lobby.walletOpen;
+    if (chip) chip.setAttribute("aria-expanded", wallet.token && lobby.walletOpen ? "true" : "false");
+    var setText = function(id, text) {
+      var element = lobbyElement(id);
+      if (element && element.textContent !== text) element.textContent = text;
+    };
+    setText("lobby-wallet-name", wallet.name || "");
+    setText("lobby-wallet-chip-name", wallet.name || "");
+    setText("lobby-wallet-chip-balance", wallet.vault ? formatSol(wallet.vault.free) : "0.000");
+    var vault = wallet.vault;
+    setText("lobby-wallet-balance", (vault ? formatSol(vault.free) : "0.000") + " SOL");
+    var lockedRow = lobbyElement("lobby-wallet-locked-row");
+    if (lockedRow) lockedRow.hidden = !(vault && vault.locked > 0);
+    setText("lobby-wallet-locked", vault ? formatSol(vault.locked) + " SOL" : "");
+    setText("lobby-wallet-onchain", wallet.onchainLamports === null ? "…" : formatSol(wallet.onchainLamports) + " SOL");
+    var sessionText = "No play session";
+    if (wallet.playSession) {
+      var hours = Math.max(0, Math.round((wallet.playSession.expiresAt * 1000 - Date.now()) / 3600000));
+      sessionText = "Session: " + formatSol(wallet.playSession.spent) + " of " + formatSol(wallet.playSession.limit) +
+        " staked · " + hours + "h left";
+    }
+    setText("lobby-wallet-session", sessionText);
+    var load = lobbyElement("lobby-wallet-load");
+    if (load) load.disabled = wallet.busy || !wallet.enabled;
+    var withdraw = lobbyElement("lobby-wallet-withdraw");
+    if (withdraw) withdraw.disabled = wallet.busy || !vault || vault.free <= 0;
+    var gate = lobbyElement("wallet-gate");
+    var gateOpen = gate && !gate.hidden;
+    ["lobby-wallet-status", "wallet-gate-status"].forEach(function(id) {
+      var status = lobbyElement(id);
+      if (!status) return;
+      /* The modal speaks while it is open; the corner otherwise. */
+      var text = (id === "wallet-gate-status") === !!gateOpen ? wallet.status : "";
+      if (status.textContent !== text) status.textContent = text;
+      if (wallet.tone) status.dataset.tone = wallet.tone;
+      else delete status.dataset.tone;
+    });
+    renderLoadUp();
+    renderWagerResult();
+    var nameInput = lobbyElement("lobby-name");
+    if (nameInput) nameInput.disabled = !!wallet.token;
+    /* in a wagered match: this player's running total, by the HUD */
+    var hud = lobbyElement("hud-balance");
+    if (hud) {
+      var mine = inMatch && lobby.wager && !lobby.wager.done ? myWagerLine() : null;
+      hud.hidden = !mine;
+      if (mine && lobby.wager.mode === "team") {
+        /* pot against pot: nothing moves until the winner is known */
+        setText("hud-balance-amount", formatSol(lobby.wager.stake) + " in");
+        if (hud.dataset.tone !== "even") hud.dataset.tone = "even";
+        setText("hud-balance-note", "team pot " + formatSol(lobby.wager.view.pot) + " · winners take it");
+      } else if (mine) {
+        setText("hud-balance-amount", formatSigned(mine.net));
+        var tone = mine.spent ? "spent" : mine.net > 0 ? "up" : mine.net < 0 ? "down" : "even";
+        if (hud.dataset.tone !== tone) hud.dataset.tone = tone;
+        setText("hud-balance-note", mine.spent ? "playing for pride" : "pot " + formatSol(lobby.wager.view.pot));
+      }
+    }
+  }
+
+  /* ---------- the wagered match (services/signaling/src/wager.ts)
+
+     While a wagered match runs, the room sends each kill's new balances
+     ("wager" messages); after it, the lobby follows the match until it is
+     settled (or void) on chain and shows the result. */
+
+  function myWagerLine() {
+    var wager = lobby.wager;
+    var name = (session.profile && session.profile.name) || wallet.name;
+    if (!wager || !wager.view || !name) return null;
+    for (var index = 0; index < wager.view.players.length; index++) {
+      if (wager.view.players[index].name === name) return wager.view.players[index];
+    }
+    return null;
+  }
+
+  function startWager(match) {
+    lobby.wager = {
+      matchId: match.id,
+      stake: match.wager.stake,
+      perKill: match.wager.perKill,
+      mode: match.wager.mode || "bounty",
+      label: (playlistById(lobby.queue && lobby.queue.playlist) || { label: "Wagered match" }).label,
+      view: null,
+      done: false,
+      polledAt: 0,
+    };
+    lobby.wagerResult = null;
+  }
+
+  function applyWagerView(view) {
+    if (!lobby.wager || !view || view.matchId !== lobby.wager.matchId) return;
+    lobby.wager.view = view;
+    publishWagerTable();
+  }
+
+  /* The scoreboard's SOL column (port/web/src/web_online_ui.c): each
+     player's name and running total, and the pot, written where the game
+     reads them; an empty table outside a wagered match. */
+  var WAGER_TABLE_ROWS = 16;
+  function writeAscii(base, offset, text, size) {
+    for (var index = 0; index < size; index++) {
+      var code = index < text.length ? text.charCodeAt(index) : 0;
+      HEAPU8[base + offset + index] = index === size - 1 || code > 127 ? 0 : code;
+    }
+  }
+
+  function publishWagerTable() {
+    var commit = global.Module && global.Module._platform_web_wager_commit;
+    var base = wasmNumber("platform_web_wager_staging", 0);
+    if (typeof commit !== "function" || !base || typeof HEAPU8 === "undefined") return;
+    var view = session.active && lobby.wager && !lobby.wager.done ? lobby.wager.view : null;
+    var key = view ? JSON.stringify(view.players.map(function(player) { return [player.name, player.balance]; })) : "";
+    if (lobby.wagerTableKey === key) return;
+    lobby.wagerTableKey = key;
+    if (!view) {
+      commit(0);
+      return;
+    }
+    var players = view.players.slice(0, WAGER_TABLE_ROWS);
+    players.forEach(function(player, index) {
+      writeAscii(base, index * 24, player.name, 12);
+      /* a team match: each player's stake in the pot; a bounty match: their
+         running total */
+      writeAscii(base, index * 24 + 12, view.mode === "team" ? formatSol(view.stake) :
+        player.balance <= 0 ? "spent" : formatSigned(player.net), 12);
+    });
+    /* the pot, under the SOL column (Halo clips each column at the next) */
+    writeAscii(base, WAGER_TABLE_ROWS * 24, formatSol(view.pot), 48);
+    commit(players.length);
+  }
+
+  /* During the match: the balances, every few seconds (each kill's
+     "wager" message updates them sooner). After it: follow the match to its
+     settlement, every couple of seconds for up to three minutes. */
+  function tickWager() {
+    var wager = lobby.wager;
+    if (!wager || wager.done || wager.polling) return;
+    if (session.active) {
+      wager.joined = true;
+      wager.endedAt = 0;
+      if (Date.now() - wager.polledAt < 5000) return;
+      wager.polling = true;
+      wager.polledAt = Date.now();
+      fetchJson("/v1/wagers/" + encodeURIComponent(wager.matchId), { method: "GET" })
+        .then(function(result) { applyWagerView(result.wager); })
+        .catch(function() { /* the next tick tries again */ })
+        .then(function() { wager.polling = false; });
+      return;
+    }
+    /* not in it yet: the match is still being joined */
+    if (!wager.joined) return;
+    publishWagerTable();
+    if (!wager.endedAt) wager.endedAt = Date.now();
+    if (Date.now() - wager.polledAt < 2000) return;
+    if (Date.now() - wager.endedAt > 180000) {
+      wager.done = true;
+      return;
+    }
+    wager.polling = true;
+    wager.polledAt = Date.now();
+    fetchJson("/v1/wagers/" + encodeURIComponent(wager.matchId), { method: "GET" })
+      .then(function(result) {
+        applyWagerView(result.wager);
+        var state = result.wager && result.wager.state;
+        if (state === "settled" || state === "void" || state === "failed") {
+          wager.done = true;
+          lobby.wagerResult = { label: wager.label, view: result.wager, line: myWagerLine() };
+          refreshWallet();
+        }
+      })
+      .catch(function() { /* the next tick tries again */ })
+      .then(function() { wager.polling = false; });
+  }
+
+  function explorerLink(signature, cluster) {
+    return "https://explorer.solana.com/tx/" + encodeURIComponent(signature) +
+      (cluster && cluster !== "mainnet-beta" && cluster !== "mainnet" ? "?cluster=" + encodeURIComponent(cluster) : "");
+  }
+
+  function renderWagerResult() {
+    var box = lobbyElement("lobby-wager-result");
+    if (!box) return;
+    var result = lobby.wagerResult;
+    var pending = lobby.wager && lobby.wager.joined && !lobby.wager.done && !session.active && lobby.wager.endedAt;
+    var key = result ? result.view.matchId + ":" + result.view.state : pending ? "pending:" + lobby.wager.matchId : "";
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.hidden = !key;
+    box.replaceChildren();
+    if (pending) {
+      box.dataset.tone = "even";
+      box.append(lobby.wager.label + ": settling on Solana…");
+      return;
+    }
+    if (!result) return;
+    var view = result.view;
+    var line = result.line;
+    var title = document.createElement("strong");
+    var detail = document.createElement("small");
+    if (view.state === "settled" && line) {
+      var won = (line.payout === null ? line.balance : line.payout) - view.stake;
+      title.textContent = formatSigned(won) + " SOL";
+      box.dataset.tone = won > 0 ? "up" : won < 0 ? "down" : "even";
+      var teamLine = view.mode === "team" && view.winningTeam !== null ?
+        (view.winningTeam === 0 ? "Red" : "Blue") + " team won · " : "";
+      detail.append(result.label + " · " + teamLine + line.kills + " kills, " + line.deaths + " deaths · ");
+    } else if (view.state === "void") {
+      title.textContent = "Stake returned";
+      box.dataset.tone = "even";
+      detail.append(result.label + " didn't finish, so everyone got their stake back · ");
+    } else {
+      title.textContent = "Stakes not locked";
+      box.dataset.tone = "even";
+      detail.append(result.label + " was called off before it started; nothing was staked.");
+    }
+    var signature = view.signatures && (view.signatures.settle || view.signatures["void"]);
+    if (signature) {
+      var link = document.createElement("a");
+      link.href = explorerLink(signature, view.cluster);
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = (view.state === "settled" ? "Settled" : "Returned") + " on Solana ✓";
+      detail.appendChild(link);
+    }
+    box.append(title, detail);
+  }
+
+  /* A dedicated host reports every kill (by the players' names) so the
+     room service moves the wager between their wallets. */
+  function reportHostKills() {
+    if (!session.active || session.role !== "host" || !session.dedicated) return;
+    var sequence = wasmNumber("platform_web_host_kill_sequence", 0);
+    if (lobby.hostKillsSeen === undefined || lobby.hostKillsSeen > sequence) lobby.hostKillsSeen = sequence;
+    if (sequence === lobby.hostKillsSeen || typeof HEAPU8 === "undefined") return;
+    var base = wasmNumber("platform_web_host_kills", 0);
+    if (!base) return;
+    var readName = function(offset) {
+      var text = "";
+      for (var index = 0; index < 12; index++) {
+        var code = HEAPU8[offset + index];
+        if (!code) break;
+        text += String.fromCharCode(code);
+      }
+      return text;
+    };
+    /* At most the last 32 are kept. */
+    if (sequence - lobby.hostKillsSeen > 32) lobby.hostKillsSeen = sequence - 32;
+    while (lobby.hostKillsSeen < sequence) {
+      var slot = base + (lobby.hostKillsSeen % 32) * 24;
+      var killer = readName(slot);
+      var victim = readName(slot + 12);
+      lobby.hostKillsSeen++;
+      if (!killer || !victim) continue;
+      try {
+        sendSocket({ v: PROTOCOL_VERSION, type: "kill", killer: killer, victim: victim });
+      } catch (error) {
+        /* The socket is reconnecting; this kill goes unreported. */
+      }
+    }
+  }
+
+  /* ---------- Bounties: in a wagered match, "+0.010 SOL" over the body of
+     each kill this player makes the moment it happens (the bounty the room
+     then moves), and "\u22120.010" on their own death. */
+
+  var KILL_REWARD_UNIT = "SOL";
+  var KILL_POP_MILLISECONDS = 1700;
+  var DEATH_POP_MILLISECONDS = 2600;
+
+  /* the bounty a kill or death pops, or null outside a wagered match */
+  function bountyLamports() {
+    /* a team match's money follows only its result */
+    if (!session.active || !lobby.wager || lobby.wager.done || lobby.wager.mode === "team") return null;
+    return lobby.wager.perKill || null;
+  }
+  var killPops = { last: -1, lastDeath: -1, active: [] };
+
+  function makePop(className, text) {
+    var element = document.createElement("div");
+    element.className = className;
+    var label = document.createElement("span");
+    label.textContent = text;
+    var unit = document.createElement("small");
+    unit.textContent = KILL_REWARD_UNIT;
+    label.appendChild(unit);
+    element.appendChild(label);
+    return element;
+  }
+
+  function wasmNumber(name, fallback) {
+    try {
+      var fn = global.Module && global.Module["_" + name];
+      return typeof fn === "function" ? fn() : fallback;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  /* Where the game's picture is on the page: it is drawn at its own shape,
+     centered in the canvas. */
+  function gamePictureRect() {
+    var canvas = byId("canvas");
+    if (!canvas || typeof canvas.getBoundingClientRect !== "function") return null;
+    var box = canvas.getBoundingClientRect();
+    var aspect = wasmNumber("platform_web_screen_width", 640) / 480;
+    var width = Math.min(box.width, box.height * aspect);
+    var height = width / aspect;
+    return { left: box.left + (box.width - width) / 2, top: box.top + (box.height - height) / 2, width: width, height: height };
+  }
+
+  function placeKillPop(pop, now) {
+    var rect = gamePictureRect();
+    if (!rect) return;
+    if (pop.death) {
+      /* The death cam: centered, a little above the middle. */
+      pop.element.style.left = (rect.left + 0.5 * rect.width) + "px";
+      pop.element.style.top = (rect.top + 0.42 * rect.height) + "px";
+      return;
+    }
+    /* The body while it is on screen; otherwise above the crosshair. */
+    var onScreen = wasmNumber("platform_web_kill_sequence", 0) === pop.sequence &&
+      wasmNumber("platform_web_kill_on_screen", 0) === 1;
+    if (onScreen) {
+      pop.x = wasmNumber("platform_web_kill_x", 5000) / 10000;
+      pop.y = wasmNumber("platform_web_kill_y", 4000) / 10000;
+    } else if (pop.x === undefined) {
+      pop.x = 0.5;
+      pop.y = 0.4;
+    }
+    pop.element.style.left = (rect.left + pop.x * rect.width) + "px";
+    pop.element.style.top = (rect.top + pop.y * rect.height) + "px";
+  }
+
+  function tickKillPops(now) {
+    var sequence = wasmNumber("platform_web_kill_sequence", 0);
+    var container = byId("kill-pops");
+    var bounty = bountyLamports();
+    if (killPops.last < 0) killPops.last = sequence;
+    if (sequence !== killPops.last && container && typeof document.createElement === "function") {
+      killPops.last = sequence;
+      if (bounty !== null) {
+        var element = makePop("kill-pop", formatSigned(bounty));
+        container.appendChild(element);
+        killPops.active.push({ element: element, sequence: sequence, born: now });
+      }
+    }
+    var deaths = wasmNumber("platform_web_death_sequence", 0);
+    if (killPops.lastDeath < 0) killPops.lastDeath = deaths;
+    if (deaths !== killPops.lastDeath && container && typeof document.createElement === "function") {
+      killPops.lastDeath = deaths;
+      var mine = myWagerLine();
+      /* nothing left to lose: no pop */
+      if (bounty !== null && !(mine && mine.balance <= 0)) {
+        var deathElement = makePop("kill-pop death", formatSigned(-bounty));
+        container.appendChild(deathElement);
+        killPops.active.push({ element: deathElement, death: true, born: now });
+      }
+    }
+    killPops.active = killPops.active.filter(function(pop) {
+      if (now - pop.born > (pop.death ? DEATH_POP_MILLISECONDS : KILL_POP_MILLISECONDS)) {
+        if (pop.element.parentNode) pop.element.parentNode.removeChild(pop.element);
+        return false;
+      }
+      placeKillPop(pop, now);
+      return true;
+    });
+    tickScoreboard(now);
+    if (typeof global.requestAnimationFrame === "function") global.requestAnimationFrame(tickKillPops);
+  }
+
+  /* ---------- the scoreboard, Halo 3's way
+
+     While Back (Tab, F1) is held, and when a match ends, the game hands the
+     scores over (platform_web_scoreboard: port/linux/game/network_lobby.c)
+     instead of drawing its own, and the page draws them: the teams and their
+     totals, then everyone by team and place, with their emblems; in a match
+     for SOL, each player's money where Halo 3 had the clan tag. */
+
+  var SCOREBOARD_POLL_MILLISECONDS = 100;
+  var scoreboard = { at: 0, key: "" };
+
+  function readScoreboard() {
+    var read = global.Module && global.Module._platform_web_scoreboard;
+    if (typeof read !== "function" || typeof HEAPU8 === "undefined") return null;
+    var pointer = read();
+    var end = pointer;
+    while (HEAPU8[end]) end++;
+    var text = "";
+    for (var index = pointer; index < end; index += 4096) {
+      text += String.fromCharCode.apply(null, HEAPU8.subarray(index, Math.min(end, index + 4096)));
+    }
+    try { return JSON.parse(text); } catch (error) { return null; }
+  }
+
+  /* each player's emblem, by the name they play under */
+  function scoreboardEmblems() {
+    var emblems = {};
+    if (session.roster) {
+      session.roster.forEach(function(entry) {
+        var profile = entry && entry.profile;
+        if (profile && profile.name && profile.emblem !== undefined && profile.emblem !== null) {
+          emblems[profile.name] = profile.emblem;
+        }
+      });
+    }
+    return emblems;
+  }
+
+  /* in a match for SOL: each player's money, by name */
+  function scoreboardMoney() {
+    var view = lobby.wager && !lobby.wager.done ? lobby.wager.view : null;
+    var money = {};
+    if (!view) return money;
+    view.players.forEach(function(player) {
+      money[player.name] = view.mode === "team" ? formatSol(view.stake) :
+        player.balance <= 0 ? "spent" : formatSigned(player.net);
+    });
+    return money;
+  }
+
+  function scoreboardRow(className, place, emblem, name, tag, score, ping) {
+    var row = document.createElement("div");
+    row.className = "sb-row " + className;
+    var placeCell = document.createElement("span");
+    placeCell.className = "sb-place";
+    placeCell.textContent = place;
+    var emblemCell = document.createElement("span");
+    emblemCell.className = "sb-emblem";
+    if (emblem !== undefined && emblem !== null) emblemCell.appendChild(emblemElement(emblem));
+    var nameCell = document.createElement("span");
+    nameCell.className = "sb-name";
+    nameCell.textContent = name;
+    var tagCell = document.createElement("span");
+    tagCell.className = "sb-tag";
+    tagCell.textContent = tag;
+    var scoreCell = document.createElement("span");
+    scoreCell.className = "sb-score";
+    scoreCell.textContent = String(score);
+    var pingCell = document.createElement("span");
+    pingCell.className = "sb-ping";
+    if (typeof ping === "number") {
+      pingCell.textContent = String(ping);
+      pingCell.dataset.tone = ping < 80 ? "good" : ping < 150 ? "fair" : "poor";
+    }
+    row.append(placeCell, emblemCell, nameCell, tagCell, scoreCell, pingCell);
+    return row;
+  }
+
+  function renderScoreboard(state) {
+    var root = byId("scoreboard");
+    if (!root) return;
+    var shown = !!(state && state.a > 0.02 && session.active);
+    if (!shown) {
+      if (!root.hidden) root.hidden = true;
+      scoreboard.key = "";
+      return;
+    }
+    root.style.opacity = String(Math.min(1, state.a));
+    var emblems = scoreboardEmblems();
+    var money = scoreboardMoney();
+    var pings = session.pings || {};
+    var watchers = session.roster ? Array.from(session.roster.values()).filter(function(entry) { return entry.spectator; }).length : 0;
+    var key = JSON.stringify([state.over, state.teams, state.red, state.blue, state.title, state.self, state.players, money, pings, watchers]);
+    if (root.hidden) root.hidden = false;
+    if (key === scoreboard.key) return;
+    scoreboard.key = key;
+
+    var players = (state.players || []).map(function(row) {
+      return { name: row[0], team: row[1], score: row[2], kills: row[3], deaths: row[4], quit: !!row[5] };
+    });
+    var tagFor = function(player) {
+      return money[player.name] !== undefined ? money[player.name] : player.kills + "/" + player.deaths;
+    };
+    var body = byId("scoreboard-rows");
+    var rows = [];
+    /* the game type: Halo's own name for it, or the room's */
+    var room = session.room && session.room.lobby;
+    var title = state.title || (room ? selectedLabel(elements.mode, Number(room.modeIndex)) : "") || "Scores";
+    /* who is watching (spectators: the room's roster) */
+    var watching = session.roster ? Array.from(session.roster.values()).filter(function(entry) { return entry.spectator; }).length : 0;
+    byId("scoreboard-title").textContent = (state.over ? "Game over" : title) +
+      (watching ? " · " + watching + " watching" : "");
+    byId("scoreboard-tag-head").textContent = Object.keys(money).length ? "SOL" : "K/D";
+    if (state.teams) {
+      /* Halo's teams: 0 red, 1 blue; the leader first */
+      var teams = [{ index: 0, name: "Red Team", score: state.red, tone: "red" },
+        { index: 1, name: "Blue Team", score: state.blue, tone: "blue" }];
+      teams.sort(function(left, right) { return right.score - left.score || left.index - right.index; });
+      /* each team, its total, then its players under it */
+      teams.forEach(function(team, order) {
+        team.place = order > 0 && team.score === teams[0].score ? 1 : order + 1;
+        if (order > 0) {
+          var gap = document.createElement("div");
+          gap.className = "sb-gap";
+          rows.push(gap);
+        }
+        rows.push(scoreboardRow("sb-team sb-" + team.tone, team.place, null, team.name, "", team.score));
+        players.filter(function(player) { return player.team === team.index; })
+          .sort(function(left, right) { return left.quit - right.quit || right.score - left.score || left.name.localeCompare(right.name); })
+          .forEach(function(player) {
+            rows.push(scoreboardRow("sb-" + team.tone + (player.quit ? " sb-quit" : "") + (player.name === state.self ? " sb-self" : ""),
+              team.place, emblems[player.name], player.name, tagFor(player), player.score, player.quit ? null : pings[player.name]));
+          });
+      });
+    } else {
+      players.sort(function(left, right) { return left.quit - right.quit || right.score - left.score || left.name.localeCompare(right.name); });
+      var place = 0;
+      players.forEach(function(player, index) {
+        if (index === 0 || player.score !== players[index - 1].score) place = index + 1;
+        rows.push(scoreboardRow("sb-solo" + (player.quit ? " sb-quit" : "") + (player.name === state.self ? " sb-self" : ""),
+          player.quit ? "–" : place, emblems[player.name], player.name, tagFor(player), player.score, player.quit ? null : pings[player.name]));
+      });
+    }
+    body.replaceChildren.apply(body, rows);
+  }
+
+  function tickScoreboard(now) {
+    if (!session.active) {
+      if (scoreboard.key !== "" || (byId("scoreboard") && !byId("scoreboard").hidden)) renderScoreboard(null);
+      return;
+    }
+    if (now - scoreboard.at < SCOREBOARD_POLL_MILLISECONDS) return;
+    scoreboard.at = now;
+    renderScoreboard(readScoreboard());
+  }
+
+  function installLobby() {
+    var root = lobbyElement("lobby");
+    if (!root || lobby.installed) return;
+    lobby.installed = true;
+    root.addEventListener("keydown", function(event) { event.stopPropagation(); });
+    lobbyElement("lobby-play").addEventListener("click", function() {
+      var custom = lobbyKind() === "custom";
+      var view = partyView();
+      if (!session.active) {
+        /* a custom game is a party's */
+        if (custom && !view) {
+          setPartyStatus("Custom games are for parties: start one and invite your friends.");
+          openPartyDialog();
+          return;
+        }
+        /* in a party, the leader starts and stops */
+        if (view && !view.leader) return;
+        if (view && (lobby.wantsPlay || (lobby.queue && lobby.queue.party))) {
+          lobby.wantsPlay = false;
+          lobby.started = false;
+          if (lobby.queue && lobby.queue.state === "queued") stopParty();
+          return;
+        }
+        if (view && custom) {
+          startParty();
+          return;
+        }
+      }
+      /* a wagered playlist: load up first, if the vault cannot stake yet */
+      var wagered = custom ? null : selectedPlaylist().wager;
+      if (WALLET_ENABLED && wagered && !session.active && !lobby.wantsPlay) {
+        var blocker = stakeBlocker(wagered.stake);
+        if (blocker) {
+          openLoadUp(blocker);
+          return;
+        }
+      }
+      if (session.active || lobby.wantsPlay) {
+        lobby.wantsPlay = false;
+        cancelQueue();
+        lobby.error = null;
+        if (lobby.rejoinTimer) global.clearTimeout(lobby.rejoinTimer);
+        lobby.rejoinTimer = 0;
+        lobby.rejoinAttempts = 0;
+        leave(false);
+        return;
+      }
+      lobby.wantsPlay = true;
+      lobby.error = null;
+      lobby.started = false;
+    });
+    /* the playlist picker */
+    var playlistDialog = lobbyElement("playlist-dialog");
+    /* Halo 3's lights of the world at night: where its cities are */
+    var lights = lobbyElement("lobby-world-lights");
+    if (lights && !lights.firstChild) {
+      [[17, 34], [19, 31], [22, 36], [24, 33], [26, 30], [21, 41], [15, 38], [12, 30], [28, 35], [25, 45],
+        [31, 64], [33, 74], [29, 58], [47, 28], [49, 25], [51, 30], [53, 27], [46, 33], [55, 33], [57, 30],
+        [50, 45], [53, 55], [57, 70], [63, 42], [67, 47], [71, 40], [74, 35], [77, 33], [79, 38], [83, 31],
+        [81, 45], [76, 52], [84, 76], [88, 79], [86, 70], [60, 36], [44, 36], [18, 45], [35, 70], [70, 55]]
+        .forEach(function(point, index) {
+          var light = document.createElement("i");
+          light.style.left = point[0] + "%";
+          light.style.top = point[1] + "%";
+          light.style.animationDelay = (index % 7) * 0.55 + "s";
+          lights.appendChild(light);
+        });
+    }
+    lobbyElement("lobby-customize").addEventListener("click", function() {
+      lobbyElement("lobby-spartan-toggle").click();
+    });
+    lobbyElement("lobby-party-leave").addEventListener("click", function() { leaveParty(); });
+    /* invite: a party to bring friends into (started if there is none) */
+    lobbyElement("lobby-invite").addEventListener("click", async function() {
+      if (!partyView()) await createParty();
+      if (partyView()) openPartyDialog();
+    });
+    lobbyElement("lobby-switch").addEventListener("click", function() {
+      if (session.active || lobby.queue) return;
+      var next = lobbyKind() === "custom" ? "matchmaking" : "custom";
+      lobby.kind = next;
+      if (partyView()) configureParty({ lobby: next });
+    });
+    lobbyElement("lobby-game-open").addEventListener("click", function() { openChooser("mode"); });
+    lobbyElement("lobby-map-open").addEventListener("click", function() { openChooser("map"); });
+    lobbyElement("lobby-party-code").addEventListener("click", openPartyDialog);
+    lobbyElement("choice-dialog-close").addEventListener("click", function() { lobbyElement("choice-dialog").close(); });
+    lobbyElement("party-dialog-close").addEventListener("click", function() { lobbyElement("party-dialog").close(); });
+    lobbyElement("party-create").addEventListener("click", function() { createParty(); });
+    lobbyElement("party-join-form").addEventListener("submit", function(event) {
+      event.preventDefault();
+      joinParty(lobbyElement("party-join-code").value);
+    });
+    lobbyElement("party-leave").addEventListener("click", function() {
+      leaveParty();
+      setPartyStatus("You left the party.");
+    });
+    lobbyElement("party-copy").addEventListener("click", function() {
+      var view = partyView();
+      if (!view) return;
+      var link = inviteLink(view.code);
+      var done = function() { setPartyStatus("Invite link copied. Send it to your friends."); };
+      try {
+        global.navigator.clipboard.writeText(link).then(done, function() { setPartyStatus(link); });
+      } catch (error) {
+        setPartyStatus(link);
+      }
+    });
+    lobbyElement("party-dialog").addEventListener("keydown", function(event) { event.stopPropagation(); });
+    lobbyElement("choice-dialog").addEventListener("keydown", function(event) { event.stopPropagation(); });
+    /* a party link (#party=CODE), or the party this browser was in */
+    var partyHash = /(?:^#|&)party=([A-Za-z0-9]{6})/.exec(global.location.hash || "");
+    var savedParty = null;
+    try { savedParty = global.localStorage.getItem(PARTY_STORAGE_KEY); } catch (error) { savedParty = null; }
+    /* joined once the game is up: a member carries its network identity */
+    if (partyHash) {
+      try { global.history.replaceState(null, "", global.location.pathname + global.location.search); } catch (error) { /* keep */ }
+      lobby.pendingParty = { code: partyHash[1].toUpperCase(), fromLink: true };
+    } else if (savedParty) {
+      lobby.pendingParty = { code: savedParty, fromLink: false };
+    }
+    lobbyElement("lobby-playlist-open").addEventListener("click", function() {
+      lobby.playlistFocus = selectedPlaylist().id;
+      playlistDialog.showModal();
+      lobby.playlistsAt = 0;
+      refreshPlaylists();
+      renderPlaylistDialog();
+    });
+    lobbyElement("playlist-dialog-close").addEventListener("click", function() { playlistDialog.close(); });
+    lobbyElement("playlist-dialog-select").addEventListener("click", function() {
+      choosePlaylist(lobby.playlistFocus || selectedPlaylist().id);
+      playlistDialog.close();
+    });
+    playlistDialog.addEventListener("click", function(event) {
+      if (event.target === playlistDialog) playlistDialog.close();
+    });
+    playlistDialog.addEventListener("keydown", function(event) { event.stopPropagation(); });
+    /* the Spartan modal: name, armor and emblem, with a preview */
+    var spartanDialog = lobbyElement("spartan-dialog");
+    var closeSpartan = function() { if (spartanDialog.open) spartanDialog.close(); };
+    lobbyElement("lobby-spartan-toggle").addEventListener("click", function() {
+      lobbyElement("lobby-name").value = currentProfile().name;
+      renderLobbyColors();
+      spartanDialog.showModal();
+    });
+    lobbyElement("spartan-dialog-close").addEventListener("click", closeSpartan);
+    lobbyElement("spartan-dialog-done").addEventListener("click", closeSpartan);
+    spartanDialog.addEventListener("click", function(event) {
+      /* a click on the backdrop closes it */
+      if (event.target === spartanDialog) closeSpartan();
+    });
+    spartanDialog.addEventListener("keydown", function(event) { event.stopPropagation(); });
+    lobbyElement("lobby-name").addEventListener("input", function(event) {
+      renderSpartanShowcase(event.target.value);
+    });
+    lobbyElement("lobby-name").addEventListener("change", function(event) {
+      try {
+        savePlayerProfile(normalizePlayerProfile({ name: event.target.value, style: currentProfile().style }));
+        sendProfileUpdate();
+      } catch (error) {
+        event.target.value = currentProfile().name;
+      }
+    });
+    discoverWallets();
+    if (WALLET_ENABLED) restoreWallet();
+    global.setInterval(function() {
+      if (WALLET_ENABLED && document.body.dataset.lobby === "open") refreshWallet();
+    }, 15000);
+    lobbyElement("lobby-wallet-connect").addEventListener("click", function() { signInWithWallet(); });
+    /* loaded up for a wagered playlist: search right away */
+    var playIfReady = function(loaded) {
+      var wagered = selectedPlaylist().wager;
+      if (!loaded || !wagered || stakeBlocker(wagered.stake) || session.active || lobby.wantsPlay) return;
+      lobbyElement("wallet-gate").hidden = true;
+      lobby.wantsPlay = true;
+      lobby.error = null;
+      lobby.started = false;
+    };
+    /* already loaded up (a returning player): connecting is enough */
+    lobbyElement("wallet-gate-connect").addEventListener("click", function() {
+      signInWithWallet().then(function() { playIfReady(true); });
+    });
+    Array.prototype.forEach.call(lobbyElement("wallet-gate-amounts").querySelectorAll("button"), function(button) {
+      button.addEventListener("click", function() { loadUp(Number(button.dataset.lamports)).then(playIfReady); });
+    });
+    lobbyElement("wallet-gate-renew").addEventListener("click", function() { loadUp(0).then(playIfReady); });
+    lobbyElement("wallet-gate-close").addEventListener("click", function() {
+      lobbyElement("wallet-gate").hidden = true;
+    });
+    lobbyElement("lobby-wallet-load").addEventListener("click", function() {
+      lobby.walletOpen = false;
+      openLoadUp(null);
+    });
+    lobbyElement("lobby-wallet-chip").addEventListener("click", function(event) {
+      event.stopPropagation();
+      lobby.walletOpen = !lobby.walletOpen;
+      renderWallet(false);
+    });
+    lobbyElement("lobby-wallet-in").addEventListener("click", function(event) { event.stopPropagation(); });
+    document.addEventListener("click", function() {
+      if (lobby.walletOpen) {
+        lobby.walletOpen = false;
+        renderWallet(false);
+      }
+    });
+    lobbyElement("lobby-wallet-withdraw").addEventListener("click", function() { withdrawVault(); });
+    lobbyElement("lobby-wallet-signout").addEventListener("click", signOutWallet);
+    /* the landing */
+    var showLobby = function(kind) {
+      if (lobby.paused) {
+        lobby.paused = false;
+        lobby.wantsPlay = false;
+        cancelQueue();
+        leave(false);
+      }
+      lobby.screen = "lobby";
+      if (kind) lobby.kind = kind;
+      setLandingStatus("");
+    };
+    lobbyElement("landing").addEventListener("click", function(event) {
+      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave")) return;
+      if (lobby.paused) resumeGame();
+      else landingQuickPlay();
+    });
+    lobbyElement("landing-spectate").addEventListener("click", function() {
+      /* (from the Esc menu: out of this game first) */
+      if (lobby.paused) {
+        lobby.paused = false;
+        lobby.wantsPlay = false;
+        cancelQueue();
+        leave(false).then(function() { landingSpectate(); });
+        return;
+      }
+      landingSpectate();
+    });
+    /* watching: a click follows the next player; Tab holds up the scores;
+       Esc leaves */
+    byId("spectate").addEventListener("click", function() {
+      var next = global.Module && global.Module._platform_web_spectate_next;
+      if (typeof next === "function") next();
+    });
+    var spectateKey = function(event) {
+      if (!session.spectating) return;
+      var scores = global.Module && global.Module._platform_web_spectate_scores;
+      if (event.key === "Tab") {
+        event.preventDefault();
+        if (typeof scores === "function") scores(event.type === "keydown" ? 1 : 0);
+      } else if (event.key === "Escape" && event.type === "keydown") {
+        event.preventDefault();
+        stopSpectating();
+      }
+    };
+    global.addEventListener("keydown", spectateKey);
+    global.addEventListener("keyup", spectateKey);
+    lobbyElement("landing-quick").addEventListener("click", function() {
+      if (lobby.paused) resumeGame();
+      else landingQuickPlay();
+    });
+    /* from the pause menu, the other ways to play leave this game first */
+    var leaveMatch = function() {
+      lobby.paused = false;
+      lobby.wantsPlay = false;
+      cancelQueue();
+      leave(false);
+    };
+    lobbyElement("landing-leave").addEventListener("click", function() {
+      leaveMatch();
+      lobby.screen = "landing";
+    });
+    lobbyElement("landing-matchmaking").addEventListener("click", function() { showLobby("matchmaking"); });
+    lobbyElement("landing-custom").addEventListener("click", function() {
+      showLobby("custom");
+      if (!partyView()) {
+        setPartyStatus("Custom games are for parties: start one and invite your friends.");
+        openPartyDialog();
+      }
+    });
+    lobbyElement("landing-sol").addEventListener("click", function() {
+      showLobby("matchmaking");
+      if (!selectedPlaylist().wager) choosePlaylist("bountyduel");
+    });
+    lobbyElement("landing-customize").addEventListener("click", function() {
+      lobbyElement("lobby-spartan-toggle").click();
+    });
+    lobbyElement("lobby-home").addEventListener("click", function() {
+      if (session.active || lobby.queue || partyView()) return;
+      lobby.screen = "landing";
+    });
+    lobbyElement("lobby-leave-game").addEventListener("click", function() {
+      lobby.wantsPlay = false;
+      cancelQueue();
+      leave(false);
+    });
+    lobbyElement("landing").addEventListener("keydown", function(event) { event.stopPropagation(); });
+    lobbyElement("lobby-friends").addEventListener("click", function() {
+      setPartyStatus("");
+      openPartyDialog();
+    });
+    var prompt = lobbyElement("lobby-deploy");
+    prompt.addEventListener("click", deploy);
+    prompt.addEventListener("keydown", function(event) {
+      if (event.key === "Enter" || event.key === " ") deploy();
+    });
+    setLobbyVisible(true);
+    tickLobby();
+    global.setInterval(tickLobby, LOBBY_TICK_MILLISECONDS);
+    if (typeof global.requestAnimationFrame === "function") global.requestAnimationFrame(tickKillPops);
+  }
+
+  /* Halo admits nobody to a match already started, so leaving the page
+     mid-match is for good: the browser asks first, and the refresh keys do
+     nothing while a match is on. */
+  function inMatch() {
+    if (!session.active) return false;
+    var state = clientState();
+    return state === CLIENT_STATE.PREGAME || state === CLIENT_STATE.INGAME || state === CLIENT_STATE.POSTGAME;
+  }
+
+  function guardMatchFromRefresh() {
+    global.addEventListener("beforeunload", function(event) {
+      if (!inMatch()) return;
+      event.preventDefault();
+      /* (older browsers show the dialog only for a returnValue) */
+      event.returnValue = "";
+    });
+    global.addEventListener("keydown", function(event) {
+      var refresh = event.key === "F5" ||
+        ((event.metaKey || event.ctrlKey) && (event.key === "r" || event.key === "R"));
+      if (refresh && inMatch()) event.preventDefault();
+    }, true);
+  }
+
   function initialize() {
+    if (!WALLET_ENABLED) document.body.dataset.wallet = "off";
+    guardMatchFromRefresh();
     collectElements();
     restoreHostSettings();
     restorePlayerProfile();
     attachEvents();
     renderRoster();
     setBusy(false);
+    installLobby();
     session.pendingInvite = takeInviteFromLocation();
     if (session.pendingInvite) {
       showDialog();
@@ -1940,8 +5451,12 @@
         showJoinConfirmation(session.pendingInvite);
       }
     },
+    isRuntimeReady: function() { return session.runtimeReady; },
     host: host,
     join: join,
+    quickJoin: quickJoin,
+    hostDedicated: hostDedicated,
+    dedicatedStatus: dedicatedStatus,
     leave: function() { return leave(true); },
   });
 

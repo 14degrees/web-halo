@@ -105,6 +105,11 @@ symbols in this file:
 #include "units/unit_definitions.h"
 #include "units/units.h"
 
+#ifdef HALO_WEB
+/* port/linux/game/network_lobby.c */
+boolean network_lobby_preview_active(void);
+#endif
+
 /* ---------- constants */
 
 enum
@@ -807,6 +812,10 @@ void interface_draw_screen(
 	}
 
 	hud_draw_screen();
+#ifdef HALO_WEB
+	/* port: a map preview shows the map alone (network_lobby.c) */
+	if (!network_lobby_preview_active())
+#endif
 	game_engine_post_rasterize();
 
 	return;

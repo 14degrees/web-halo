@@ -422,6 +422,30 @@ static void director_set_camera(
 	return;
 }
 
+#ifdef HALO_WEB
+/* port/linux/game/network_lobby.c */
+boolean network_lobby_spectating(void);
+#endif
+#ifdef HALO_WEB
+/* port: the landing's map previews (port/linux/game/network_lobby.c,
+network_lobby_preview): local player 0's camera flies at this point and
+heading, no weapon in view */
+void director_preview_camera(
+	real_point3d const *position,
+	real_vector3d const *forward)
+{
+	struct director *director = director_get(0);
+
+	flying_camera_new_from_point_and_vector(
+		(struct flying_camera *)director->camera_data,
+		(real_point3d *)position,
+		(real_vector3d *)forward);
+	director_set_camera(0, (director_camera_update_proc)flying_camera_update, FALSE);
+	director->camera_mode_index = _camera_flying;
+	return;
+}
+#endif
+
 void director_load_camera(
 	void)
 {
@@ -967,6 +991,24 @@ void director_update(
 	short local_player_index;
 
 	director_globals.dtime = time_delta_sec;
+#ifdef HALO_WEB
+	/* a spectator: player 0's camera, with no player (port/linux/game/
+	network_lobby.c places it each frame) */
+	if (network_lobby_spectating() && local_player_get_player_index(0) == NONE)
+	{
+		struct director *director = director_get(0);
+		struct camera_control controls;
+		struct observer_command command;
+
+		csmemset(&controls, 0, sizeof(controls));
+		csmemset(&command, 0, sizeof(command));
+		if (director->camera_proc)
+			director->camera_proc(director->camera_data, &controls, &command);
+		if (TEST_FLAG(command.flags, _observer_command_valid_bit))
+			director->command = command;
+		return;
+	}
+#endif
 	for (local_player_index = 0;
 		local_player_index < MAXIMUM_NUMBER_OF_LOCAL_PLAYERS;
 		local_player_index++)

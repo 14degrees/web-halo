@@ -1600,6 +1600,46 @@ void network_game_server_all_machines_have_loaded(
 	return;
 }
 
+#ifdef HALO_SERVER
+/* A dedicated server runs its game for whoever comes and goes: a machine
+may join while the game is on. The server sends it the game's settings and
+the begin message alone; once it has loaded, it takes the game's traffic,
+gets the objects as they are (network_objects_client_ready), and adds its
+player in game. Only with the distributed netcode, whose machines keep their
+own clocks. */
+boolean network_game_server_join_in_progress_allowed(
+	struct network_game_server *server)
+{
+	/* in game, or about to be: the begin message has gone out and the
+	machines are loading */
+	return server && network_game_distributed() &&
+		(server->state == _network_game_server_state_ingame ||
+			(server->state == _network_game_server_state_pregame && server->sent_start_game_message));
+}
+
+/* Whether a machine gets the game's traffic now: in game, only once it has
+loaded (one still loading the map would take an update as out of sync). */
+boolean network_game_server_client_machine_takes_game_traffic(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *machine)
+{
+	if (!network_game_server_client_machine_is_joined_to_game(server, machine))
+		return FALSE;
+	if (server->state != _network_game_server_state_ingame)
+		return TRUE;
+	return TEST_FLAG(machine->flags, _network_client_machine_level_loaded_bit);
+}
+
+void network_game_server_client_machine_loaded_in_progress(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *machine)
+{
+	(void)server;
+	SET_FLAG(machine->flags, _network_client_machine_level_loaded_bit, TRUE);
+	network_event("machine #%d loaded into the game in progress", machine->machine_index);
+}
+#endif
+
 void network_game_server_client_machine_game_loading_complete(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *machine)
@@ -1666,12 +1706,21 @@ void network_game_server_handle_client_update_packet(
 
 	if (TEST_FLAG(message_packet->update_number, _client_update_out_of_sync_bit))
 	{
+#ifdef HALO_SERVER
+		/* a dedicated server's game is everyone's: one machine out of sync
+		(one that joined late, say) does not end it for the others */
+		network_event(
+			"client machine #%d says it is out of sync @ game tick #%ld; the game goes on",
+			machine->machine_index,
+			game_time_get());
+#else
 		network_event(
 			"client machine #%d is out of sync @ game tick #%ld; switching to post-game",
 			machine->machine_index,
 			game_time_get());
 
 		game_engine_switch_to_postgame();
+#endif
 	}
 	else if ((message_packet->update_number & CLIENT_UPDATE_SEQUENCE_NUMBER_MASK) <
 		machine->last_received_update_sequence_number)
@@ -1709,6 +1758,25 @@ void network_game_server_handle_client_update_packet(
 	return;
 }
 
+#ifdef HALO_SERVER
+/* port/server/src/server_link.c */
+int server_link_team_for_address(unsigned long address);
+int server_link_spectator_for_address(unsigned long address);
+int server_link_game_persistent(void);
+
+/* a machine that only watches (a spectator): no player of its own */
+static boolean server_client_machine_is_spectator(
+	struct network_game_server_client_machine const *machine)
+{
+	struct transport_address address;
+
+	if (!machine->connection)
+		return FALSE;
+	network_connection_get_address(machine->connection, &address, FALSE);
+	return server_link_spectator_for_address(address.address.long_words[0]) ? TRUE : FALSE;
+}
+#endif
+
 boolean network_game_server_add_player_to_game(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *machine,
@@ -1721,11 +1789,58 @@ boolean network_game_server_add_player_to_game(
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x46D, machine);
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x46E, player);
 
+#ifdef HALO_SERVER
+	if (server_client_machine_is_spectator(machine))
+	{
+		network_event("refused a player from machine #%d: it only watches", machine->machine_index);
+		return FALSE;
+	}
+#endif
 	if (machine->machine_index == player->machine_index)
 	{
+#ifdef HALO_SERVER
+		/* the dedicated server: the team with fewer players, so a player who
+		drops and comes back never leaves a team empty, which no team game
+		can start with (port/server/README.md) */
+		{
+			long count[NUMBER_OF_MULTIPLAYER_TEAMS];
+			long index;
+
+			csmemset(count, 0, sizeof(count));
+			for (index = 0; index < MAXIMUM_NETWORK_PLAYER_COUNT; index++)
+			{
+				struct network_player *other = &server->game.players[index];
+
+				if (network_player_is_valid(other) &&
+					other->team_index >= 0 && other->team_index < NUMBER_OF_MULTIPLAYER_TEAMS)
+				{
+					count[other->team_index]++;
+				}
+			}
+			player->team_index = 0;
+			for (index = 1; index < NUMBER_OF_MULTIPLAYER_TEAMS; index++)
+			{
+				if (count[index] < count[player->team_index])
+					player->team_index = (char)index;
+			}
+			/* the matchmaker's plan for this machine's team, when it has
+			one (a party together; port/server/src/server_link.c) */
+			if (machine->connection)
+			{
+				struct transport_address address;
+				long planned;
+
+				network_connection_get_address(machine->connection, &address, FALSE);
+				planned = server_link_team_for_address(address.address.long_words[0]);
+				if (planned >= 0 && planned < NUMBER_OF_MULTIPLAYER_TEAMS)
+					player->team_index = (char)planned;
+			}
+		}
+#else
 		player->team_index = (char)network_game_server_next_team_index;
 		network_game_server_next_team_index =
 			(network_game_server_next_team_index + 1) % NUMBER_OF_MULTIPLAYER_TEAMS;
+#endif
 
 		if (!player->name[0])
 			get_unique_random_name(server, player);
@@ -1760,6 +1875,11 @@ boolean network_game_server_add_player_to_game(
 	return success;
 }
 
+#if defined(HALO_LINUX) && defined(HALO_SERVER)
+/* network_server_message_handler.c */
+void network_game_server_broadcast_tick(struct network_game_server *server);
+#endif
+
 void network_game_server_update_ticks(
 	struct network_game_server *server,
 	short tick_count)
@@ -1776,6 +1896,11 @@ void network_game_server_update_ticks(
 
 			for (tick_index = 0; tick_index < tick_count; tick_index++)
 			{
+#if defined(HALO_LINUX) && defined(HALO_SERVER)
+				/* (a new broadcast chunk opens before this tick's messages:
+				network_server_message_handler.c) */
+				network_game_server_broadcast_tick(server);
+#endif
 				struct message_server_game_update game_update;
 				struct server_update update;
 				long update_number = server->next_update_number++;
@@ -2016,6 +2141,24 @@ boolean server_needs_more_teams(
 	return needs_more_teams;
 }
 
+#ifdef HALO_SERVER
+/* the dedicated server's own machine: its local client, which reaches the
+server on the loopback and has no player (port/server/README.md) */
+static boolean server_client_machine_is_local(
+	struct network_game_server_client_machine *client_machine)
+{
+	struct transport_address address;
+	unsigned long ip;
+
+	if (!client_machine->connection)
+		return FALSE;
+	network_connection_get_address(client_machine->connection, &address, FALSE);
+	ip = address.address.long_words[0];
+	return ip == IPV4_LOOPBACK_ADDRESS ||
+		ip == ((IPV4_LOOPBACK_ADDRESS >> 24) | (IPV4_LOOPBACK_ADDRESS << 24));
+}
+#endif
+
 boolean server_has_a_player_on_each_machine(
 	struct network_game_server *server)
 {
@@ -2046,6 +2189,13 @@ boolean server_has_a_player_on_each_machine(
 				}
 			}
 
+#ifdef HALO_SERVER
+			if (!has_a_player && server_client_machine_is_local(client_machine))
+				has_a_player = TRUE;
+			/* a spectator has none, and the game need not wait for one */
+			if (!has_a_player && server_client_machine_is_spectator(client_machine))
+				has_a_player = TRUE;
+#endif
 			if (!has_a_player)
 				return FALSE;
 		}
@@ -2085,10 +2235,22 @@ boolean server_has_enough_machines(
 boolean server_ok_to_countdown(
 	struct network_game_server *server)
 {
+	long minimum_players = server->game.minimum_players;
+	boolean needs_more_teams = server_needs_more_teams(server);
+
+#ifdef HALO_SERVER
+	/* a public server's game starts with whoever is there, even all on one
+	team: the others join it in progress, onto the smaller team */
+	if (server_link_game_persistent())
+	{
+		minimum_players = 1;
+		needs_more_teams = FALSE;
+	}
+#endif
 	if (server_has_enough_machines(server) &&
 		server_has_a_player_on_each_machine(server) &&
-		!server_needs_more_teams(server) &&
-		server->game.player_count >= server->game.minimum_players)
+		!needs_more_teams &&
+		server->game.player_count >= minimum_players)
 	{
 		return TRUE;
 	}
@@ -3393,6 +3555,11 @@ static boolean network_game_server_idle_pregame_tasks(
 				network_game_server_have_all_machines_have_precached(server) &&
 				server->countdown_state.paused == FALSE)
 			{
+#ifdef HALO_SERVER
+				/* a dedicated server's game stays open: machines join it in
+				progress */
+				if (!network_game_distributed())
+#endif
 				network_game_server_close_game(server);
 				if ((success = network_game_server_start_network_game(server)) != TRUE)
 					network_event("network_game_server_start_network_game() failed");

@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Halo Servers</title>
+  <style>
+    /* The server dashboard: the matchmaker's queues, pool, matches and
+       event log (GET /v1/matchmaker). */
+    :root {
+      --bg: #06090c; --panel: #0c1218; --line: rgba(151, 189, 209, .16);
+      --text: #e5f4ff; --muted: #8fa6b5; --accent: #7fb6e0;
+      --live: #5fd38a; --lapsed: #e0685f; --countdown: #ffd166; --ingame: #ff8a4c; --postgame: #b49cff;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body {
+      font-family: "Arial Narrow", "Avenir Next Condensed", "Segoe UI", sans-serif;
+      padding: clamp(16px, 4vw, 40px);
+      background: radial-gradient(circle at 50% -20%, rgba(78, 126, 160, .22), transparent 50%), var(--bg);
+    }
+    header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem 1.4rem; margin-bottom: 1.4rem; }
+    h1 { margin: 0; font-size: clamp(1.5rem, 3vw, 2.2rem); letter-spacing: .06em; text-transform: uppercase; }
+    header a { color: var(--accent); }
+    .summary { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.4rem; }
+    .stat { padding: .55rem .9rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); }
+    .stat b { display: block; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+    .stat span { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 1rem; }
+    .card { overflow: hidden; border: 1px solid var(--line); border-radius: .5rem; background: var(--panel); }
+    .card.lapsed { opacity: .55; }
+    .art { position: relative; height: 120px; background: #111 center / cover no-repeat; }
+    .art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(transparent 30%, var(--panel)); }
+    .badge {
+      position: absolute; top: .6rem; right: .6rem; z-index: 1; padding: .2rem .55rem; border-radius: 1rem;
+      font-size: .78rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #06090c;
+    }
+    .body { padding: .2rem 1rem 1rem; }
+    .title { display: flex; align-items: center; gap: .5rem; font-size: 1.15rem; font-weight: 700; }
+    .dot { width: .6rem; height: .6rem; border-radius: 50%; flex: none; }
+    .meta { margin: .3rem 0 .7rem; color: var(--muted); font-size: .9rem; }
+    .rows { display: grid; grid-template-columns: auto 1fr; gap: .25rem .9rem; font-size: .9rem; }
+    .rows dt { color: var(--muted); }
+    .rows dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .players { display: flex; flex-wrap: wrap; gap: .3rem; }
+    .players span { padding: .1rem .45rem; border-radius: .3rem; background: rgba(127, 182, 224, .14); font-family: ui-monospace, Menlo, monospace; font-size: .8rem; }
+    .empty, .error { padding: 2rem; border: 1px dashed var(--line); border-radius: .5rem; color: var(--muted); text-align: center; }
+    .error { color: var(--lapsed); }
+    footer { margin-top: 1.4rem; color: var(--muted); font-size: .8rem; }
+    h2 { margin: 1.6rem 0 .7rem; font-size: 1rem; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: .85rem; font-variant-numeric: tabular-nums; }
+    th, td { padding: .4rem .6rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    td { overflow-wrap: anywhere; }
+    #matches, #events { overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Servers</h1>
+    <a href="/">Back to the game</a>
+  </header>
+  <section class="summary" id="summary"></section>
+  <h2>Queues</h2>
+  <section class="summary" id="queues"></section>
+  <h2>Machines</h2>
+  <section id="machines"></section>
+  <h2>Server pool</h2>
+  <section class="grid" id="servers"></section>
+  <h2>Matches</h2>
+  <section id="matches"></section>
+  <h2>Event log</h2>
+  <section id="events"></section>
+  <footer id="footer">Loading…</footer>
+  <script>
+    "use strict";
+    /* The matchmaker's view (GET /v1/matchmaker): its queues, the servers in
+       its pool, recent matches and its event log, refreshed every 2 s. */
+    const MAPS = [
+      ["Battle Creek", "battle-creek"], ["Sidewinder", "sidewinder"], ["Damnation", "damnation"],
+      ["Rat Race", "rat-race"], ["Prisoner", "prisoner"], ["Hang 'Em High", "hang-em-high"],
+      ["Chill Out", "chill-out"], ["Derelict", "derelict"], ["Boarding Action", "boarding-action"],
+      ["Blood Gulch", "blood-gulch"], ["Wizard", "wizard"], ["Chiron TL-34", "chiron-tl-34"], ["Longest", "longest"],
+    ];
+    const MODES = ["Slayer", "Team Slayer", "Capture the Flag", "Oddball", "King of the Hill", "Race", "Team Oddball", "Team King of the Hill"];
+    const SERVER_STATES = {
+      idle: ["Idle, waiting for a match", "var(--live)"],
+      assigned: ["Opening a match", "var(--countdown)"],
+      hosting: ["Hosting a match", "var(--ingame)"],
+    };
+    const MATCH_STATES = {
+      lobby: "Players connecting", countdown: "Starting", ingame: "In match", postgame: "Scores", none: "Booting",
+    };
+    let signalingUrl = null;
+
+    async function findSignaling() {
+      const page = await (await fetch("/index.html", { cache: "no-store" })).text();
+      const meta = new DOMParser().parseFromString(page, "text/html")
+        .querySelector('meta[name="halo-signaling-url"]');
+      return meta && meta.content ? meta.content.replace(/\/$/, "") : location.origin;
+    }
+
+    function duration(seconds) {
+      if (seconds === null || seconds === undefined) return "–";
+      if (seconds < 60) return seconds + " s";
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + " min " + String(seconds % 60).padStart(2, "0") + " s";
+      return Math.floor(minutes / 60) + " h " + (minutes % 60) + " min";
+    }
+
+    function element(tag, attributes, children) {
+      const node = document.createElement(tag);
+      Object.entries(attributes || {}).forEach(([name, value]) => {
+        if (name === "style") node.style.cssText = value;
+        else if (name === "text") node.textContent = value;
+        else node.setAttribute(name, value);
+      });
+      (children || []).forEach((child) => node.append(child));
+      return node;
+    }
+
+    function stat(value, label) {
+      return element("div", { class: "stat" }, [element("b", { text: String(value) }), element("span", { text: label })]);
+    }
+
+    function mapLabel(match) {
+      const map = MAPS[match.mapIndex] || ["Unknown map", null];
+      return `${map[0]} · ${MODES[match.modeIndex] || ""}`;
+    }
+
+    function serverCard(server, matches) {
+      const match = server.match ? matches.find((candidate) => candidate.id === server.match) : null;
+      const [stateLabel, stateColor] = SERVER_STATES[server.state] || [server.state, "var(--muted)"];
+      const map = match ? MAPS[match.mapIndex] : null;
+      const art = element("div", { class: "art", style: map ? `background-image:url(/assets/ui/maps/${map[1]}.png)` : "" }, [
+        element("span", { class: "badge", style: `background:${stateColor}`, text: stateLabel }),
+      ]);
+      const rows = [
+        ["Match", match ? `${match.id} · ${mapLabel(match)}` : "None"],
+        ["Game", match ? (MATCH_STATES[match.matchState] || match.matchState || "–") : "–"],
+        ["Players", match ? `${match.players} of ${match.roster}` : "–"],
+        ["Machine", server.machine || "–"],
+        ["Heartbeat", duration(server.seenSeconds) + " ago"],
+        ["Up for", duration(server.upSeconds)],
+        ["Build", server.buildId],
+      ];
+      const list = element("dl", { class: "rows" });
+      rows.forEach(([label, value]) => list.append(element("dt", { text: label }), element("dd", { text: value })));
+      return element("article", { class: "card" }, [
+        art,
+        element("div", { class: "body" }, [
+          element("div", { class: "title" }, [
+            element("span", { class: "dot", style: `background:${stateColor}` }),
+            element("span", { text: "Server " + server.id }),
+          ]),
+          element("div", { class: "meta", text: server.colo ? "near " + server.colo : "" }),
+          list,
+        ]),
+      ]);
+    }
+
+    function table(headings, rows) {
+      if (!rows.length) return element("div", { class: "empty", text: "Nothing yet." });
+      return element("table", {}, [
+        element("thead", {}, [element("tr", {}, headings.map((heading) => element("th", { text: heading })))]),
+        element("tbody", {}, rows.map((cells) => element("tr", {}, cells.map((cell) => element("td", { text: cell }))))),
+      ]);
+    }
+
+    async function refresh() {
+      const footer = document.getElementById("footer");
+      try {
+        signalingUrl = signalingUrl || await findSignaling();
+        const response = await fetch(signalingUrl + "/v1/matchmaker", { cache: "no-store" });
+        if (!response.ok) throw new Error("The matchmaker answered " + response.status);
+        const data = await response.json();
+        const live = data.matches.filter((match) => match.state !== "ended");
+        document.getElementById("summary").replaceChildren(
+          stat(data.servers.length, "Servers"),
+          stat(data.servers.filter((server) => server.state === "idle").length, "Idle"),
+          stat(live.length, "Matches running"),
+          stat(live.reduce((sum, match) => sum + match.players, 0), "Players in matches"),
+        );
+        document.getElementById("queues").replaceChildren(...data.queues.map((queue) =>
+          stat(queue.queued, queue.label + " queue" + (queue.oldestSeconds !== null ? ` · ${queue.oldestSeconds} s` : ""))));
+        document.getElementById("servers").replaceChildren(...(data.servers.length ?
+          data.servers.map((server) => serverCard(server, data.matches)) :
+          [element("div", { class: "empty", text: "No servers are in the pool." })]));
+        const MACHINE_STATES = { started: "Running", starting: "Starting", stopped: "Stopped (autoscaler)",
+          stopping: "Stopping", created: "Starting" };
+        document.getElementById("machines").replaceChildren(table(
+          ["Machine", "State", "Servers", "All idle for", "In this state"],
+          (data.machines || []).map((machine) => [machine.name, MACHINE_STATES[machine.state] || machine.state,
+            String(machine.servers), machine.idleSeconds === null ? "–" : duration(machine.idleSeconds),
+            duration(machine.stateSeconds)])));
+        document.getElementById("matches").replaceChildren(table(
+          ["Match", "Playlist", "Map", "State", "Game", "Players", "Age", "Ended"],
+          data.matches.map((match) => [match.id, match.playlist, mapLabel(match), match.state,
+            MATCH_STATES[match.matchState] || match.matchState || "–", `${match.players} of ${match.roster}`,
+            duration(match.ageSeconds), match.endReason || ""])));
+        document.getElementById("events").replaceChildren(table(
+          ["Time", "Event", "Subject", "Detail"],
+          data.events.map((event) => [new Date(event.at).toLocaleTimeString(), event.kind.replace(/_/g, " "),
+            event.subject || "", event.detail ? JSON.stringify(event.detail) : ""])));
+        footer.textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 2 s`;
+      } catch (error) {
+        footer.textContent = "";
+        document.getElementById("servers").replaceChildren(
+          element("div", { class: "error", text: error.message || String(error) }));
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>

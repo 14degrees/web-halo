@@ -1,0 +1,13 @@
+# Docker builds (services/game-server) see only the sources they compile.
+*
+!configure.py
+!config/
+!source/
+!port/
+!tools/
+!libs/
+!services/game-server/
+port/web/assets/
+port/web/tests/
+**/__pycache__
+**/node_modules

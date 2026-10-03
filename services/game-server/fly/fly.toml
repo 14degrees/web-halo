@@ -1,0 +1,70 @@
+# The game server on Fly.io (services/game-server/README.md, "Fly.io").
+# Deploy as the README says: the image is built locally with the
+# game data and pushed to the app's private registry.
+app = "halo-game-lilchocobo"
+primary_region = "lax"
+
+[env]
+  HALO_SIGNALING_URL = "https://halo-signaling.lilchocobo2.workers.dev"
+  HALO_GAME_ORIGIN = "https://halo.lilchocobo2.workers.dev"
+  HALO_LOBBY_ROTATION = "hangemhigh:slayer"
+  # Halo starts a match only with two players: the countdown waits for them
+  HALO_LOBBY_MIN_PLAYERS = "2"
+  HALO_LOBBY_COUNTDOWN_SECONDS = "15"
+  HALO_LOBBY_POSTGAME_SECONDS = "8"
+  # Fly answers UDP only from this address, on the same port outside and in
+  HALO_WEBRTC_UDP_HOST = "fly-global-services"
+  HALO_WEBRTC_UDP_PORT = "40100"
+  HALO_PUBLIC_IP = "37.16.2.146"
+  # six servers in this machine, on UDP 40100-40105 (Fly routes a shared
+  # IP's UDP to any machine of the app, so servers differ by port, not
+  # machine)
+  HALO_SERVERS = "6"
+  # matches run to their end; a newcomer goes to a server in its lobby
+  HALO_RESTART_FOR_WAITING = "false"
+  # take matches from the matchmaker (gateway/pool.go), each in a fresh game
+  HALO_MODE = "pool"
+  HALO_MATCH_COUNTDOWN_SECONDS = "5"
+
+[[services]]
+  protocol = "udp"
+  internal_port = 40100
+  [[services.ports]]
+    port = 40100
+
+[[services]]
+  protocol = "udp"
+  internal_port = 40101
+  [[services.ports]]
+    port = 40101
+
+[[services]]
+  protocol = "udp"
+  internal_port = 40102
+  [[services.ports]]
+    port = 40102
+
+[[services]]
+  protocol = "udp"
+  internal_port = 40103
+  [[services.ports]]
+    port = 40103
+
+[[services]]
+  protocol = "udp"
+  internal_port = 40104
+  [[services.ports]]
+    port = 40104
+
+[[services]]
+  protocol = "udp"
+  internal_port = 40105
+  [[services.ports]]
+    port = 40105
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"
+
+[[restart]]
+  policy = "always"

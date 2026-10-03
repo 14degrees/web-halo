@@ -97,6 +97,8 @@ GAME_FLAGS = [
 TOML_DIR = Path("port/third_party/tomlc17")
 KCP_DIR = Path("port/third_party/kcp")
 MUSL_MATH_DIR = Path("port/third_party/musl-math")
+# the dedicated server's own sources (port/server)
+SERVER_DIR = Path("port/server")
 # the self-updater's TLS (port/linux/src/posix_update.c)
 MBEDTLS_DIR = Path("port/third_party/mbedtls")
 
@@ -253,7 +255,7 @@ def linux_configure_inputs() -> List[Path]:
     """Files whose change must re-run configure.py."""
     if not PORT_CONFIG.is_file():
         return [Path(__file__)]
-    return [PORT_CONFIG, Path(__file__), PORT_DIR / "src", PORT_DIR / "game", XDK_INCLUDE]
+    return [PORT_CONFIG, Path(__file__), PORT_DIR / "src", PORT_DIR / "game", XDK_INCLUDE, SERVER_DIR / "src"]
 
 
 def _quote(path: Any) -> str:
@@ -334,8 +336,9 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
     libs = " ".join(f"-l{lib}" for lib in config.get("libraries", []))
 
     def emit(obj_dir: Path, output: Path, extra_cflags: List[str], extra_ldflags: List[str],
-             implicit_inputs: List[Path]) -> None:
-        """the objects and the executable, with the given extra flags"""
+             implicit_inputs: List[Path], server: bool = False) -> None:
+        """the objects and the executable, with the given extra flags; with
+        server, the dedicated server (port/server/README.md)"""
         extra = " ".join(extra_cflags)
         # the posix_* units have glibc's 32-bit wchar_t, and LLVM will not
         # optimise them together with code that has a 16-bit one: they stay
@@ -421,6 +424,13 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
             add_object(source, " ".join(POSIX_FLAGS + [march_flag(sln), mbedtls_include,
                                                        f"-I{MBEDTLS_DIR / 'library'}", "-fno-builtin-wcslen",
                                                        "-w"]), posix=True)
+        # the dedicated server: the browser's virtual sockets and lobby
+        # driver, and its link to the gateway (port/server)
+        if server:
+            web_src = Path("port/web/src")
+            add_object(web_src / "web_loopback_net.c", posix_cflags, posix=True)
+            add_object(web_src / "web_online_ui.c", platform_cflags)
+            add_object(SERVER_DIR / "src" / "server_link.c", f"{posix_cflags} -I{SERVER_DIR / 'src'}", posix=True)
         # the settings file's parser (port/third_party/tomlc17), with the
         # platform layer's ABI (its structs hold doubles) and nothing else
         add_object(TOML_DIR / "tomlc17.c", " ".join([abi, "-std=gnu11", "-w"]))
@@ -463,4 +473,14 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
     cflags += profile_use_flags(profile)
     emit(obj_dir, output, cflags, ldflags, [profile] if profile else [])
     n.build(outputs="linux", rule="phony", inputs=output)
+
+    # The dedicated server (ninja server): the same game with the browser's
+    # virtual sockets, which its gateway carries over WebRTC
+    # (port/server/README.md). Not profile-optimised: its profile is not the
+    # client's.
+    server_dir = sln.build_dir / "server"
+    server_cflags, server_ldflags = lto_flags(sln, server_dir / "thinlto-cache")
+    emit(server_dir / "obj", server_dir / "halo-server", ["-DHALO_SERVER=1", *server_cflags], server_ldflags, [],
+         server=True)
+    n.build(outputs="server", rule="phony", inputs=server_dir / "halo-server")
     n.newline()

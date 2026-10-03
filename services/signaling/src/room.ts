@@ -1,3 +1,4 @@
+import type { WagerView } from "./wager";
 import { DurableObject } from "cloudflare:workers";
 
 import {
@@ -6,6 +7,19 @@ import {
   randomToken,
   hashToken,
 } from "./crypto";
+import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
+import { MATCHMAKER_NAME } from "./matchmaker";
+import { walletPlayerName } from "./solana";
+
+/* when the room's dedicated host last pinged (lobby.ts, DEDICATED_HOST_LEASE_MS) */
+const HOST_SEEN_KEY = "hostSeenAt";
+/* a dedicated host's match state (lobby, countdown, ingame, postgame) and
+   since when, and the data centre it connected through */
+const MATCH_STATE_KEY = "matchState";
+const MATCH_SINCE_KEY = "matchSince";
+const HOST_COLO_KEY = "hostColo";
+/* a wagered match's ID: its kills go to that match's wager (src/wager.ts) */
+const WAGER_KEY = "wagerMatch";
 import {
   MAX_WEBSOCKET_MESSAGE_CHARACTERS,
   IDENTIFIER_PATTERN,
@@ -14,19 +28,26 @@ import {
   TOKEN_PATTERN,
   parseClientMessage,
   parsePlayerProfile,
+  type LobbySettings,
   type PeerRole,
   type PlayerProfile,
+  type PublicRoomDescriptor,
+  type RoomVisibility,
 } from "./protocol";
 
 interface RoomRow extends Record<string, SqlStorageValue> {
   build_id: string;
   capacity: number;
   created_at: number;
+  dedicated: number;
   expires_at: number;
   guest_ticket_hash: ArrayBuffer;
   host_ticket_hash: ArrayBuffer;
+  map_index: number | null;
+  mode_index: number | null;
   protocol_version: number;
   room_id: string;
+  visibility: string;
 }
 
 interface SessionRow extends Record<string, SqlStorageValue> {
@@ -46,6 +67,12 @@ interface SocketAttachment {
   peerId: string;
   profile?: PlayerProfile;
   role: PeerRole;
+  /* The signed-in wallet this player wagers with, if any. */
+  wallet?: string;
+  /* matches this player has finished (the matchmaker's count): their rank */
+  matches?: number;
+  /* watching the game, not in it */
+  spectator?: boolean;
 }
 
 interface PreparedSession {
@@ -56,12 +83,17 @@ interface PreparedSession {
 export interface CreateRoomCommand {
   buildId: string;
   capacity: number;
+  dedicated: boolean;
   identifier: string;
+  lobby: LobbySettings | null;
   now: number;
   protocolVersion: number;
   roomId: string;
   roomTtlMs: number;
   sessionTtlMs: number;
+  visibility: RoomVisibility;
+  wallet?: string;
+  colo?: string;
 }
 
 export type CreateRoomResult =
@@ -80,7 +112,12 @@ export interface CreateSessionCommand {
   now: number;
   protocolVersion: number;
   sessionTtlMs: number;
-  ticket: string;
+  /* Absent: a guest of a public room. */
+  ticket?: string;
+  wallet?: string;
+  /* watching, not playing: no player in the game, and not counted against
+     the room's player places */
+  spectator?: boolean;
 }
 
 export type CreateSessionResult =
@@ -97,17 +134,18 @@ export type CreateSessionResult =
       ok: false;
     }
   | {
-      buildId: string;
-      capacity: number;
-      expiresAt: number;
       ok: true;
-      protocolVersion: number;
+      room: PublicRoomDescriptor;
       session: MintedSession;
     };
 
 export type CloseRoomResult =
   | { code: "INVALID_TICKET" | "ROOM_NOT_FOUND"; ok: false }
   | { ok: true };
+
+export type RenewRoomResult =
+  | { code: "INVALID_TICKET" | "ROOM_NOT_FOUND"; ok: false }
+  | { ok: true; room: PublicRoomDescriptor };
 
 export interface MintedSession {
   expiresAt: number;
@@ -144,7 +182,47 @@ function jsonMessage(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function roomVisibility(value: string): RoomVisibility {
+  return value === "public" ? "public" : "private";
+}
+
+function roomDescriptor(room: RoomRow): PublicRoomDescriptor {
+  if (room.protocol_version !== SIGNALING_PROTOCOL_VERSION) {
+    throw new Error("Room row holds an unsupported protocol version.");
+  }
+  return {
+    buildId: room.build_id,
+    capacity: room.capacity,
+    dedicated: room.dedicated === 1,
+    expiresAt: room.expires_at,
+    id: room.room_id,
+    lobby:
+      room.map_index === null || room.mode_index === null
+        ? null
+        : { mapIndex: room.map_index, modeIndex: room.mode_index },
+    protocolVersion: SIGNALING_PROTOCOL_VERSION,
+    visibility: roomVisibility(room.visibility),
+  };
+}
+
+/* Columns added after the first deployment. A room that outlives a deploy
+   keeps its table, so they are added to it on first use. */
+const ROOM_COLUMN_UPGRADES: ReadonlyArray<readonly [string, string]> = [
+  ["visibility", "TEXT NOT NULL DEFAULT 'private'"],
+  ["dedicated", "INTEGER NOT NULL DEFAULT 0"],
+  ["map_index", "INTEGER"],
+  ["mode_index", "INTEGER"],
+];
+
 const MAX_GUEST_WEBSOCKET_MESSAGES_PER_MINUTE = 240;
+/* watchers a room seats beyond its players */
+const MAXIMUM_SPECTATORS = 16;
+/* the broadcast (src/broadcast.ts): recorded while a viewer has asked for
+   the newest chunk this recently */
+const BROADCAST_WATCH_MS = 15_000;
+const BROADCAST_LATEST_KEY = "broadcast-latest";
+const BROADCAST_WATCHED_KEY = "broadcast-watched-until";
+const BROADCAST_ON_KEY = "broadcast-on";
 const MAX_HOST_WEBSOCKET_MESSAGES_PER_MINUTE = 16_384;
 
 export class SignalingRoom extends DurableObject<Env> {
@@ -163,7 +241,11 @@ export class SignalingRoom extends DurableObject<Env> {
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         host_ticket_hash BLOB NOT NULL,
-        guest_ticket_hash BLOB NOT NULL
+        guest_ticket_hash BLOB NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'private',
+        dedicated INTEGER NOT NULL DEFAULT 0,
+        map_index INTEGER,
+        mode_index INTEGER
       );
       CREATE TABLE IF NOT EXISTS pending_sessions (
         peer_id TEXT PRIMARY KEY,
@@ -208,8 +290,9 @@ export class SignalingRoom extends DurableObject<Env> {
       this.ctx.storage.sql.exec(
         `INSERT INTO room (
           singleton, room_id, build_id, protocol_version, capacity,
-          created_at, expires_at, host_ticket_hash, guest_ticket_hash
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          created_at, expires_at, host_ticket_hash, guest_ticket_hash,
+          visibility, dedicated, map_index, mode_index
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         command.roomId,
         command.buildId,
         command.protocolVersion,
@@ -218,11 +301,18 @@ export class SignalingRoom extends DurableObject<Env> {
         expiresAt,
         hostTicketHash,
         guestTicketHash,
+        command.visibility,
+        command.dedicated ? 1 : 0,
+        command.lobby === null ? null : command.lobby.mapIndex,
+        command.lobby === null ? null : command.lobby.modeIndex,
       );
       this.insertSession(hostSession);
+      this.rememberWallet(hostSession.session.peerId, command.wallet);
     });
+    if (command.colo !== undefined) this.ctx.storage.kv.put(HOST_COLO_KEY, command.colo);
 
     await this.ctx.storage.setAlarm(expiresAt);
+    await this.publishToDirectory(command.now);
 
     return {
       expiresAt,
@@ -238,7 +328,7 @@ export class SignalingRoom extends DurableObject<Env> {
   ): Promise<CreateSessionResult> {
     const newSessionToken = randomToken();
     const [providedTicketHash, newSessionTokenHash] = await Promise.all([
-      hashToken(command.ticket),
+      command.ticket === undefined ? Promise.resolve(null) : hashToken(command.ticket),
       hashToken(newSessionToken),
     ]);
 
@@ -251,8 +341,14 @@ export class SignalingRoom extends DurableObject<Env> {
       return { code: "ROOM_NOT_FOUND", ok: false };
     }
 
-    const isHost = hashesMatch(providedTicketHash, room.host_ticket_hash);
-    const isGuest = hashesMatch(providedTicketHash, room.guest_ticket_hash);
+    /* A public room seats a ticket-less guest; every other combination must
+       present the host or invite capability. */
+    const isHost =
+      providedTicketHash !== null && hashesMatch(providedTicketHash, room.host_ticket_hash);
+    const isGuest =
+      providedTicketHash === null
+        ? roomVisibility(room.visibility) === "public"
+        : hashesMatch(providedTicketHash, room.guest_ticket_hash);
     if (!isHost && !isGuest) {
       return { code: "INVALID_TICKET", ok: false };
     }
@@ -287,7 +383,10 @@ export class SignalingRoom extends DurableObject<Env> {
     ) {
       return { code: "IDENTIFIER_IN_USE", ok: false };
     }
-    if (activeConnections.length + pendingSessions >= room.capacity) {
+    /* spectators have places of their own */
+    const watching = activeConnections.filter(({ attachment }) => attachment.spectator).length;
+    if (command.spectator ? watching >= MAXIMUM_SPECTATORS :
+        activeConnections.length - watching + pendingSessions >= room.capacity) {
       return { code: "ROOM_FULL", ok: false };
     }
 
@@ -300,15 +399,57 @@ export class SignalingRoom extends DurableObject<Env> {
       newSessionTokenHash,
     );
     this.insertSession(session);
+    if (command.spectator) {
+      this.ctx.storage.kv.put(`spectator:${session.session.peerId}`, true);
+    } else {
+      this.rememberWallet(session.session.peerId, command.wallet);
+    }
 
     return {
-      buildId: room.build_id,
-      capacity: room.capacity,
-      expiresAt: room.expires_at,
       ok: true,
-      protocolVersion: room.protocol_version,
+      room: roomDescriptor(room),
       session: session.session,
     };
+  }
+
+  /* The host extends the room's life by one TTL from now, and may change the
+     lobby settings it advertises (a dedicated host rotating maps). A dedicated
+     host renews on a timer so its public lobby never expires while it runs. */
+  async renewRoom(
+    ticket: string,
+    now: number,
+    roomTtlMs: number,
+    lobby?: LobbySettings,
+  ): Promise<RenewRoomResult> {
+    const room = this.getRoom();
+    if (room === null) {
+      await this.expireRoom();
+      return { code: "ROOM_NOT_FOUND", ok: false };
+    }
+    if (!hashesMatch(await hashToken(ticket), room.host_ticket_hash)) {
+      return { code: "INVALID_TICKET", ok: false };
+    }
+    const expiresAt = Math.max(room.expires_at, now + roomTtlMs);
+    this.ctx.storage.sql.exec("UPDATE room SET expires_at = ? WHERE singleton = 1", expiresAt);
+    if (lobby !== undefined) {
+      this.ctx.storage.sql.exec(
+        "UPDATE room SET map_index = ?, mode_index = ? WHERE singleton = 1",
+        lobby.mapIndex,
+        lobby.modeIndex,
+      );
+    }
+    await this.ctx.storage.setAlarm(expiresAt);
+    await this.publishToDirectory(now);
+    const renewed = this.getRoom();
+    if (renewed === null) {
+      return { code: "ROOM_NOT_FOUND", ok: false };
+    }
+    return { ok: true, room: roomDescriptor(renewed) };
+  }
+
+  /* The matchmaker's word that this room's match is wagered. */
+  async attachWager(matchId: string): Promise<void> {
+    this.ctx.storage.kv.put(WAGER_KEY, matchId);
   }
 
   async closeRoom(ticket: string): Promise<CloseRoomResult> {
@@ -379,7 +520,10 @@ export class SignalingRoom extends DurableObject<Env> {
     ) {
       return new Response("Host is already connected.", { status: 409 });
     }
-    if (existingConnections.length >= room.capacity) {
+    const spectator = this.ctx.storage.kv.get(`spectator:${session.peer_id}`) === true;
+    this.ctx.storage.kv.delete(`spectator:${session.peer_id}`);
+    const watching = existingConnections.filter(({ attachment }) => attachment.spectator).length;
+    if (spectator ? watching >= MAXIMUM_SPECTATORS : existingConnections.length - watching >= room.capacity) {
       return new Response("Room is full.", { status: 409 });
     }
 
@@ -391,6 +535,7 @@ export class SignalingRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
+    const wallet = this.takeWallet(session.peer_id);
     const attachment: SocketAttachment = {
       identifier: session.identifier,
       joinedAt: now,
@@ -398,6 +543,8 @@ export class SignalingRoom extends DurableObject<Env> {
       messageWindowStartedAt: now,
       peerId: session.peer_id,
       role: session.role,
+      ...(wallet === null ? {} : { wallet }),
+      ...(spectator ? { spectator: true } : {}),
     };
 
     this.ctx.acceptWebSocket(server, [
@@ -413,14 +560,9 @@ export class SignalingRoom extends DurableObject<Env> {
             identifier: peer.identifier,
             peerId: peer.peerId,
             role: peer.role,
+            ...(peer.spectator ? { spectator: true } : {}),
           })),
-        room: {
-          buildId: room.build_id,
-          capacity: room.capacity,
-          expiresAt: room.expires_at,
-          id: room.room_id,
-          protocolVersion: room.protocol_version,
-        },
+        room: roomDescriptor(room),
         self: {
           identifier: attachment.identifier,
           peerId: attachment.peerId,
@@ -437,6 +579,7 @@ export class SignalingRoom extends DurableObject<Env> {
           identifier: attachment.identifier,
           peerId: attachment.peerId,
           role: attachment.role,
+          ...(attachment.spectator ? { spectator: true } : {}),
         },
         type: "peer-joined",
         v: SIGNALING_PROTOCOL_VERSION,
@@ -445,6 +588,13 @@ export class SignalingRoom extends DurableObject<Env> {
       server,
     );
     this.broadcastRoster();
+    if (attachment.role === "host") {
+      this.ctx.storage.kv.put(HOST_SEEN_KEY, now);
+      /* a new host records nothing until told (src/broadcast.ts) */
+      this.ctx.storage.kv.delete(BROADCAST_ON_KEY);
+      this.switchBroadcast(now);
+    }
+    this.ctx.waitUntil(this.publishToDirectory(now));
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -515,6 +665,15 @@ export class SignalingRoom extends DurableObject<Env> {
 
     const message = parsed.value;
     if (message.type === "ping") {
+      /* A dedicated host's ping renews its lease in the directory. */
+      const pinger = safeAttachment(socket);
+      if (pinger?.role === "host" && this.getRoom()?.dedicated === 1) {
+        const now = Date.now();
+        this.ctx.storage.kv.put(HOST_SEEN_KEY, now);
+        this.ctx.waitUntil(this.publishToDirectory(now));
+        /* nobody has watched for a while: the recording stops */
+        this.switchBroadcast(now);
+      }
       try {
         socket.send(
           jsonMessage({
@@ -538,8 +697,71 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
+    if (message.type === "waiting") {
+      if (sender.role !== "guest") {
+        this.sendError(socket, "WAITING_FORBIDDEN", "Only a guest waits to join.");
+        return;
+      }
+      this.broadcastToRole(
+        { from: sender.peerId, type: "waiting", v: SIGNALING_PROTOCOL_VERSION },
+        "host",
+      );
+      return;
+    }
+
+    if (message.type === "match") {
+      if (sender.role !== "host") {
+        this.sendError(socket, "MATCH_FORBIDDEN", "Only the host reports the match.");
+        return;
+      }
+      this.broadcastToRole(
+        {
+          ...(message.startsIn === undefined ? {} : { startsIn: message.startsIn }),
+          state: message.state,
+          type: "match",
+          v: SIGNALING_PROTOCOL_VERSION,
+        },
+        "guest",
+      );
+      /* The directory learns the state on a change: quick join skips a
+         server mid-match, and the server dashboard shows it. */
+      if (this.ctx.storage.kv.get(MATCH_STATE_KEY) !== message.state) {
+        this.ctx.storage.kv.put(MATCH_STATE_KEY, message.state);
+        this.ctx.storage.kv.put(MATCH_SINCE_KEY, now);
+        this.ctx.waitUntil(this.publishToDirectory(now));
+      }
+      return;
+    }
+
+    if (message.type === "pings") {
+      if (sender.role !== "host") {
+        this.sendError(socket, "PINGS_FORBIDDEN", "Only the host measures pings.");
+        return;
+      }
+      /* by the name each plays under (the scoreboard's) */
+      const byName: Record<string, number> = {};
+      for (const { attachment } of this.connections("guest")) {
+        if (attachment.spectator) continue;
+        const ping = message.pings[attachment.peerId];
+        if (ping !== undefined && attachment.profile?.name) byName[attachment.profile.name] = ping;
+      }
+      this.broadcastToRole({ pings: byName, type: "pings", v: SIGNALING_PROTOCOL_VERSION }, "guest");
+      return;
+    }
+
+    if (message.type === "kill") {
+      this.ctx.waitUntil(this.settleKill(socket, sender, message.killer, message.victim));
+      return;
+    }
+
     if (message.type === "profile") {
-      sender.profile = message.profile;
+      /* A wagering player plays under their wallet's name, so a kill report
+         can never be pinned on someone else. */
+      sender.profile = sender.wallet === undefined ? message.profile :
+        { ...message.profile, name: walletPlayerName(sender.wallet) };
+      if (sender.matches === undefined && sender.role === "guest") {
+        this.ctx.waitUntil(this.lookUpRank(sender.peerId, sender.identifier));
+      }
       try {
         socket.serializeAttachment(sender);
       } catch (error) {
@@ -554,6 +776,7 @@ export class SignalingRoom extends DurableObject<Env> {
         return;
       }
       this.broadcastRoster();
+      this.ctx.waitUntil(this.publishToDirectory(now));
       return;
     }
 
@@ -652,6 +875,103 @@ export class SignalingRoom extends DurableObject<Env> {
       socket,
     );
     this.broadcastRoster();
+    this.ctx.waitUntil(this.publishToDirectory(Date.now()));
+  }
+
+  /* A public room's entry in the lobby directory. Failures are logged, never
+     raised: the directory is a convenience for quick join, not a record. */
+  private async publishToDirectory(now: number): Promise<void> {
+    let room: RoomRow | null;
+    try {
+      room = this.getRoom();
+    } catch {
+      return;
+    }
+    if (room === null || roomVisibility(room.visibility) !== "public") {
+      return;
+    }
+    /* the players: spectators watch, they do not fill places */
+    const connections = this.connections().filter(({ attachment }) => !attachment.spectator);
+    const hostConnected = connections.some(({ attachment }) => attachment.role === "host");
+    const guests = connections.length - (hostConnected ? 1 : 0);
+    const entry: LobbyEntry = {
+      buildId: room.build_id,
+      capacity: room.capacity,
+      createdAt: room.created_at,
+      dedicated: room.dedicated === 1,
+      expiresAt: room.expires_at,
+      hostConnected,
+      hostSeenAt: room.dedicated === 1 ? Number(this.ctx.storage.kv.get(HOST_SEEN_KEY) ?? 0) : 0,
+      matchState: String(this.ctx.storage.kv.get(MATCH_STATE_KEY) ?? ""),
+      matchSince: Number(this.ctx.storage.kv.get(MATCH_SINCE_KEY) ?? 0),
+      colo: String(this.ctx.storage.kv.get(HOST_COLO_KEY) ?? ""),
+      mapIndex: room.map_index,
+      modeIndex: room.mode_index,
+      names: connections
+        .filter(({ attachment }) => attachment.profile !== undefined)
+        .slice(0, LOBBY_NAMES_LIMIT)
+        .map(({ attachment }) => ({
+          host: attachment.role === "host",
+          name: attachment.profile?.name ?? "",
+          style: attachment.profile?.style ?? "sage",
+        })),
+      /* A dedicated host is not a player; a browser host is. */
+      players: guests + (hostConnected && room.dedicated !== 1 ? 1 : 0),
+      protocolVersion: room.protocol_version,
+      roomId: room.room_id,
+    };
+    try {
+      await this.env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).upsert(entry, now);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+          message: "failed to publish room to the lobby directory",
+        }),
+      );
+    }
+  }
+
+  private async withdrawFromDirectory(): Promise<void> {
+    let room: RoomRow | null;
+    try {
+      room = this.getRoom();
+    } catch {
+      return;
+    }
+    if (room === null || roomVisibility(room.visibility) !== "public") {
+      return;
+    }
+    try {
+      await this.env.LOBBY_DIRECTORY.getByName(LOBBY_DIRECTORY_NAME).remove(room.room_id);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+          message: "failed to withdraw room from the lobby directory",
+        }),
+      );
+    }
+  }
+
+  /* A player's rank comes from the matchmaker's count of their finished
+     matches, never from the player. */
+  private async lookUpRank(peerId: string, identifier: string): Promise<void> {
+    let matches: number | null = null;
+    try {
+      matches = await this.env.MATCHMAKER.getByName(MATCHMAKER_NAME).matchesFor(identifier);
+    } catch {
+      return;
+    }
+    const connection = this.connectionForPeer(peerId);
+    if (!connection || matches === null) return;
+    connection.attachment.matches = matches;
+    try {
+      connection.socket.serializeAttachment(connection.attachment);
+    } catch {
+      /* the socket is closing */
+    }
+    this.broadcastRoster();
   }
 
   private broadcastRoster(): void {
@@ -661,6 +981,8 @@ export class SignalingRoom extends DurableObject<Env> {
         peerId: attachment.peerId,
         profile: attachment.profile ?? null,
         role: attachment.role,
+        matches: attachment.matches ?? null,
+        ...(attachment.spectator ? { spectator: true } : {}),
       })),
       type: "roster",
       v: SIGNALING_PROTOCOL_VERSION,
@@ -765,6 +1087,7 @@ export class SignalingRoom extends DurableObject<Env> {
   }
 
   private async expireRoom(): Promise<void> {
+    await this.withdrawFromDirectory();
     for (const socket of this.ctx.getWebSockets()) {
       try {
         socket.close(4001, "Room expired.");
@@ -777,20 +1100,173 @@ export class SignalingRoom extends DurableObject<Env> {
 
   private getRoom(): RoomRow | null {
     try {
-      return (
-        this.ctx.storage.sql
-          .exec<RoomRow>(
-            `SELECT room_id, build_id, protocol_version, capacity, created_at,
-                    expires_at, host_ticket_hash, guest_ticket_hash
-               FROM room WHERE singleton = 1`,
-          )
-          .toArray()[0] ?? null
-      );
+      return this.selectRoom();
     } catch (error) {
       if (error instanceof Error && error.message.includes("no such table")) {
         return null;
       }
+      if (error instanceof Error && error.message.includes("no such column")) {
+        this.upgradeRoomColumns();
+        return this.selectRoom();
+      }
       throw error;
+    }
+  }
+
+  private selectRoom(): RoomRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<RoomRow>(
+          `SELECT room_id, build_id, protocol_version, capacity, created_at,
+                  expires_at, host_ticket_hash, guest_ticket_hash,
+                  visibility, dedicated, map_index, mode_index
+             FROM room WHERE singleton = 1`,
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  private upgradeRoomColumns(): void {
+    const existing = new Set(
+      this.ctx.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(room)")
+        .toArray()
+        .map(({ name }) => name),
+    );
+    for (const [column, definition] of ROOM_COLUMN_UPGRADES) {
+      if (!existing.has(column)) {
+        this.ctx.storage.sql.exec(`ALTER TABLE room ADD COLUMN ${column} ${definition}`);
+      }
+    }
+  }
+
+  /* A pending session's wallet, until its socket opens. */
+  private walletTable(): void {
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS session_wallets (peer_id TEXT PRIMARY KEY, wallet TEXT NOT NULL)",
+    );
+  }
+
+  private rememberWallet(peerId: string, wallet: string | undefined): void {
+    if (wallet === undefined) return;
+    this.walletTable();
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO session_wallets (peer_id, wallet) VALUES (?, ?)",
+      peerId,
+      wallet,
+    );
+  }
+
+  private takeWallet(peerId: string): string | null {
+    this.walletTable();
+    const wallet = this.ctx.storage.sql
+      .exec<{ wallet: string }>("SELECT wallet FROM session_wallets WHERE peer_id = ?", peerId)
+      .toArray()[0]?.wallet ?? null;
+    this.ctx.storage.sql.exec("DELETE FROM session_wallets WHERE peer_id = ?", peerId);
+    return wallet;
+  }
+
+  /* A dedicated host reports a kill by names. In a wagered match the bounty
+     moves between the two players' match balances (src/wager.ts), and
+     everyone in the room hears the new balances. */
+  private async settleKill(
+    socket: WebSocket,
+    sender: SocketAttachment,
+    killerName: string,
+    victimName: string,
+  ): Promise<void> {
+    const room = this.getRoom();
+    if (room === null || room.dedicated !== 1 || sender.role !== "host") {
+      this.sendError(socket, "KILL_FORBIDDEN", "Only a dedicated host reports kills.");
+      return;
+    }
+    const wagerMatch = this.ctx.storage.kv.get(WAGER_KEY) as string | undefined;
+    if (wagerMatch !== undefined) {
+      const result = await this.env.WAGERS.getByName(wagerMatch).kill(killerName, victimName);
+      if (result === null) return;
+      this.broadcastAll(jsonMessage({
+        killer: killerName,
+        lamports: result.moved,
+        type: "wager",
+        v: SIGNALING_PROTOCOL_VERSION,
+        victim: victimName,
+        wager: result.view,
+      }));
+      this.outOfSol(socket, result.moved, victimName, result.view);
+      return;
+    }
+    /* a free match's kills move nothing */
+  }
+
+  /* ---------- the broadcast (src/broadcast.ts) */
+
+  /* The newest chunk the room's server has put up. */
+  async noteBroadcastChunk(sequence: number, now: number): Promise<void> {
+    this.ctx.storage.kv.put(BROADCAST_LATEST_KEY, { sequence, at: now });
+  }
+
+  /* A viewer asks for the newest chunk: the recording goes on (or starts)
+     for a while yet. */
+  async watchBroadcast(now: number): Promise<{ sequence: number; at: number } | null> {
+    this.ctx.storage.kv.put(BROADCAST_WATCHED_KEY, now + BROADCAST_WATCH_MS);
+    this.switchBroadcast(now);
+    return (this.ctx.storage.kv.get(BROADCAST_LATEST_KEY) as { sequence: number; at: number } | undefined) ?? null;
+  }
+
+  /* Tells the server to record or stop, when that changes. */
+  private switchBroadcast(now: number): void {
+    const watched = Number(this.ctx.storage.kv.get(BROADCAST_WATCHED_KEY) ?? 0) > now;
+    const on = this.ctx.storage.kv.get(BROADCAST_ON_KEY) === true;
+    if (watched === on) return;
+    let told = false;
+    for (const { socket } of this.connections("host")) {
+      try {
+        socket.send(jsonMessage({ on: watched, type: "broadcast", v: SIGNALING_PROTOCOL_VERSION }));
+        told = true;
+      } catch {
+        /* closing: the next host hears it when it connects */
+      }
+    }
+    if (told) this.ctx.storage.kv.put(BROADCAST_ON_KEY, watched);
+  }
+
+  /* A bounty match: a player whose stake is spent is out. Once only one
+     player has SOL left the match ends there (a duel at its first such
+     kill), and pays out as any finished match; otherwise the broke player
+     leaves and the others play on. Max kills and the time limit still end
+     it as usual. */
+  private outOfSol(host: WebSocket, moved: number, victimName: string, view: WagerView): void {
+    if (moved <= 0 || view.mode === "team") return;
+    const victim = view.players.find((player) => player.name === victimName);
+    if (!victim || victim.balance > 0) return;
+    const funded = view.players.filter((player) => player.balance > 0).length;
+    const end = funded <= 1;
+    const out = end ? [] : this.connections("guest")
+      .filter(({ attachment }) => !attachment.spectator && attachment.profile?.name === victimName)
+      .map(({ attachment }) => attachment.peerId);
+    for (const peerId of out) {
+      for (const target of this.ctx.getWebSockets(`peer:${peerId}`)) {
+        try {
+          target.send(jsonMessage({ type: "out_of_sol", v: SIGNALING_PROTOCOL_VERSION }));
+        } catch {
+          /* closing anyway */
+        }
+      }
+    }
+    try {
+      host.send(jsonMessage({ end, out, type: "wager_out", v: SIGNALING_PROTOCOL_VERSION }));
+    } catch {
+      /* the host is gone; the match ends without it */
+    }
+  }
+
+  private broadcastAll(encoded: string): void {
+    for (const { socket: target } of this.connections()) {
+      try {
+        target.send(encoded);
+      } catch {
+        /* A closing socket misses one notice. */
+      }
     }
   }
 

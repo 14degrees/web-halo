@@ -949,6 +949,90 @@ void network_game_client_game_out_of_sync(
 	return;
 }
 
+#ifdef HALO_WEB
+/* ---------- a broadcast's playback (port/linux/game/network_lobby.c)
+
+The client plays a recorded match: its connection carries nothing
+(network_connection.c's network_connection_playback), it is a machine of no
+player, and the recording's messages go straight to its handler, as they
+would have arrived. It starts in the pregame, where a joining machine
+waits for the game's settings and its start. */
+extern struct network_connection *network_connection_playback;
+/* the machine number a broadcast viewer has: no real machine's */
+#define PLAYBACK_MACHINE_INDEX (MAXIMUM_NETWORK_MACHINE_COUNT - 1)
+
+boolean network_game_client_begin_playback(
+	void)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	if (!client || !client->connection)
+		return FALSE;
+	network_connection_playback = client->connection;
+	client->machine_index = PLAYBACK_MACHINE_INDEX;
+	client->state = _network_game_client_state_pregame;
+	client->last_update_time = system_milliseconds();
+	network_event("broadcast: playing a recording");
+	return TRUE;
+}
+
+void network_game_client_end_playback(
+	void)
+{
+	network_connection_playback = NULL;
+}
+
+boolean network_game_client_play_message(
+	word *message,
+	short size)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	struct transport_address address;
+
+	if (!client || !network_connection_playback || size < (short)sizeof(message_header) ||
+		size != GET_MESSAGE_SIZE(*message))
+	{
+		return FALSE;
+	}
+	csmemset(&address, 0, sizeof(address));
+	return network_game_client_handle_message(client, message, size, &address);
+}
+
+int network_game_client_state_for_playback(
+	void)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	return client ? client->state : -1;
+}
+#endif
+
+#ifdef HALO_LINUX
+/* (the distributed netcode) whether a player is still in the network game:
+one whose machine left keeps their player, in the game but not in the
+network game's list */
+boolean network_game_client_player_in_game(
+	long absolute_index)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	long network_player_index;
+
+	if (!client)
+		return TRUE;
+	for (network_player_index = 0; network_player_index < MAXIMUM_NUMBER_OF_PLAYERS; network_player_index++)
+	{
+		struct network_player const *player = &client->game.players[network_player_index];
+
+		if (network_player_is_valid(player) &&
+			DATUM_INDEX_TO_ABSOLUTE_INDEX(unstrip_player_index(player->player_list_index)) == absolute_index)
+		{
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+#endif
+
 long unstrip_player_index(
 	long player_index)
 {
@@ -1717,6 +1801,34 @@ boolean network_game_client_handle_game_update(
 		message_packet->local_player_count = client->game.player_count;
 	}
 
+#ifdef HALO_LINUX
+	/* a machine that joined a game in progress (a dedicated server's): the
+	server's updates start where its game is, not at 0. The distributed
+	netcode's machines keep their own clocks, so only the numbering moves. */
+	if (network_game_distributed() && client->next_update_number == 0 && !client->last_update_time &&
+		message_packet->update_number > 0)
+	{
+		network_event("joined a game in progress at update #%ld", message_packet->update_number);
+		client->next_update_number = message_packet->update_number;
+		update_client_join_in_progress(message_packet->update_number);
+	}
+#endif
+
+#ifdef HALO_LINUX
+	/* the distributed netcode keeps no lockstep: a gap in the numbering is
+	only a gap, so the client takes up the server's numbering again */
+	if (network_game_distributed() && message_packet->update_number != client->next_update_number &&
+		message_packet->update_number > client->next_update_number)
+	{
+		network_event(
+			"skipping to server update #%ld (expected #%ld)",
+			message_packet->update_number,
+			client->next_update_number);
+		client->next_update_number = message_packet->update_number;
+		update_client_join_in_progress(message_packet->update_number);
+	}
+#endif
+
 	if (message_packet->update_number != client->next_update_number)
 	{
 		network_event(
@@ -1922,7 +2034,14 @@ boolean network_game_client_remove_player(
 				}
 			}
 
+			/* the dedicated server's machine never has a player of its own:
+			a player leaving must not end its game for everyone
+			(port/server/README.md) */
+#ifdef HALO_SERVER
+			if (FALSE)
+#else
 			if (network_player_index == MAXIMUM_NUMBER_OF_PLAYERS)
+#endif
 			{
 				network_game_client_all_local_players_have_quit();
 				network_event("no local players remain in the game, exiting the game now");
@@ -2054,6 +2173,9 @@ boolean network_game_client_add_player_to_game(
 	struct network_player *player)
 {
 	boolean success = FALSE;
+#ifdef HALO_LINUX
+	struct network_player incoming;
+#endif
 
 	match_assert(
 		"c:\\halo\\SOURCE\\networking\\network_client_manager.c",
@@ -2062,13 +2184,64 @@ boolean network_game_client_add_player_to_game(
 
 	if (network_player_is_valid(player))
 	{
+#ifdef HALO_LINUX
+		/* a player of the machine that had this number before, still listed:
+		it left as the game started, and the word of it was lost to the
+		start. It has quit; the number is the new machine's now. */
+		{
+			long network_player_index;
+
+			for (network_player_index = 0; network_player_index < MAXIMUM_NUMBER_OF_PLAYERS; network_player_index++)
+			{
+				struct network_player *stale = &client->game.players[network_player_index];
+
+				if (network_player_is_valid(stale) &&
+					stale->machine_index == player->machine_index &&
+					stale->controller_index == player->controller_index)
+				{
+					long stale_index = unstrip_player_index(stale->player_list_index);
+
+					if (stale_index != NONE && client->state == _network_game_client_state_ingame &&
+						player_get(stale_index)->quit_out_of_game_time == NONE)
+					{
+						player_get(stale_index)->quit_out_of_game_time = game_time_get();
+					}
+					network_event("a stale player of machine #%d left the game list", (int)player->machine_index);
+					network_game_remove_player(&client->game, stale);
+					break;
+				}
+			}
+		}
+		/* (this machine's list has its own order: the player takes its first
+		free slot here, whatever slot it has on the server) */
+		incoming = *player;
+		incoming.player_list_index = NONE;
+		player = &incoming;
+#endif
 		success = network_game_add_player(&client->game, player);
 
 		if (success)
 		{
 			if (client->state == _network_game_client_state_ingame)
 			{
+#ifdef HALO_LINUX
+				/* (the slot it took: the first free one, not always the last) */
+				long network_player_index;
+
+				for (network_player_index = 0; network_player_index < MAXIMUM_NUMBER_OF_PLAYERS; network_player_index++)
+				{
+					if (network_player_is_valid(&client->game.players[network_player_index]) &&
+						client->game.players[network_player_index].machine_index == player->machine_index &&
+						client->game.players[network_player_index].controller_index == player->controller_index)
+					{
+						break;
+					}
+				}
+				player = &client->game.players[network_player_index < MAXIMUM_NUMBER_OF_PLAYERS ?
+					network_player_index : client->game.player_count - 1];
+#else
 				player = &client->game.players[client->game.player_count - 1];
+#endif
 
 				success = network_game_spawn_player(player);
 

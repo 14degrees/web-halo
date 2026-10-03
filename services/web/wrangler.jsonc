@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "halo-web",
+  "name": "halo",
   "main": "src/index.js",
   "compatibility_date": "2026-09-29",
   "compatibility_flags": ["nodejs_compat"],
@@ -10,12 +10,6 @@
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "none"
   },
-  "r2_buckets": [
-    {
-      "binding": "CAMPAIGN_MAPS",
-      "bucket_name": "halo-web-campaign-maps"
-    }
-  ],
   "analytics_engine_datasets": [
     {
       "binding": "PERFORMANCE_TELEMETRY",

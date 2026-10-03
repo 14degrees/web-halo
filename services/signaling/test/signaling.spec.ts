@@ -368,11 +368,14 @@ describe("signaling API", () => {
     ]);
     const expectedPlayers = expect.arrayContaining([
       {
+        matches: null,
         peerId: room.host.session.peerId,
         profile: { name: "TestSpartan", style: "rose" },
         role: "host",
       },
       {
+        /* (a machine the matchmaker never queued has no rank) */
+        matches: null,
         peerId: guestBody.session.peerId,
         profile: { name: "Blue Guest", style: "blue" },
         role: "guest",
