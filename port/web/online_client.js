@@ -10,9 +10,20 @@
   if (!global || global.HaloOnline) return;
 
   var PROTOCOL_VERSION = 1;
-  /* The wager experiment's wallet: sign-in, the Play prompt, the balance
-     panel and the in-match balance. Off for now; true brings it all back. */
-  var WALLET_ENABLED = true;
+  /* Playing for SOL (the wallet, its balance and prompts, the SOL playlists,
+     Play for SOL, the live matches for SOL): hidden unless this browser asked
+     for it, with ?sol=1 once (?sol=0 hides it again), so the game reads as a
+     game. Matches for SOL themselves are unchanged. */
+  var WALLET_ENABLED = (function() {
+    var asked = /[?&#]sol=([01])\b/.exec(String((global.location && global.location.search) || "") +
+      String((global.location && global.location.hash) || ""));
+    try {
+      if (asked) global.localStorage.setItem("halo-sol", asked[1] === "1" ? "on" : "off");
+      return global.localStorage.getItem("halo-sol") === "on";
+    } catch (error) {
+      return !!asked && asked[1] === "1";
+    }
+  })();
   var ROOM_CAPACITY = 128;
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
@@ -2605,7 +2616,9 @@
   var PLAYLIST_REFRESH_MILLISECONDS = 5000;
 
   function playlists() {
-    return lobby.playlists && lobby.playlists.length ? lobby.playlists : FALLBACK_PLAYLISTS;
+    var list = lobby.playlists && lobby.playlists.length ? lobby.playlists : FALLBACK_PLAYLISTS;
+    /* (the playlists for SOL only where playing for SOL shows) */
+    return WALLET_ENABLED ? list : list.filter(function(playlist) { return !playlist.wager; });
   }
 
   function playlistById(id) {
@@ -2933,7 +2946,7 @@
     var list = lobbyElement("lobby-live-list");
     if (!root || !list) return;
     var matches = (lobby.live || []).filter(function(match) { return match.matchState === "ingame" || match.matchState === "countdown"; });
-    root.hidden = matches.length === 0 || session.active;
+    root.hidden = !WALLET_ENABLED || matches.length === 0 || session.active;
     var key = JSON.stringify(matches.map(function(match) { return [match.id, match.mapIndex, match.players]; }));
     if (lobby.liveKey === key) return;
     lobby.liveKey = key;
