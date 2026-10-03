@@ -45,7 +45,7 @@ assert.deepEqual(mapOptions.map(option => option.textContent), [
   'Blood Gulch', 'Wizard', 'Chiron TL-34', 'Longest',
 ]);
 assert.deepEqual(modeOptions.map(option => option.value),
-  Array.from({ length: 6 }, (_, index) => String(index)));
+  Array.from({ length: 8 }, (_, index) => String(index)));
 assert.deepEqual(modeOptions.map(option => option.textContent), [
   'Slayer', 'Team Slayer', 'Capture the Flag', 'Oddball',
   'King of the Hill', 'Race', 'Team Oddball', 'Team King of the Hill',
@@ -159,9 +159,19 @@ class FakeWebSocket {
 }
 
 const context = {
+  /* The client guards the page against refresh mid-match and talks to the
+     shell through window events; the tests do not exercise either. */
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent() {},
+  CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
+  requestAnimationFrame() { return 0; },
+  atob: value => Buffer.from(String(value), 'base64').toString('binary'),
+  btoa: value => Buffer.from(String(value), 'binary').toString('base64'),
   console,
   document: {
     readyState: 'complete',
+    body: { dataset: {} },
     getElementById: id => elements[id],
     querySelector: selector => selector === 'meta[name="halo-build-id"]' ?
       { content: 'test-build' } :
@@ -263,7 +273,7 @@ vm.runInContext(
   assert.equal(styleInputs.find(input => input.checked).value, 'rose');
   assert.equal(elements['online-profile-preview-name'].textContent, 'TestSpartan');
   assert.equal(elements['online-profile-preview'].dataset.style, 'rose');
-  assert.equal(elements['online-spartan-image'].src, 'assets/ui/spartan/rose.png');
+  assert.equal(elements['online-spartan-image'].src, 'assets/ui/spartan/rose.png?art=2');
   assert.match(elements['online-spartan-image'].alt, /TestSpartan in rose armor/);
   assert.equal(elements['online-host'].disabled, true);
   assert.equal(elements['player-sidebar'].hidden, false);
@@ -339,7 +349,7 @@ vm.runInContext(
   assert.deepEqual(JSON.parse(storage.get('halo.web.host-settings.v1')),
     { mapIndex: 9, modeIndex: 2 });
   assert.deepEqual(JSON.parse(storage.get('halo.web.player-profile.v1')),
-    { name: 'TestSpartan', style: 'rose' });
+    { name: 'TestSpartan', style: 'rose', emblem: 0 });
   assert.deepEqual(customizations, [[
     17,
     ...Array.from('TestSpartan', character => character.charCodeAt(0)),
@@ -376,7 +386,7 @@ vm.runInContext(
         {
           peerId: 'h_0123456789abcdef',
           role: 'host',
-          profile: { name: 'TestSpartan', style: 'rose' },
+          profile: { name: 'TestSpartan', style: 'rose', emblem: 0 },
         },
         {
           peerId: 'g_fedcba9876543210',

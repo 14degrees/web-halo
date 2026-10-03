@@ -101,9 +101,19 @@ class FakeWebSocket {
 }
 
 const context = {
+  /* The client guards the page against refresh mid-match and talks to the
+     shell through window events; the tests do not exercise either. */
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent() {},
+  CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
+  requestAnimationFrame() { return 0; },
+  atob: value => Buffer.from(String(value), 'base64').toString('binary'),
+  btoa: value => Buffer.from(String(value), 'binary').toString('base64'),
   console,
   document: {
     readyState: 'complete',
+    body: { dataset: {} },
     getElementById: id => elements[id],
     querySelector: selector => selector === 'meta[name="halo-build-id"]' ?
       { content: 'test-build' } :
