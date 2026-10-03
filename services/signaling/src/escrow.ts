@@ -315,6 +315,11 @@ export interface MatchAccountState {
   capacity: number;
   state: "open" | "settled" | "void";
   players: string[];
+  /* one bit per player who reclaimed their stake */
+  reclaimed: number;
+  /* unix seconds: a player may reclaim from createdAt + reclaimDelay */
+  createdAt: number;
+  reclaimDelay: number;
 }
 
 export function decodeMatch(data: Uint8Array): MatchAccountState | null {
@@ -328,7 +333,16 @@ export function decodeMatch(data: Uint8Array): MatchAccountState | null {
   for (let index = 0; index < count && index < 8; index += 1) {
     players.push(base58Encode(data.slice(38 + index * 32, 70 + index * 32)));
   }
-  return { stake, capacity, state, players };
+  /* after the players (a length-prefixed vector): reclaimed u8, created_at
+     i64, reclaim_delay i64, result_hash, bump */
+  const tail = 38 + players.length * 32;
+  const timed = data.length >= tail + 1 + 8 + 8;
+  return {
+    stake, capacity, state, players,
+    reclaimed: timed ? data[tail]! : 0,
+    createdAt: timed ? Number(view.getBigInt64(tail + 1, true)) : 0,
+    reclaimDelay: timed ? Number(view.getBigInt64(tail + 9, true)) : 0,
+  };
 }
 
 /* ---------- legacy transactions */
