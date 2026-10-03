@@ -36,6 +36,10 @@
   var TURNSTILE_RENDER_ATTEMPTS = 80;
   var HOST_SETTINGS_STORAGE_KEY = "halo.web.host-settings.v1";
   var PLAYER_PROFILE_STORAGE_KEY = "halo.web.player-profile.v1";
+  /* the Spartan dialog's mouse look settings, kept in this browser */
+  var MOUSE_LOOK_STORAGE_KEY = "halo.web.mouse-look.v1";
+  var MOUSE_SENSITIVITY_MINIMUM = 0.1;
+  var MOUSE_SENSITIVITY_MAXIMUM = 4;
   var PLAYER_NAME_MAXIMUM_LENGTH = 11;
   var LAST_MAP_INDEX = 12;
   var LAST_MODE_INDEX = 5;
@@ -738,6 +742,84 @@
     if (!fn.apply(null, args)) {
       throw new Error("Halo could not apply your player customization.");
     }
+  }
+
+  /* ---------- mouse look: the Spartan dialog's sensitivity slider and
+     invert-Y switch. Saved in this browser, handed to the game thread
+     (platform_web_set_mouse_look, atomics it reads on the next mouse poll)
+     when the runtime comes up and on every change, so a change is felt
+     mid-match. */
+  function normalizeMouseLook(saved) {
+    var settings = { sensitivity: 1, invertY: false };
+    if (saved && typeof saved === "object") {
+      var sensitivity = Number(saved.sensitivity);
+      if (Number.isFinite(sensitivity)) {
+        settings.sensitivity = Math.min(MOUSE_SENSITIVITY_MAXIMUM,
+          Math.max(MOUSE_SENSITIVITY_MINIMUM, Math.round(sensitivity * 100) / 100));
+      }
+      settings.invertY = saved.invertY === true;
+    }
+    return settings;
+  }
+
+  function mouseLookSettings() {
+    if (session.mouseLook) return session.mouseLook;
+    var saved = null;
+    try { saved = JSON.parse(global.localStorage.getItem(MOUSE_LOOK_STORAGE_KEY)); } catch (error) { saved = null; }
+    session.mouseLook = normalizeMouseLook(saved);
+    return session.mouseLook;
+  }
+
+  function saveMouseLookSettings(settings) {
+    session.mouseLook = normalizeMouseLook(settings);
+    try {
+      global.localStorage.setItem(MOUSE_LOOK_STORAGE_KEY, JSON.stringify(session.mouseLook));
+    } catch (error) {
+      /* A blocked store keeps the setting for this load only. */
+    }
+    applyMouseLookSettings();
+    renderMouseLookSettings();
+  }
+
+  /* hands the game the settings; nothing to do until the runtime is up,
+     and runtimeReady calls it then */
+  function applyMouseLookSettings() {
+    var fn = global.Module && global.Module._platform_web_set_mouse_look;
+    if (typeof fn !== "function") return;
+    var settings = mouseLookSettings();
+    try { fn(settings.sensitivity, settings.invertY ? 1 : 0); } catch (error) { /* older build */ }
+  }
+
+  function renderMouseLookSettings() {
+    var settings = mouseLookSettings();
+    var slider = byId("lobby-mouse-sensitivity");
+    var readout = byId("lobby-mouse-sensitivity-value");
+    var invert = byId("lobby-invert-y");
+    if (slider) slider.value = String(settings.sensitivity);
+    if (readout) readout.textContent = settings.sensitivity.toFixed(2) + "\u00d7";
+    if (invert) invert.checked = settings.invertY;
+  }
+
+  function installMouseLook() {
+    var slider = byId("lobby-mouse-sensitivity");
+    var invert = byId("lobby-invert-y");
+    if (slider) {
+      slider.addEventListener("input", function(event) {
+        saveMouseLookSettings({
+          sensitivity: Number(event.target.value),
+          invertY: mouseLookSettings().invertY,
+        });
+      });
+    }
+    if (invert) {
+      invert.addEventListener("change", function(event) {
+        saveMouseLookSettings({
+          sensitivity: mouseLookSettings().sensitivity,
+          invertY: !!event.target.checked,
+        });
+      });
+    }
+    renderMouseLookSettings();
   }
 
   function setWizardStep(step) {
@@ -5231,6 +5313,7 @@
     lobbyElement("lobby-spartan-toggle").addEventListener("click", function() {
       lobbyElement("lobby-name").value = currentProfile().name;
       renderLobbyColors();
+      renderMouseLookSettings();
       spartanDialog.showModal();
     });
     lobbyElement("spartan-dialog-close").addEventListener("click", closeSpartan);
@@ -5430,6 +5513,7 @@
     renderRoster();
     setBusy(false);
     installLobby();
+    installMouseLook();
     session.pendingInvite = takeInviteFromLocation();
     if (session.pendingInvite) {
       showDialog();
@@ -5440,6 +5524,7 @@
   global.HaloOnline = Object.freeze({
     runtimeReady: function() {
       session.runtimeReady = true;
+      applyMouseLookSettings();
       setBusy(false);
       try {
         transport();
