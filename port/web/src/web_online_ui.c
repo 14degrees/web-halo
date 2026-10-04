@@ -67,6 +67,13 @@ long network_lobby_host_kill_sequence(void);
 void const *network_lobby_host_kills(void);
 void network_lobby_capture_result(void);
 #ifdef HALO_WEB
+/* the netcode's counters (port/linux/game/network_*.c) and the game clock,
+for the page's developer panel */
+void network_distributed_statistics(long *sent, long *received, long *corrections);
+void network_distributed_item_statistics(long *creates, long *deletes, long *failures, long *removed);
+void network_damage_statistics(long *sent_reports, long *dealt_reports, long *rejected_reports, long *replayed_events);
+unsigned char game_time_initialized(void);
+long game_time_get(void);
 void network_lobby_preview(float up, float back, float pitch, float yaw);
 long network_lobby_background_state(void);
 unsigned char network_lobby_background_active(void);
@@ -1068,6 +1075,43 @@ EMSCRIPTEN_KEEPALIVE int platform_web_background_state(void)
 {
 	return atomic_load_explicit(&web_background_state, memory_order_acquire);
 }
+
+/* The netcode's counters and the game clock, published once a frame for the
+page's developer panel (game thread writes, page reads; relaxed, as each
+value stands alone and a sample a frame old is fine). */
+static atomic_int web_net_statistics[_web_net_statistic_count];
+
+static void publish_net_statistics(void)
+{
+	long values[_web_net_statistic_count];
+	int index;
+
+	values[_web_net_statistic_game_time] = game_time_initialized() ? game_time_get() : -1;
+	network_distributed_statistics(
+		&values[_web_net_statistic_distributed_sent],
+		&values[_web_net_statistic_distributed_received],
+		&values[_web_net_statistic_distributed_corrections]);
+	network_distributed_item_statistics(
+		&values[_web_net_statistic_item_creates],
+		&values[_web_net_statistic_item_deletes],
+		&values[_web_net_statistic_item_failures],
+		&values[_web_net_statistic_item_removed]);
+	network_damage_statistics(
+		&values[_web_net_statistic_damage_sent],
+		&values[_web_net_statistic_damage_dealt],
+		&values[_web_net_statistic_damage_rejected],
+		&values[_web_net_statistic_damage_replayed]);
+	for (index = 0; index < _web_net_statistic_count; index++)
+		atomic_store_explicit(&web_net_statistics[index], (int)values[index], memory_order_relaxed);
+}
+
+/* (the page) one of enum web_net_statistic, else 0 */
+EMSCRIPTEN_KEEPALIVE int platform_web_net_statistic(int index)
+{
+	if (index < 0 || index >= _web_net_statistic_count)
+		return 0;
+	return atomic_load_explicit(&web_net_statistics[index], memory_order_relaxed);
+}
 static float web_preview_settings[4];
 
 EMSCRIPTEN_KEEPALIVE void platform_web_preview(float up, float back, float pitch, float yaw)
@@ -1104,6 +1148,7 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 		network_lobby_broadcast_update(seconds);
 		atomic_store_explicit(&web_background_state, (int)network_lobby_background_state(), memory_order_release);
 	}
+	publish_net_statistics();
 #endif
 	int request = atomic_exchange_explicit(
 		&web_online_requested_request,

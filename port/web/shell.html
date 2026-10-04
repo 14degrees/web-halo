@@ -124,9 +124,9 @@
       inset: clamp(.75rem, 3vw, 2rem);
       z-index: 8;
       display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr) auto;
-      width: min(50rem, calc(100% - 1.5rem));
-      max-height: min(36rem, calc(100% - 1.5rem));
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      width: min(66rem, calc(100% - 1.5rem));
+      max-height: min(46rem, calc(100% - 1.5rem));
       margin: auto;
       padding: 1rem;
       border: 1px solid rgba(151, 189, 169, .28);
@@ -169,6 +169,20 @@
     }
     #diagnostics:empty::before { content: "No runtime messages."; color: #718078; }
     .diagnostics-shortcut { margin: .65rem 0 0; color: #64736b; font-size: .68rem; text-align: right; }
+    /* the developer network panel: per-peer rows and the netcode's counters */
+    .diagnostics-network { display: grid; gap: .5rem; min-height: 0; max-height: 18rem; margin: 0 0 .85rem; overflow: auto; }
+    .diagnostics-network-heading { display: flex; align-items: baseline; gap: .6rem; }
+    .diagnostics-network-heading span { color: #82958b; font-size: .67rem; letter-spacing: .08em; text-transform: uppercase; }
+    .diagnostics-network-heading output { color: #bde0cd; font: .7rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .net-peers { width: 100%; border-collapse: collapse; color: #bde0cd; font: .66rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; }
+    .net-peers th { padding: .15rem .4rem; color: #82958b; font-size: .58rem; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+    .net-peers td { padding: .2rem .4rem; border-top: 1px solid rgba(151, 189, 169, .12); vertical-align: top; white-space: pre; }
+    .net-peers td.net-spark { color: #81b796; letter-spacing: -.08em; }
+    .net-peers tr[data-path="relay"] td.net-path { color: #ffd28a; }
+    .net-peers tr[data-state="failed"] td, .net-peers tr[data-state="disconnected"] td { color: #8c9a93; }
+    .net-peers tbody:empty::after { content: "No peers."; display: block; padding: .2rem .4rem; color: #718078; }
+    .net-game { margin: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .net-game output { white-space: normal; }
     progress { width: 100%; height: .4rem; margin-top: .8rem; accent-color: #81b796; }
     footer {
       position: relative;
@@ -2063,6 +2077,7 @@
       .mode-choice-card { grid-template-columns: 2.7rem minmax(0, 1fr); }
       .mode-choice-card img { width: 2.35rem; height: 2.35rem; }
       .diagnostics-stats { grid-template-columns: 1fr; }
+      .net-game { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       #player-sidebar { width: min(16rem, calc(100% - 1.5rem)); }
       #player-sidebar[data-collapsed="true"] #player-list,
       #player-sidebar[data-collapsed="true"] #player-empty { display: none; }
@@ -2229,6 +2244,39 @@
           <output id="memory-stats">Measuring…</output>
         </div>
       </div>
+      <section id="diagnostics-network" class="diagnostics-network" aria-label="Network and game counters">
+        <div class="diagnostics-network-heading">
+          <span>Network</span>
+          <output id="net-summary">Offline</output>
+        </div>
+        <table id="net-peers" class="net-peers">
+          <thead>
+            <tr>
+              <th>Peer</th><th>Path</th><th>RTT</th><th>Min / avg / max</th><th>Jitter</th>
+              <th>RTT, last 60 s</th><th>In rel / unrel</th><th>Out rel / unrel</th><th>Loss</th>
+            </tr>
+          </thead>
+          <tbody id="net-peer-rows"></tbody>
+        </table>
+        <div class="diagnostics-stats net-game">
+          <div class="diagnostic-stat">
+            <span>Game clock</span>
+            <output id="net-ticks">No game running</output>
+          </div>
+          <div class="diagnostic-stat">
+            <span>Distributed</span>
+            <output id="net-distributed">—</output>
+          </div>
+          <div class="diagnostic-stat">
+            <span>Items</span>
+            <output id="net-items">—</output>
+          </div>
+          <div class="diagnostic-stat">
+            <span>Damage</span>
+            <output id="net-damage">—</output>
+          </div>
+        </div>
+      </section>
       <pre id="diagnostics" aria-live="polite"></pre>
       <p class="diagnostics-shortcut">⌘/Ctrl + Shift + L</p>
     </section>
@@ -3257,6 +3305,311 @@
       memoryElement.textContent = values.length ? values.join(" · ") : "Unavailable in this browser";
     }
 
+    /* ---- The developer network panel (Ctrl+Shift+L).
+       Sampled once a second, and only while the overlay is open and the page
+       is visible: the transport's per-peer counters (HaloWebTransport
+       .listPeers), each connection's selected ICE pair (RTCPeerConnection
+       .getStats) and the netcode's counters (platform_web_net_statistic). */
+    const NET_SAMPLE_INTERVAL = 1000;
+    const NET_HISTORY = 60;
+    const GAME_TICKS_PER_SECOND = 30;
+    /* enum web_net_statistic (port/web/src/web_online_ui.h), in order */
+    const NET_STATISTIC = Object.freeze({
+      gameTime: 0,
+      distributedSent: 1, distributedReceived: 2, distributedCorrections: 3,
+      itemCreates: 4, itemDeletes: 5, itemFailures: 6, itemRemoved: 7,
+      damageSent: 8, damageDealt: 9, damageRejected: 10, damageReplayed: 11,
+    });
+    const netSummaryElement = document.getElementById("net-summary");
+    const netPeerRows = document.getElementById("net-peer-rows");
+    const netTicksElement = document.getElementById("net-ticks");
+    const netDistributedElement = document.getElementById("net-distributed");
+    const netItemsElement = document.getElementById("net-items");
+    const netDamageElement = document.getElementById("net-damage");
+    const netPeers = new Map();
+    /* the game clock over the last ten samples, for its tick rate; empty
+       outside a game */
+    const netGameHistory = [];
+    let netGamePrevious = null;
+    let netSampling = false;
+    let netSampleTimer = 0;
+    let netSampleInFlight = false;
+
+    /* The selected ICE candidate pair of an RTCStatsReport: the path, its
+       round trip and its connectivity-check counts; null before one is
+       chosen. Chrome names the pair on the transport; Firefox flags it. */
+    function summarizeCandidatePair(reports) {
+      let selected = null;
+      reports.forEach(report => {
+        if (report.type === "transport" && report.selectedCandidatePairId) {
+          selected = reports.get(report.selectedCandidatePairId) || selected;
+        }
+      });
+      if (!selected) {
+        reports.forEach(report => {
+          if (report.type === "candidate-pair" &&
+              (report.selected || (report.nominated && report.state === "succeeded"))) {
+            selected = report;
+          }
+        });
+      }
+      if (!selected) return null;
+      const local = reports.get(selected.localCandidateId) || null;
+      const remote = reports.get(selected.remoteCandidateId) || null;
+      const relay = (local && local.candidateType === "relay") ||
+        (remote && remote.candidateType === "relay");
+      const count = value => (Number.isFinite(value) ? value : null);
+      return {
+        path: relay ? "relay" : "direct",
+        protocol: (local && (local.relayProtocol || local.protocol)) ||
+          (remote && remote.protocol) || null,
+        localType: local ? local.candidateType || null : null,
+        remoteType: remote ? remote.candidateType || null : null,
+        rtt: Number.isFinite(selected.currentRoundTripTime) ? selected.currentRoundTripTime * 1000 : null,
+        averageRtt: Number.isFinite(selected.totalRoundTripTime) && selected.responsesReceived > 0 ?
+          selected.totalRoundTripTime * 1000 / selected.responsesReceived : null,
+        requestsSent: count(selected.requestsSent),
+        responsesReceived: count(selected.responsesReceived),
+        bytesSent: count(selected.bytesSent),
+        bytesReceived: count(selected.bytesReceived),
+        availableOutgoingBitrate: count(selected.availableOutgoingBitrate),
+      };
+    }
+
+    /* A row of block characters scaled between the samples' lowest and
+       highest; gaps (null) are skipped. */
+    function sparkline(values, width = NET_HISTORY) {
+      const blocks = "▁▂▃▄▅▆▇█";
+      const samples = values.slice(-width).filter(value => Number.isFinite(value));
+      if (!samples.length) return "";
+      const low = Math.min(...samples);
+      const span = Math.max(...samples) - low;
+      return samples.map(value => blocks[span > 0 ?
+        Math.min(blocks.length - 1, Math.floor((value - low) / span * blocks.length)) : 0]).join("");
+    }
+
+    /* The mean change between consecutive samples, as RFC 3550's jitter
+       before smoothing; null with fewer than two. */
+    function jitterOf(values) {
+      let total = 0;
+      let count = 0;
+      for (let index = 1; index < values.length; index++) {
+        if (!Number.isFinite(values[index]) || !Number.isFinite(values[index - 1])) continue;
+        total += Math.abs(values[index] - values[index - 1]);
+        count++;
+      }
+      return count ? total / count : null;
+    }
+
+    function formatRate(bytesPerSecond) {
+      if (!Number.isFinite(bytesPerSecond) || bytesPerSecond < 0) return "—";
+      if (bytesPerSecond < 1000) return `${Math.round(bytesPerSecond)} B/s`;
+      if (bytesPerSecond < 1e6) return `${(bytesPerSecond / 1000).toFixed(1)} kB/s`;
+      return `${(bytesPerSecond / 1e6).toFixed(2)} MB/s`;
+    }
+
+    function formatMilliseconds(value) {
+      if (!Number.isFinite(value)) return "—";
+      return `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`;
+    }
+
+    function formatCount(value) {
+      return Number.isFinite(value) ? value.toLocaleString("en-US") : "—";
+    }
+
+    function createNetPeerRow(peerId) {
+      const row = document.createElement("tr");
+      row.dataset.peerId = peerId;
+      const cells = {};
+      ["peer", "path", "rtt", "range", "jitter", "spark", "in", "out", "loss"].forEach(name => {
+        const cell = document.createElement("td");
+        cell.className = `net-${name}`;
+        cells[name] = cell;
+        row.appendChild(cell);
+      });
+      netPeerRows.appendChild(row);
+      return { row, cells, rtt: [], probes: [], previous: null };
+    }
+
+    function updateNetPeerRow(entry, peer, pair, who, now) {
+      const { row, cells } = entry;
+      const name = who && who.name ? who.name : peer.peerId.slice(0, 10);
+      const role = who && who.role ? (who.spectator ? "spectator" : who.role) : "";
+      cells.peer.textContent = `${name}${role ? ` · ${role}` : ""}\n${peer.state || "new"} · ${peer.address}`;
+      cells.peer.title = peer.peerId;
+      row.dataset.state = peer.state || "new";
+      row.dataset.path = pair ? pair.path : "unknown";
+      if (pair) {
+        const protocol = pair.protocol ? ` ${pair.protocol}` : "";
+        cells.path.textContent = `${pair.path}${protocol}\n${pair.localType || "?"} → ${pair.remoteType || "?"}`;
+      } else {
+        cells.path.textContent = "pending";
+      }
+
+      entry.rtt.push(pair ? pair.rtt : null);
+      if (entry.rtt.length > NET_HISTORY) entry.rtt.splice(0, entry.rtt.length - NET_HISTORY);
+      const known = entry.rtt.filter(value => Number.isFinite(value));
+      cells.rtt.textContent = formatMilliseconds(pair ? pair.rtt : null);
+      cells.range.textContent = known.length ?
+        `${formatMilliseconds(Math.min(...known))} / ${formatMilliseconds(
+          known.reduce((sum, value) => sum + value, 0) / known.length)} / ${formatMilliseconds(Math.max(...known))}` :
+        "—";
+      cells.jitter.textContent = formatMilliseconds(jitterOf(entry.rtt));
+      cells.spark.textContent = sparkline(entry.rtt);
+      cells.spark.title = "Round trip, one sample a second, scaled between its lowest and highest";
+
+      /* connectivity checks (STUN) answered over the last minute: a request
+         without an answer is the one loss the browser reports on a data channel */
+      entry.probes.push(pair ? { requests: pair.requestsSent, responses: pair.responsesReceived } : null);
+      if (entry.probes.length > NET_HISTORY) entry.probes.splice(0, entry.probes.length - NET_HISTORY);
+      let probeLoss = null;
+      const first = entry.probes.find(probe => probe && Number.isFinite(probe.requests));
+      const last = entry.probes[entry.probes.length - 1];
+      if (first && last && first !== last && Number.isFinite(last.requests)) {
+        const requests = last.requests - first.requests;
+        const responses = (last.responses || 0) - (first.responses || 0);
+        if (requests > 0) probeLoss = Math.max(0, requests - responses) / requests * 100;
+      }
+
+      const previous = entry.previous;
+      const elapsed = previous ? (now - previous.time) / 1000 : 0;
+      const rate = (current, before) => (elapsed > 0 ? (current - before) / elapsed : null);
+      const channels = ["reliable", "unreliable"];
+      const inRates = channels.map((channel, index) => previous ?
+        rate(peer[channel].bytesIn, previous.bytesIn[index]) : null);
+      const outRates = channels.map((channel, index) => previous ?
+        rate(peer[channel].bytesOut, previous.bytesOut[index]) : null);
+      cells.in.textContent = `${formatRate(inRates[0])} / ${formatRate(inRates[1])}\n${
+        formatBytes(peer.reliable.bytesIn)} / ${formatBytes(peer.unreliable.bytesIn)}`;
+      cells.in.title = `Frames in: ${formatCount(peer.reliable.packetsIn)} reliable, ${
+        formatCount(peer.unreliable.packetsIn)} unreliable`;
+      const queued = peer.reliable.bufferedAmount + peer.unreliable.bufferedAmount;
+      cells.out.textContent = `${formatRate(outRates[0])} / ${formatRate(outRates[1])}\n${
+        formatBytes(peer.reliable.bytesOut)} / ${formatBytes(peer.unreliable.bytesOut)}${
+        queued ? ` · ${formatBytes(queued)} queued` : ""}`;
+      cells.out.title = `Frames out: ${formatCount(peer.reliable.packetsOut)} reliable, ${
+        formatCount(peer.unreliable.packetsOut)} unreliable${
+        pair && Number.isFinite(pair.availableOutgoingBitrate) ?
+          `; ${formatRate(pair.availableOutgoingBitrate / 8)} available` : ""}`;
+      const dropRate = previous ? rate(peer.droppedDatagrams, previous.dropped) : null;
+      cells.loss.textContent = `drops ${formatCount(peer.droppedDatagrams)}${
+        Number.isFinite(dropRate) && dropRate > 0 ? ` (${dropRate.toFixed(1)}/s)` : ""} · refused ${
+        formatCount(peer.sendRefusals)}\nprobe loss ${probeLoss === null ? "—" : `${probeLoss.toFixed(1)}%`}`;
+      cells.loss.title = "drops: unreliable frames discarded because the game fell behind; " +
+        "refused: sends declined while a channel was over its high-water mark; " +
+        "probe loss: unanswered connectivity checks in the last minute";
+      entry.previous = {
+        time: now,
+        bytesIn: channels.map(channel => peer[channel].bytesIn),
+        bytesOut: channels.map(channel => peer[channel].bytesOut),
+        dropped: peer.droppedDatagrams,
+      };
+    }
+
+    function sampleGameCounters(now) {
+      const read = typeof Module !== "undefined" &&
+        typeof Module._platform_web_net_statistic === "function" ?
+        Module._platform_web_net_statistic : null;
+      if (!read) {
+        netTicksElement.textContent = "Unavailable";
+        return;
+      }
+      const sample = { time: now };
+      Object.entries(NET_STATISTIC).forEach(([key, index]) => { sample[key] = read(index); });
+      /* the tick rate over the last ten seconds, restarted when a game does */
+      if (sample.gameTime < 0 ||
+          (netGameHistory.length && sample.gameTime < netGameHistory[netGameHistory.length - 1].gameTime)) {
+        netGameHistory.length = 0;
+      }
+      if (sample.gameTime >= 0) {
+        netGameHistory.push(sample);
+        if (netGameHistory.length > 10) netGameHistory.splice(0, netGameHistory.length - 10);
+      }
+      const oldest = netGameHistory[0];
+      const elapsed = oldest ? (sample.time - oldest.time) / 1000 : 0;
+      if (sample.gameTime < 0) {
+        netTicksElement.textContent = "No game running";
+      } else if (elapsed <= 0) {
+        netTicksElement.textContent = `tick ${formatCount(sample.gameTime)}`;
+      } else {
+        const ticksPerSecond = (sample.gameTime - oldest.gameTime) / elapsed;
+        const drift = (ticksPerSecond / GAME_TICKS_PER_SECOND - 1) * 100;
+        netTicksElement.textContent = `tick ${formatCount(sample.gameTime)} · ${
+          ticksPerSecond.toFixed(1)} ticks/s · drift ${drift >= 0 ? "+" : ""}${drift.toFixed(1)}% over ${
+          Math.round(elapsed)} s`;
+      }
+      const previous = netGamePrevious;
+      netGamePrevious = sample;
+      const perSecond = key => {
+        if (!previous) return "";
+        const seconds = (sample.time - previous.time) / 1000;
+        return seconds > 0 ? ` (${((sample[key] - previous[key]) / seconds).toFixed(1)}/s)` : "";
+      };
+      netDistributedElement.textContent = `sent ${formatCount(sample.distributedSent)}${perSecond("distributedSent")} · received ${
+        formatCount(sample.distributedReceived)}${perSecond("distributedReceived")} · corrections ${
+        formatCount(sample.distributedCorrections)}${perSecond("distributedCorrections")}`;
+      netItemsElement.textContent = `created ${formatCount(sample.itemCreates)} · deleted ${
+        formatCount(sample.itemDeletes)} · failed ${formatCount(sample.itemFailures)} · own removed ${
+        formatCount(sample.itemRemoved)}`;
+      netDamageElement.textContent = `reports sent ${formatCount(sample.damageSent)} · dealt ${
+        formatCount(sample.damageDealt)} · rejected ${formatCount(sample.damageRejected)} · replayed ${
+        formatCount(sample.damageReplayed)}`;
+    }
+
+    async function sampleNetwork() {
+      if (!netSampling || netSampleInFlight) return;
+      netSampleInFlight = true;
+      try {
+        const now = performance.now();
+        sampleGameCounters(now);
+        const transport = window.HaloWebTransport;
+        const peers = transport && typeof transport.listPeers === "function" ? transport.listPeers() : [];
+        const online = window.HaloOnline && typeof window.HaloOnline.diagnostics === "function" ?
+          window.HaloOnline.diagnostics() : null;
+        const who = new Map((online ? online.peers : []).map(peer => [peer.peerId, peer]));
+        const pairs = await Promise.all(peers.map(peer => transport.getStats(peer.peerId)
+          .then(summarizeCandidatePair, () => null)));
+        if (!netSampling) return;
+        const seen = new Set();
+        peers.forEach((peer, index) => {
+          seen.add(peer.peerId);
+          let entry = netPeers.get(peer.peerId);
+          if (!entry) {
+            entry = createNetPeerRow(peer.peerId);
+            netPeers.set(peer.peerId, entry);
+          }
+          updateNetPeerRow(entry, peer, pairs[index], who.get(peer.peerId) || null, now);
+        });
+        netPeers.forEach((entry, peerId) => {
+          if (seen.has(peerId)) return;
+          entry.row.remove();
+          netPeers.delete(peerId);
+        });
+        const connected = peers.filter(peer => peer.state === "connected").length;
+        netSummaryElement.textContent = online && online.active ?
+          `${online.role || "joining"}${online.publicLobby ? " · public" : ""} · ${connected}/${peers.length} connected${
+            online.connectionPath ? ` · ${online.connectionPath}` : ""}` :
+          (peers.length ? `${connected}/${peers.length} connected` : "Offline");
+      } finally {
+        netSampleInFlight = false;
+      }
+    }
+
+    function setNetworkSampling(on) {
+      on = !!on;
+      if (on === netSampling) return;
+      netSampling = on;
+      window.clearInterval(netSampleTimer);
+      netSampleTimer = 0;
+      if (!on) return;
+      /* rates restart: a gap would average over it */
+      netPeers.forEach(entry => { entry.previous = null; });
+      netGameHistory.length = 0;
+      netGamePrevious = null;
+      sampleNetwork();
+      netSampleTimer = window.setInterval(sampleNetwork, NET_SAMPLE_INTERVAL);
+    }
+
     function updatePerformance() {
       const functions = [
         Module._platform_web_profile_loops,
@@ -3324,6 +3677,7 @@
       performanceElement.textContent = document.hidden ? "Paused" : "Measuring…";
       if (document.hidden) flushPerformanceTelemetry();
       if (!document.hidden) updatePerformance();
+      setNetworkSampling(!diagnosticsOverlay.hidden && !document.hidden);
     });
     window.addEventListener("pagehide", flushPerformanceTelemetry);
     window.addEventListener("pagehide", () => finishCampaignLoad("abandoned"));
@@ -3430,6 +3784,7 @@
 
     function setDiagnosticsOpen(open) {
       diagnosticsOverlay.hidden = !open;
+      setNetworkSampling(open && !document.hidden);
       if (open) {
         updatePerformance();
         updateMemory();

@@ -5577,6 +5577,38 @@
     hostDedicated: hostDedicated,
     dedicatedStatus: dedicatedStatus,
     leave: function() { return leave(true); },
+    /* The developer panel (shell.html, Ctrl+Shift+L): this session and who
+       each transport peer is. Transport peer IDs are signaling peer IDs,
+       except a refreshed browser's, which keeps its connected predecessor's
+       (session.peerAliases). */
+    diagnostics: function() {
+      var peers = [];
+      session.peerIdentifiers.forEach(function(identifier, peerId) {
+        var entry = session.roster.get(peerId) || null;
+        if (!entry) {
+          session.peerAliases.forEach(function(transportPeerId, signalingPeerId) {
+            if (!entry && transportPeerId === peerId) entry = session.roster.get(signalingPeerId) || null;
+          });
+        }
+        peers.push({
+          peerId: peerId,
+          identifier: identifier,
+          name: entry ? (entry.profile ? entry.profile.name : playerFallbackName(entry)) : null,
+          role: entry ? entry.role : null,
+          spectator: !!(entry && entry.spectator),
+          state: session.peerStates.get(peerId) || null,
+        });
+      });
+      return {
+        active: session.active,
+        role: session.role,
+        selfPeerId: session.selfPeerId,
+        publicLobby: session.publicLobby,
+        connectionPath: session.connectionPath,
+        matchState: session.matchState,
+        peers: peers,
+      };
+    },
   });
 
   if (document.readyState === "loading") {
