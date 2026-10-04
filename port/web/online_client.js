@@ -2718,7 +2718,7 @@
     var wagerLine = lobbyElement("playlist-detail-wager");
     wagerLine.hidden = !focused.wager;
     wagerLine.textContent = !focused.wager ? "" : "\u25ce " + formatSol(focused.wager.stake) + " SOL buy-in · " +
-      (focused.wager.mode === "team" ? "the winning team takes the pot" :
+      (focused.wager.mode === "team" ? "winners get their stake back and split the losers' stakes by kills" :
         formatSol(focused.wager.perKill) + " SOL a kill") + " · 5% fee on winnings";
     lobbyElement("playlist-detail-counts").textContent = playlistCounts(focused);
     var maps = lobbyElement("playlist-detail-maps");
@@ -4226,11 +4226,23 @@
     return (lamports / LAMPORTS_PER_SOL).toFixed(3);
   }
 
+  /* small amounts (a Team Stakes kill, 0.0014): four places */
+  function formatSolFine(lamports) {
+    return (lamports / LAMPORTS_PER_SOL).toFixed(4);
+  }
+
   /* "+0.019" / "\u22120.010" / "0.000" */
   function formatSigned(lamports) {
     if (lamports > 0) return "+" + formatSol(lamports);
     if (lamports < 0) return "\u2212" + formatSol(-lamports);
     return formatSol(0);
+  }
+
+  /* a Team Stakes player's projected profit if their team wins now, e.g.
+     "+0.028" (their take less their stake); "" when unknown */
+  function projectedLabel(view, player) {
+    if (!view || !player || typeof player.projected !== "number") return "";
+    return formatSigned(player.projected - view.stake);
   }
 
   function walletHeaders() {
@@ -4608,10 +4620,12 @@
       var mine = inMatch && lobby.wager && !lobby.wager.done ? myWagerLine() : null;
       hud.hidden = !mine;
       if (mine && lobby.wager.mode === "team") {
-        /* pot against pot: nothing moves until the winner is known */
-        setText("hud-balance-amount", formatSol(lobby.wager.stake) + " in");
+        /* Team Stakes: nothing moves until the result; the chip projects
+           this player's profit if their team wins now */
+        var view = lobby.wager.view;
+        setText("hud-balance-amount", projectedLabel(view, mine) || formatSol(lobby.wager.stake) + " in");
         if (hud.dataset.tone !== "even") hud.dataset.tone = "even";
-        setText("hud-balance-note", "team pot " + formatSol(lobby.wager.view.pot) + " · winners take it");
+        setText("hud-balance-note", "if you win · " + formatSolFine(view.perKill) + " a kill · pot " + formatSol(view.pot));
       } else if (mine) {
         setText("hud-balance-amount", formatSigned(mine.net));
         var tone = mine.spent ? "spent" : mine.net > 0 ? "up" : mine.net < 0 ? "down" : "even";
@@ -4673,7 +4687,9 @@
     var base = wasmNumber("platform_web_wager_staging", 0);
     if (typeof commit !== "function" || !base || typeof HEAPU8 === "undefined") return;
     var view = session.active && lobby.wager && !lobby.wager.done ? lobby.wager.view : null;
-    var key = view ? JSON.stringify(view.players.map(function(player) { return [player.name, player.balance]; })) : "";
+    var key = view ? JSON.stringify(view.players.map(function(player) {
+      return [player.name, player.balance, player.projected];
+    })) : "";
     if (lobby.wagerTableKey === key) return;
     lobby.wagerTableKey = key;
     if (!view) {
@@ -4683,13 +4699,14 @@
     var players = view.players.slice(0, WAGER_TABLE_ROWS);
     players.forEach(function(player, index) {
       writeAscii(base, index * 24, player.name, 12);
-      /* a team match: each player's stake in the pot; a bounty match: their
-         running total */
-      writeAscii(base, index * 24 + 12, view.mode === "team" ? formatSol(view.stake) :
+      /* a team match: what each player takes home if their team wins now;
+         a bounty match: their running total */
+      writeAscii(base, index * 24 + 12, view.mode === "team" ? projectedLabel(view, player) || formatSol(view.stake) :
         player.balance <= 0 ? "spent" : formatSigned(player.net), 12);
     });
     /* the pot, under the SOL column (Halo clips each column at the next) */
-    writeAscii(base, WAGER_TABLE_ROWS * 24, formatSol(view.pot), 48);
+    writeAscii(base, WAGER_TABLE_ROWS * 24, view.mode === "team" ?
+      "pot " + formatSol(view.pot) + ", " + formatSolFine(view.perKill) + "/kill" : formatSol(view.pot), 48);
     commit(players.length);
   }
 
@@ -4726,7 +4743,8 @@
       .then(function(result) {
         applyWagerView(result.wager);
         var state = result.wager && result.wager.state;
-        if (state === "settled" || state === "void" || state === "failed") {
+        /* held: an admin decides, hours from now; the card says so */
+        if (state === "settled" || state === "void" || state === "failed" || state === "held") {
           wager.done = true;
           lobby.wagerResult = { label: wager.label, view: result.wager, line: myWagerLine() };
           refreshWallet();
@@ -4767,7 +4785,16 @@
       box.dataset.tone = won > 0 ? "up" : won < 0 ? "down" : "even";
       var teamLine = view.mode === "team" && view.winningTeam !== null ?
         (view.winningTeam === 0 ? "Red" : "Blue") + " team won · " : "";
-      detail.append(result.label + " · " + teamLine + line.kills + " kills, " + line.deaths + " deaths · ");
+      /* a Team Stakes winner: the parts of their take */
+      var parts = view.mode === "team" && won > 0 && typeof line.killShare === "number" ?
+        " · " + formatSol(line.killShare) + " for kills + " + formatSol(line.evenShare) + " team share, stake back" : "";
+      detail.append(result.label + " · " + teamLine + line.kills + " kills, " + line.deaths + " deaths" + parts + " · ");
+    } else if (view.state === "held") {
+      title.textContent = "Under review";
+      box.dataset.tone = "even";
+      var deadline = view.hold && view.hold.deadline ? new Date(view.hold.deadline) : null;
+      detail.append(result.label + ": a whole team dropped out, so the stakes stay locked until an admin decides" +
+        (deadline ? ", by " + deadline.toLocaleString() : "") + ".");
     } else if (view.state === "void") {
       title.textContent = "Stake returned";
       box.dataset.tone = "even";
@@ -4833,9 +4860,16 @@
 
   /* the bounty a kill or death pops, or null outside a wagered match */
   function bountyLamports() {
-    /* a team match's money follows only its result */
-    if (!session.active || !lobby.wager || lobby.wager.done || lobby.wager.mode === "team") return null;
+    if (!session.active || !lobby.wager || lobby.wager.done) return null;
+    /* a team match: what a kill is projected to pay if the team wins */
+    if (lobby.wager.mode === "team") return (lobby.wager.view && lobby.wager.view.perKill) || null;
     return lobby.wager.perKill || null;
+  }
+
+  /* a kill's pop: a Team Stakes kill is small and shows four places */
+  function popLabel(lamports) {
+    return lobby.wager && lobby.wager.mode === "team" ?
+      (lamports < 0 ? "−" : "+") + formatSolFine(Math.abs(lamports)) : formatSigned(lamports);
   }
   var killPops = { last: -1, lastDeath: -1, active: [] };
 
@@ -4903,7 +4937,7 @@
     if (sequence !== killPops.last && container && typeof document.createElement === "function") {
       killPops.last = sequence;
       if (bounty !== null) {
-        var element = makePop("kill-pop", formatSigned(bounty));
+        var element = makePop("kill-pop", popLabel(bounty));
         container.appendChild(element);
         killPops.active.push({ element: element, sequence: sequence, born: now });
       }
@@ -4913,8 +4947,8 @@
     if (deaths !== killPops.lastDeath && container && typeof document.createElement === "function") {
       killPops.lastDeath = deaths;
       var mine = myWagerLine();
-      /* nothing left to lose: no pop */
-      if (bounty !== null && !(mine && mine.balance <= 0)) {
+      /* nothing left to lose: no pop (a Team Stakes death costs nothing) */
+      if (bounty !== null && lobby.wager.mode !== "team" && !(mine && mine.balance <= 0)) {
         var deathElement = makePop("kill-pop death", formatSigned(-bounty));
         container.appendChild(deathElement);
         killPops.active.push({ element: deathElement, death: true, born: now });
@@ -4976,7 +5010,7 @@
     var money = {};
     if (!view) return money;
     view.players.forEach(function(player) {
-      money[player.name] = view.mode === "team" ? formatSol(view.stake) :
+      money[player.name] = view.mode === "team" ? projectedLabel(view, player) || formatSol(view.stake) :
         player.balance <= 0 ? "spent" : formatSigned(player.net);
     });
     return money;
