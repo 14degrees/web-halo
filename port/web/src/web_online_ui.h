@@ -156,6 +156,33 @@ int platform_web_online_set_minimum_players(int minimum_players);
 /* Called on Halo's game thread once per frame. */
 void web_online_ui_update(int main_menu_loaded, float seconds);
 
+/* The netcode's counters and the game clock for the page's developer panel
+(Ctrl+Shift+L), sampled once a frame on the game thread. The page reads one
+with platform_web_net_statistic(index). Keep in step with the NET_STATISTIC
+table in port/web/shell.html. */
+enum web_net_statistic
+{
+	/* game ticks (30 a second while a game runs), -1 outside a game */
+	_web_net_statistic_game_time = 0,
+	/* network_distributed_statistics: messages sent and received, and
+	corrections (distributed_count_correction) applied */
+	_web_net_statistic_distributed_sent,
+	_web_net_statistic_distributed_received,
+	_web_net_statistic_distributed_corrections,
+	/* network_distributed_item_statistics */
+	_web_net_statistic_item_creates,
+	_web_net_statistic_item_deletes,
+	_web_net_statistic_item_failures,
+	_web_net_statistic_item_removed,
+	/* network_damage_statistics */
+	_web_net_statistic_damage_sent,
+	_web_net_statistic_damage_dealt,
+	_web_net_statistic_damage_rejected,
+	_web_net_statistic_damage_replayed,
+	_web_net_statistic_count,
+};
+int platform_web_net_statistic(int index);
+
 /* A wagered match's money for the scoreboard (the page writes it with
 platform_web_wager_staging and platform_web_wager_commit): a player's label
 by their ASCII name, and the money footer. Both are FALSE outside a wagered

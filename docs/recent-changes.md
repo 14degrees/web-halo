@@ -98,6 +98,13 @@ regular players too (`e837a29`, `eeea0e4`):
   switches weapons (flashlight on T), F melee. Halo's prompts name the keys
   ("Hold E to swap", "Hold TAB for score"), and a controls panel shows for
   10 s the first time you drop in.
+- **Mouse sensitivity and invert Y**, in the Spartan dialog (Customize): a
+  slider (0.1× to 4×) and a switch, saved in the browser and applied the
+  moment they change, even mid-match. *Why:* the game read these from its
+  config once at start-up, so a browser player had no way to set them. The
+  page hands them to the game thread through atomics
+  (`platform_web_set_mouse_look` in `port/web/src/web_online_ui.c`,
+  read by `halo_linux_mouse_look` in `port/linux/src/xinput_sdl.c`).
 
 ## Playlists and servers
 
