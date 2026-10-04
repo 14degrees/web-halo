@@ -38,6 +38,7 @@ drive the controller.
 
 #include <SDL3/SDL.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -79,17 +80,64 @@ static Uint64 wheel_moved_ms = 0;
 static Uint64 wheel_press_until_ms = 0;
 static BOOL wheel_scrolling = FALSE;
 
+/* How the mouse aims. The game thread reads these in halo_linux_mouse_look;
+anything may change them mid-session through halo_linux_mouse_look_configure
+(the browser page's slider does, through web_online_ui.c), so they are
+atomics. Until something sets them they are "unknown" (0 and -1) and the
+first look reads the config. */
+static atomic_int mouse_sensitivity_thousandths = ATOMIC_VAR_INIT(0);
+static atomic_int mouse_invert = ATOMIC_VAR_INIT(-1);
+
+/* changes how the mouse aims from now on: sensitivity multiplies the default
+turn per pixel (1.0; clamped to 0.05-10, anything else means 1.0), invert
+makes moving the mouse forward look down. Any thread may call it. */
+void halo_linux_mouse_look_configure(float sensitivity, int invert)
+{
+	if (!(sensitivity > 0.0f)) /* also NaN */
+		sensitivity = 1.0f;
+	if (sensitivity < 0.05f)
+		sensitivity = 0.05f;
+	if (sensitivity > 10.0f)
+		sensitivity = 10.0f;
+	atomic_store_explicit(&mouse_sensitivity_thousandths,
+		(int)(sensitivity * 1000.0f + 0.5f), memory_order_relaxed);
+	atomic_store_explicit(&mouse_invert, invert ? 1 : 0, memory_order_relaxed);
+}
+
 static float mouse_sensitivity(void)
 {
-	static float sensitivity = -1.0f;
+	int thousandths = atomic_load_explicit(&mouse_sensitivity_thousandths, memory_order_relaxed);
 
-	if (sensitivity < 0.0f)
+	if (thousandths <= 0)
 	{
-		sensitivity = (float)config_real("input.mouse_sensitivity");
-		if (sensitivity <= 0.0f)
-			sensitivity = 1.0f;
+		float configured = (float)config_real("input.mouse_sensitivity");
+		int unknown = 0;
+
+		if (configured <= 0.0f)
+			configured = 1.0f;
+		thousandths = (int)(configured * 1000.0f + 0.5f);
+		if (thousandths <= 0)
+			thousandths = 1;
+		/* a value set meanwhile (unknown then holds it) beats the config's */
+		if (!atomic_compare_exchange_strong(&mouse_sensitivity_thousandths, &unknown, thousandths))
+			thousandths = unknown;
 	}
-	return sensitivity;
+	return (float)thousandths / 1000.0f;
+}
+
+static int mouse_inverted(void)
+{
+	int invert = atomic_load_explicit(&mouse_invert, memory_order_relaxed);
+
+	if (invert < 0)
+	{
+		int unknown = -1;
+
+		invert = config_boolean("input.invert_mouse") ? 1 : 0;
+		if (!atomic_compare_exchange_strong(&mouse_invert, &unknown, invert))
+			invert = unknown;
+	}
+	return invert;
 }
 
 /* radians of yaw and pitch for the mouse motion since the last call; the
@@ -98,15 +146,14 @@ int halo_linux_mouse_look(short gamepad_index, float *yaw, float *pitch)
 {
 	/* radians per pixel of relative motion at sensitivity 1 */
 	const float scale = 0.0022f;
-	static int invert = -1;
 	float x, y;
+	int invert;
 
 	*yaw = 0.0f;
 	*pitch = 0.0f;
 	if (gamepad_index != 0)
 		return FALSE;
-	if (invert < 0)
-		invert = config_boolean("input.invert_mouse");
+	invert = mouse_inverted();
 	pthread_mutex_lock(&mouse_lock);
 	x = mouse_pending_x;
 	y = mouse_pending_y;
