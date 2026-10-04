@@ -27,6 +27,9 @@
   var ROOM_CAPACITY = 128;
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
+  /* a ping's colors, the scoreboard's: green under 80 ms, yellow under 150 */
+  var PING_GOOD_BELOW_MILLISECONDS = 80;
+  var PING_FAIR_BELOW_MILLISECONDS = 150;
   var GAME_POLL_MILLISECONDS = 200;
   /* A host extends its room before the service's six-hour room life ends. */
   var ROOM_RENEW_MILLISECONDS = 50 * 60 * 1000;
@@ -209,6 +212,10 @@
     /* A dedicated host: its credential, rotation and progress through it. */
     dedicated: null,
     matchState: MATCH_STATE.NONE,
+    /* everyone's ping to the host or server, by name (the scoreboard, the
+       lobby): a dedicated server's gateway measures and sends them; a
+       browser host measures its own (tickPeerPings) */
+    pings: null,
   };
 
   function byId(id) {
@@ -891,6 +898,7 @@
     if (elements.playerEmpty) elements.playerEmpty.hidden = players.length !== 0;
     if (elements.playerList && typeof document.createElement === "function") {
       while (elements.playerList.firstChild) elements.playerList.removeChild(elements.playerList.firstChild);
+      network.rows.sidebar = [];
       players.forEach(function(player) {
         var profile = player.profile || {
           name: playerFallbackName(player),
@@ -915,9 +923,11 @@
         row.appendChild(swatch);
         row.appendChild(label);
         row.appendChild(role);
+        row.appendChild(pingSpan("sidebar", player));
         elements.playerList.appendChild(row);
       });
     }
+    updateRowPings("sidebar");
   }
 
   function replaceRoster(players) {
@@ -2298,8 +2308,11 @@
     session.matchInfo = null;
     session.matchState = MATCH_STATE.NONE;
     session.wizardStep = "map";
+    session.pings = null;
+    network.hostRoundTrip = null;
     syncTelemetryContext();
     renderRoster();
+    renderPings();
   }
 
   async function leave(returnToSetup) {
@@ -3737,9 +3750,13 @@
       return player.peerId + (player.leader ? "*" : "") + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
         player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches);
     }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "");
-    if (list.dataset.signature === signature) return;
+    if (list.dataset.signature === signature) {
+      updateRowPings("lobby");
+      return;
+    }
     list.dataset.signature = signature;
     while (list.firstChild) list.removeChild(list.firstChild);
+    network.rows.lobby = [];
     if (!players.length) {
       var empty = document.createElement("li");
       empty.className = "empty";
@@ -3776,11 +3793,14 @@
         row.appendChild(star);
       }
       row.appendChild(role);
+      /* a ping once the room has one (nothing for a party at home) */
+      if (session.active) row.appendChild(pingSpan("lobby", player));
       var matches = typeof player.matches === "number" ? player.matches :
         (self && typeof lobby.matches === "number" ? lobby.matches : null);
       if (matches !== null) row.appendChild(rankElement(matches));
       list.appendChild(row);
     });
+    updateRowPings("lobby");
     for (var slot = 0; slot < slots; slot++) {
       var open = document.createElement("li");
       open.className = "slot" + (searching ? " searching" : "");
@@ -4003,9 +4023,252 @@
     leave(false).then(function() { scheduleRejoin("Could not reach an open server."); });
   }
 
+  /* ---------- ping, outside a match: a round trip to the signaling Worker
+     (GET /v1/ping, which also lists where else to probe: one URL per game
+     region, the gateway's GET /ping) timed in the page, the least of a few
+     samples after one that warms the connection up; in a room, what WebRTC
+     measured to the host or server. The landing and the lobby show it in
+     the scoreboard's colors. Region-aware matchmaking can later send
+     network.results, by target id, with a ticket. */
+  var PING_REFRESH_MILLISECONDS = 20000;
+  var PING_SAMPLES = 3;
+  var PEER_PINGS_MILLISECONDS = 2000;
+  var network = {
+    /* the Worker's list: [{id, label, url}] */
+    targets: [],
+    /* by target id: {label, ms}, or null when it did not answer */
+    results: {},
+    /* the Worker itself: {ms}, or null */
+    signaling: null,
+    busy: false,
+    at: 0,
+    /* a guest's round trip to the host or server, in ms, from WebRTC */
+    hostRoundTrip: null,
+    peersAt: 0,
+    peersBusy: false,
+    /* the rows with a ping cell, by list: [{player, cell}] */
+    rows: { lobby: [], sidebar: [] },
+  };
+
+  function pingTone(ms) {
+    return ms < PING_GOOD_BELOW_MILLISECONDS ? "good" : ms < PING_FAIR_BELOW_MILLISECONDS ? "fair" : "poor";
+  }
+
+  function clock() {
+    return global.performance && typeof global.performance.now === "function" ?
+      global.performance.now() : Date.now();
+  }
+
+  function validProbeUrl(value) {
+    try {
+      var url = new URL(String(value));
+      return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /* the least of `samples` timed GETs of `url` after a warm-up one, in
+     whole ms, or null when it does not answer; `onFirst` reads the warm-up
+     response's text */
+  async function roundTrip(url, samples, onFirst) {
+    var best = null;
+    for (var index = 0; index <= samples; index++) {
+      var started = clock();
+      var text;
+      try {
+        var response = await fetch(url, { method: "GET", cache: "no-store", credentials: "omit", mode: "cors" });
+        if (!response.ok) return null;
+        text = await response.text();
+      } catch (error) {
+        return null;
+      }
+      var elapsed = clock() - started;
+      if (index === 0) {
+        if (onFirst) onFirst(text);
+      } else if (best === null || elapsed < best) {
+        best = elapsed;
+      }
+    }
+    return best === null ? null : Math.max(0, Math.round(best));
+  }
+
+  function refreshPing(now) {
+    if (network.busy || now - network.at < PING_REFRESH_MILLISECONDS || typeof fetch !== "function") return;
+    network.busy = true;
+    network.at = now;
+    (async function() {
+      var targets = null;
+      var signaling = await roundTrip(apiBase() + "/v1/ping", PING_SAMPLES, function(text) {
+        try {
+          var result = JSON.parse(text);
+          if (result && Array.isArray(result.targets)) targets = result.targets;
+        } catch (error) {
+          /* a proxy's page: the targets stay as they were */
+        }
+      });
+      network.signaling = signaling === null ? null : { ms: signaling };
+      if (targets) {
+        network.targets = targets.filter(function(target) {
+          return target && typeof target.id === "string" && typeof target.label === "string" && validProbeUrl(target.url);
+        }).slice(0, 16).map(function(target) {
+          return { id: target.id, label: target.label, url: validProbeUrl(target.url) };
+        });
+      }
+      for (var index = 0; index < network.targets.length; index++) {
+        var target = network.targets[index];
+        var ms = await roundTrip(target.url, PING_SAMPLES);
+        network.results[target.id] = ms === null ? null : { label: target.label, ms: ms };
+      }
+    })().catch(function() {
+      /* the ping is a readout; nothing depends on it */
+    }).then(function() {
+      network.busy = false;
+      renderPings();
+    });
+  }
+
+  /* a peer's round trip from WebRTC's chosen candidate pair, in whole ms, or
+     null before it has one */
+  async function peerRoundTrip(transportPeerId) {
+    var reports = await transport().getStats(transportPeerId);
+    var trip = null;
+    reports.forEach(function(report) {
+      if (report.type === "candidate-pair" &&
+          (report.selected || (report.nominated && report.state === "succeeded")) &&
+          typeof report.currentRoundTripTime === "number") {
+        trip = Math.round(report.currentRoundTripTime * 1000);
+      }
+    });
+    return trip;
+  }
+
+  /* every two seconds in a room: a host measures each player and tells the
+     room, which passes them on by name (as a dedicated server's gateway
+     does, services/game-server/gateway/room.go); a guest measures the host */
+  function tickPeerPings(now) {
+    if (!session.active || !session.transportConnected || network.peersBusy ||
+        now - network.peersAt < PEER_PINGS_MILLISECONDS) return;
+    network.peersAt = now;
+    network.peersBusy = true;
+    var generation = session.socketGeneration;
+    var peers = [];
+    session.peerAliases.forEach(function(transportPeerId, signalingPeerId) {
+      if (session.peerStates.get(transportPeerId) === "connected") {
+        peers.push({ id: signalingPeerId, transport: transportPeerId });
+      }
+    });
+    Promise.all(peers.map(function(peer) {
+      return peerRoundTrip(peer.transport).catch(function() { return null; });
+    })).then(function(trips) {
+      if (generation !== session.socketGeneration || !session.active) return;
+      if (session.role === "host") {
+        var byPeer = {};
+        var byName = {};
+        peers.forEach(function(peer, index) {
+          if (trips[index] === null) return;
+          byPeer[peer.id] = trips[index];
+          var player = session.roster.get(peer.id);
+          if (player && player.profile && player.profile.name) byName[player.profile.name] = trips[index];
+        });
+        session.pings = byName;
+        if (Object.keys(byPeer).length) {
+          try {
+            sendSocket({ v: PROTOCOL_VERSION, type: "pings", pings: byPeer });
+          } catch (error) {
+            /* between room connections: the next measure goes out */
+          }
+        }
+      } else {
+        var trip = trips.filter(function(value) { return value !== null; })[0];
+        network.hostRoundTrip = trip === undefined ? null : trip;
+      }
+      renderPings();
+    }).catch(function() {}).then(function() {
+      network.peersBusy = false;
+    });
+  }
+
+  /* the one ping to show: in a room, a guest's to the host or server;
+     otherwise the nearest game region's, or the lobby service's */
+  function pingSummary() {
+    if (session.active && session.role === "guest" && session.transportConnected && network.hostRoundTrip !== null) {
+      return { ms: network.hostRoundTrip, label: session.room && session.room.dedicated ? "to the server" : "to the host" };
+    }
+    var best = null;
+    network.targets.forEach(function(target) {
+      var result = network.results[target.id];
+      if (result && (best === null || result.ms < best.ms)) best = { ms: result.ms, label: "to " + result.label };
+    });
+    if (best) return best;
+    if (network.signaling) return { ms: network.signaling.ms, label: "to the lobby service" };
+    return null;
+  }
+
+  /* a player's ping in a room: a guest's own from WebRTC, everyone else's
+     as the host measured them */
+  function pingFor(player) {
+    var self = player.self || player.peerId === session.selfPeerId;
+    if (self && session.role === "guest" && network.hostRoundTrip !== null) return network.hostRoundTrip;
+    if (self && session.role === "host") return null;
+    var name = player.profile && player.profile.name;
+    var pings = session.pings || {};
+    return name && typeof pings[name] === "number" ? pings[name] : null;
+  }
+
+  function paintPing(cell, ms, suffix) {
+    if (ms === null) {
+      if (!cell.hidden) cell.hidden = true;
+      return;
+    }
+    var text = ms + (suffix || "");
+    if (cell.textContent !== text) cell.textContent = text;
+    if (cell.dataset.tone !== pingTone(ms)) cell.dataset.tone = pingTone(ms);
+    if (cell.hidden) cell.hidden = false;
+  }
+
+  function pingSpan(listName, player) {
+    var cell = document.createElement("span");
+    cell.className = "ping";
+    cell.title = "Ping";
+    cell.hidden = true;
+    network.rows[listName].push({ player: player, cell: cell });
+    return cell;
+  }
+
+  function updateRowPings(listName) {
+    network.rows[listName].forEach(function(row) {
+      paintPing(row.cell, pingFor(row.player), " ms");
+    });
+  }
+
+  function renderPingReadout(id) {
+    var element = lobbyElement(id);
+    if (!element) return;
+    var summary = pingSummary();
+    paintPing(element, summary ? summary.ms : null, " ms");
+    if (!summary) return;
+    var detail = [];
+    network.targets.forEach(function(target) {
+      var result = network.results[target.id];
+      if (result) detail.push(result.label + " " + result.ms + " ms");
+    });
+    if (network.signaling) detail.push("lobby service " + network.signaling.ms + " ms");
+    var title = "Ping " + summary.ms + " ms " + summary.label + (detail.length ? " (" + detail.join(", ") + ")" : "");
+    if (element.title !== title) element.title = title;
+  }
+
+  function renderPings() {
+    renderPingReadout("landing-ping");
+    renderPingReadout("lobby-ping");
+    updateRowPings("lobby");
+    updateRowPings("sidebar");
+  }
+
   function tickLobby() {
     pollQueue();
     pollParty();
+    tickPeerPings(Date.now());
     /* watching a broadcast: no session; the game plays the recording (the
        landing's own, behind it, leaves the page as it is) */
     if (lobby.broadcast && !lobby.broadcast.background) {
@@ -4027,6 +4290,7 @@
     var publicPlay = !session.active || session.publicLobby;
     var inMatch = session.active && session.publicLobby && state === CLIENT_STATE.INGAME &&
       (session.role === "host" || session.transportConnected);
+    if (session.runtimeReady && !inMatch && state !== CLIENT_STATE.INGAME) refreshPing(Date.now());
 
     /* A guest whose host vanished still shows the old lobby; start over. */
     if (lobby.wantsPlay && session.active && session.role === "guest" && !session.transportConnected &&
@@ -5120,7 +5384,7 @@
     pingCell.className = "sb-ping";
     if (typeof ping === "number") {
       pingCell.textContent = String(ping);
-      pingCell.dataset.tone = ping < 80 ? "good" : ping < 150 ? "fair" : "poor";
+      pingCell.dataset.tone = pingTone(ping);
     }
     row.append(placeCell, emblemCell, nameCell, tagCell, scoreCell, pingCell);
     return row;

@@ -45,7 +45,7 @@ docker run -d --name halo-server --env-file game-server.env \
 | `HALO_LOBBY_COUNTDOWN_SECONDS` | `20` | The countdown. |
 | `HALO_LOBBY_POSTGAME_SECONDS` | `15` | How long the scores show. |
 | `HALO_RESTART_FOR_WAITING` | `true` | End a match that has run a minute when a player is waiting to join. Turn it off for wagered play. |
-| `PORT`, `HALO_STATUS_ADDRESS` | `:8790` | The status page: JSON with the match state, players and room. |
+| `PORT`, `HALO_STATUS_ADDRESS` | `:8790` | The status page: JSON with the match state, players and room. `GET /ping` on it answers 204 from any origin: the browser's ping probe before a match (listed in the signaling Worker's `PING_TARGETS`; on Fly, `fly/fly.toml` exposes it over HTTPS). |
 
 The server needs a public IP address with inbound UDP. Platforms that only
 forward HTTP (Railway, Render) cannot host it. A VM (Hetzner, DigitalOcean,

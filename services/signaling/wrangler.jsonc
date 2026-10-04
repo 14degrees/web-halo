@@ -11,6 +11,9 @@
     // The game server pool's Fly app, which the matchmaker scales (its
     // FLY_API_TOKEN is a secret; services/game-server/fly/pool.py).
     "FLY_APP_NAME": "halo-game-lilchocobo",
+    // the page's ping to the game before a match: one probe URL per region
+    // (the gateway's GET /ping, exposed over HTTPS in services/game-server/fly/fly.toml)
+    "PING_TARGETS": "[{\"id\":\"lax\",\"label\":\"Los Angeles\",\"url\":\"https://halo-game-lilchocobo.fly.dev/ping\"}]",
     "ALLOWED_ORIGINS": "https://halo.lilchocobo2.workers.dev,http://127.0.0.1:8765,http://localhost:8765",
     "ALLOW_NO_ORIGIN": "false",
     "PUBLIC_GAME_URL": "https://halo.lilchocobo2.workers.dev",

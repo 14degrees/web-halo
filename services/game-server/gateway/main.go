@@ -356,12 +356,31 @@ func (s *server) statusJSON() map[string]any {
 	}
 }
 
-func (s *server) serveStatus() {
+// statusMux serves the status page, and the page's ping probe: GET /ping
+// answers with nothing, as fast as possible, from any origin, so a browser on
+// the landing page or in a lobby can time a round trip to this region before
+// it joins a game (port/web/online_client.js, refreshPing; the signaling
+// Worker lists the URL in PING_TARGETS).
+func (s *server) statusMux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.statusJSON())
 	})
+	return mux
+}
+
+func (s *server) serveStatus() {
+	mux := s.statusMux()
 	listener, err := net.Listen("tcp", s.config.StatusAddress)
 	if err != nil {
 		log.Printf("status: %v", err)

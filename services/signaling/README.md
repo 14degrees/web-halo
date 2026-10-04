@@ -146,6 +146,31 @@ GET /v1/health
 { "ok": true, "v": 1 }
 ```
 
+### Ping
+
+```http
+GET /v1/ping
+```
+
+The page's ping before a match (`port/web/online_client.js`, `refreshPing`):
+the browser times a few of these to this Worker, and the response lists
+where else to probe, one URL per game region (`PING_TARGETS`, a JSON list;
+each is a game server gateway's `GET /ping`, which answers 204 from any
+origin). The page shows the nearest region's round trip on the landing and
+in the lobby, with the scoreboard's colors (under 80 ms green, under 150 ms
+yellow). Region-aware matchmaking can later take the page's measurements
+by these ids.
+
+```json
+{
+  "ok": true,
+  "targets": [
+    { "id": "lax", "label": "Los Angeles", "url": "https://halo-game-lilchocobo.fly.dev/ping" }
+  ],
+  "v": 1
+}
+```
+
 ### Create a room
 
 ```http
@@ -432,6 +457,15 @@ Relayed SDP/ICE messages add the authenticated sender:
 Other server messages are `{ "v":1, "type":"pong", "nonce":"..." }` and
 `{ "v":1, "type":"error", "code":"...", "message":"..." }`.
 
+Every two seconds the host measures each player's round trip over WebRTC
+(a dedicated server's gateway, or a browser host) and the room passes the
+measurements on to the guests by the name each plays under, for the
+scoreboard and the lobby:
+
+```json
+{ "v": 1, "type": "pings", "pings": { "Spartan 117": 42 } }
+```
+
 The room also broadcasts a presentation-only roster to every connected player.
 It is independent of the host/guest WebRTC star topology:
 
@@ -505,6 +539,14 @@ Trickle ICE candidates (send `candidate: null` for end-of-candidates):
 The transport must process `welcome.peers` and `peer-joined.peer` first, pass
 each peer's 12-hex `identifier` to `addPeer`, and only then apply SDP or ICE
 signals for that `peerId`.
+
+Only the host sends the players' pings, by signaling peer ID, in whole
+milliseconds (at most 64 entries; the room rejects them from a guest with
+`PINGS_FORBIDDEN`):
+
+```json
+{ "v": 1, "type": "pings", "pings": { "g_...": 42 } }
+```
 
 ## Lifecycle and security properties
 
