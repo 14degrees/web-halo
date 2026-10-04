@@ -48,6 +48,7 @@ import { requireHumanVerification } from "./turnstile";
 import { checkSettlementWallet } from "./alerts";
 import { handleBroadcastRequest } from "./broadcast";
 import { handlePartyRequest } from "./parties";
+import { adminProfileLookup, handleProfileRequest } from "./profile";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
@@ -57,6 +58,7 @@ export { Matchmaker } from "./matchmaker";
 export { SignalingRoom } from "./room";
 export { Wager } from "./wager";
 export { Party } from "./party";
+export { Profiles } from "./profiles";
 export type {
   ClientMessage,
   CreateRoomResponse,
@@ -261,6 +263,10 @@ async function handleAdminRequest(
     return jsonResponse({ error: { code: "UNAUTHORIZED", message: "Unauthorized." } }, 401, {
       "WWW-Authenticate": "Bearer",
     });
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/admin/profiles") {
+    return jsonResponse(await adminProfileLookup(env, url));
   }
 
   if (request.method === "GET" && url.pathname === "/v1/admin/bans") {
@@ -1207,7 +1213,7 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     const response = new Response(null, {
       headers: {
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, PATCH, POST, DELETE, OPTIONS",
         "Access-Control-Max-Age": "86400",
       },
       status: 204,
@@ -1242,6 +1248,16 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
   const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
   if (walletResponse !== null) {
     return withCors(jsonResponse(walletResponse), origin);
+  }
+
+  if (url.pathname.startsWith("/v1/profile")) {
+    if (request.method === "POST" && url.pathname === "/v1/profile/username") {
+      await requireRateLimit(env.PROFILE_CLAIM_LIMITER, request, "profile-claim");
+    } else {
+      await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "profile");
+    }
+    const profileResponse = await handleProfileRequest(request, env, url, () => readJsonBody(request));
+    if (profileResponse !== null) return withCors(jsonResponse(profileResponse), origin);
   }
 
   const matchmakingResponse = await handleMatchmaking(request, env, origin, url);
