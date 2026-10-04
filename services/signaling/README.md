@@ -327,6 +327,32 @@ The Worker validates the origin before forwarding the upgrade to the room
 Durable Object. The query credential is deliberately short-lived and
 single-use. Application logs record only the URL path, never its query string.
 
+### Profiles
+
+A player's account: one unique username and one or more wallets, kept by the
+`Profiles` Durable Object (`src/profiles.ts`, routes in `src/profile.ts`).
+The caller is the signed-in wallet (`Authorization: Bearer` from
+`POST /v1/auth/verify`); its profile is the one the wallet is linked to.
+
+| Route | Does |
+| --- | --- |
+| `GET /v1/profile` | the caller's profile, or `{ "profile": null }` |
+| `POST /v1/profile/username` `{ "username" }` | claims the name; a wallet with no profile gets one, linked to it. Renames are capped at three a day and the old name is held for its owner for a week |
+| `PATCH /v1/profile` `{ "showWallets"?, "showFomo"?, "showX"? }` | what other players may see; everything starts private |
+| `POST /v1/profile/wallets/challenge` `{ "wallet" }` | the message the new wallet must sign (profile, wallet, domain, network, nonce, expiry; five minutes) |
+| `POST /v1/profile/wallets` `{ "wallet", "nonce", "signature" }` | links it; a wallet belongs to one profile |
+| `DELETE /v1/profile/wallets/:wallet` | unlinks it; the last wallet stays |
+| `GET /v1/profiles/:username` | another player's view: the name, and only the links the owner shows that are verified (no auth) |
+| `GET /v1/profiles?wallets=a,b,c` | the same for up to 16 wallets of a roster, by wallet (no auth) |
+| `GET /v1/admin/profiles?wallet=\|username=\|id=` | support lookup with the name history and the last events (admin token) |
+
+Usernames are 3 to 11 characters of letters, digits and underscores (so one
+fits Halo's player-name field), unique without regard to case, with a short
+reserved list. A profile's id never changes, and the `usernames` registry
+records every owner a name has had, so names can later move between
+profiles. The fomo and X columns (`handle`, `verified`, `method`) are stored
+and shown here; filling them is later work.
+
 ## WebSocket protocol
 
 Messages are UTF-8 JSON text. Binary frames and text frames above 65,536
