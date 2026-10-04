@@ -48,6 +48,7 @@ import { requireHumanVerification } from "./turnstile";
 import { checkSettlementWallet } from "./alerts";
 import { handleBroadcastRequest } from "./broadcast";
 import { handlePartyRequest } from "./parties";
+import { adminProfileLookup, handleProfileRequest } from "./profile";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
@@ -57,6 +58,7 @@ export { Matchmaker } from "./matchmaker";
 export { SignalingRoom } from "./room";
 export { Wager } from "./wager";
 export { Party } from "./party";
+export { Profiles } from "./profiles";
 export type {
   ClientMessage,
   CreateRoomResponse,
@@ -80,6 +82,9 @@ const SESSION_ROUTE = /^\/v1\/rooms\/([^/]+)\/sessions$/u;
 const RENEW_ROUTE = /^\/v1\/rooms\/([^/]+)\/renew$/u;
 const WEBSOCKET_ROUTE = /^\/v1\/rooms\/([^/]+)\/ws$/u;
 const ADMIN_BAN_ROUTE = /^\/v1\/admin\/bans\/([0-9a-f]{32})$/u;
+/* a wagered match held for an admin (src/wager.ts): read it, decide it,
+   or give it longer */
+const ADMIN_WAGER_ROUTE = /^\/v1\/admin\/wagers\/([A-Za-z0-9_-]{8,64})(?:\/(decide|hold))?$/u;
 const QUEUE_TICKET_ROUTE = /^\/v1\/queue\/([A-Za-z0-9_-]{16,64})$/u;
 /* A dedicated server's match result (services/game-server/gateway,
    matchResult), as far as it is well formed; null otherwise. */
@@ -260,6 +265,10 @@ async function handleAdminRequest(
     });
   }
 
+  if (request.method === "GET" && url.pathname === "/v1/admin/profiles") {
+    return jsonResponse(await adminProfileLookup(env, url));
+  }
+
   if (request.method === "GET" && url.pathname === "/v1/admin/bans") {
     const page = await env.HALO_ABUSE.list({ limit: 1_000, prefix: "ban:" });
     const bans = (await Promise.all(page.keys.map(({ name }) => env.HALO_ABUSE.get(name, "json"))))
@@ -318,6 +327,45 @@ async function handleAdminRequest(
     await env.HALO_ABUSE.delete(`ban:${match[1]}`);
     recordTurnEvent(env, "unbanned", match[1]);
     return new Response(null, { status: 204 });
+  }
+
+  /* Wagered matches held for an admin: a whole team dropped out, so the
+     stakes wait, locked, for a decision (or the hold's deadline). */
+  if (request.method === "GET" && url.pathname === "/v1/admin/wagers/held") {
+    return jsonResponse({ held: await env.MATCHMAKER.getByName(MATCHMAKER_NAME).heldWagers() });
+  }
+  const wager = ADMIN_WAGER_ROUTE.exec(url.pathname);
+  if (wager?.[1]) {
+    const stub = env.WAGERS.getByName(wager[1]);
+    const by = `admin@${request.headers.get("CF-Connecting-IP") ?? "unknown"}`;
+    if (request.method === "GET" && wager[2] === undefined) {
+      const record = await stub.adminView();
+      if (record === null) return jsonResponse({ error: { code: "NOT_FOUND", message: "No wager for that match." } }, 404);
+      return jsonResponse(record);
+    }
+    if (request.method === "POST" && wager[2] === "decide") {
+      const body = await readJsonBody(request);
+      const action = typeof body === "object" && body !== null ? (body as Record<string, unknown>).action : undefined;
+      const note = typeof body === "object" && body !== null ? (body as Record<string, unknown>).note : undefined;
+      if ((action !== "forfeit" && action !== "void") || typeof note !== "string" || note.trim().length === 0 || note.length > 500) {
+        return jsonResponse({ error: { code: "VALIDATION_FAILED", message: "action must be forfeit or void, with a note." } }, 400);
+      }
+      const view = await stub.decide(action, by, note.trim());
+      if (view === null) return jsonResponse({ error: { code: "NOT_HELD", message: "That wager is not held." } }, 409);
+      return jsonResponse({ wager: view });
+    }
+    if (request.method === "POST" && wager[2] === "hold") {
+      const body = await readJsonBody(request);
+      const hours = typeof body === "object" && body !== null ? (body as Record<string, unknown>).hours : undefined;
+      const note = typeof body === "object" && body !== null ? (body as Record<string, unknown>).note : undefined;
+      if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0 || hours > 24 * 7 ||
+          typeof note !== "string" || note.trim().length === 0 || note.length > 500) {
+        return jsonResponse({ error: { code: "VALIDATION_FAILED", message: "hours must be a number up to 168, with a note." } }, 400);
+      }
+      const extended = await stub.extendHold(hours, by, note.trim());
+      if (extended === null) return jsonResponse({ error: { code: "NOT_HELD", message: "That wager is not held." } }, 409);
+      return jsonResponse(extended);
+    }
   }
   return jsonResponse({ error: { code: "NOT_FOUND", message: "Admin route not found." } }, 404);
 }
@@ -1165,7 +1213,7 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
     const response = new Response(null, {
       headers: {
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, PATCH, POST, DELETE, OPTIONS",
         "Access-Control-Max-Age": "86400",
       },
       status: 204,
@@ -1200,6 +1248,16 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
   const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
   if (walletResponse !== null) {
     return withCors(jsonResponse(walletResponse), origin);
+  }
+
+  if (url.pathname.startsWith("/v1/profile")) {
+    if (request.method === "POST" && url.pathname === "/v1/profile/username") {
+      await requireRateLimit(env.PROFILE_CLAIM_LIMITER, request, "profile-claim");
+    } else {
+      await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "profile");
+    }
+    const profileResponse = await handleProfileRequest(request, env, url, () => readJsonBody(request));
+    if (profileResponse !== null) return withCors(jsonResponse(profileResponse), origin);
   }
 
   const matchmakingResponse = await handleMatchmaking(request, env, origin, url);

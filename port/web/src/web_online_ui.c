@@ -94,6 +94,7 @@ long network_lobby_broadcast_state(long *queued);
 void network_lobby_broadcast_update(float seconds);
 #endif
 long halo_screen_width(void);
+void halo_linux_mouse_look_configure(float sensitivity, int invert);
 
 enum
 {
@@ -399,6 +400,15 @@ EMSCRIPTEN_KEEPALIVE void platform_web_online_set_headless(int headless)
 int platform_web_online_is_headless(void)
 {
 	return atomic_load_explicit(&web_online_headless, memory_order_acquire);
+}
+
+/* How the mouse aims, from the page's settings: sensitivity multiplies the
+default turn per pixel (1.0), invert makes moving the mouse forward look
+down. Safe from the browser thread: it only stores the atomics the game
+thread's look code reads, so a change applies on the next mouse poll. */
+EMSCRIPTEN_KEEPALIVE void platform_web_set_mouse_look(float sensitivity, int invert)
+{
+	halo_linux_mouse_look_configure(sensitivity, invert);
 }
 
 EMSCRIPTEN_KEEPALIVE int platform_web_online_set_player_customization(
