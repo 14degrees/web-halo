@@ -334,6 +334,8 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         "-sERROR_ON_UNDEFINED_SYMBOLS=1",
         f"--shell-file {WEB_DIR}/shell.html",
         f"--pre-js {WEB_DIR}/fetch_path_normalization.js",
+        # before the client, which looks for HaloStats when the lobby opens
+        f"--pre-js {WEB_DIR}/stats_panel.js",
         f"--pre-js {WEB_DIR}/online_client.js",
     ]
     n.build(
@@ -345,6 +347,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
             WEB_DIR / "shell.html",
             WEB_SDL_PORT,
             WEB_DIR / "fetch_path_normalization.js",
+            WEB_DIR / "stats_panel.js",
             WEB_DIR / "online_client.js",
             WEB_DIR / "library_web_transport.js",
         ],

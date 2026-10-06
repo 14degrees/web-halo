@@ -88,6 +88,10 @@
       {
         "name": "PROFILES",
         "class_name": "Profiles"
+      },
+      {
+        "name": "STATS",
+        "class_name": "Stats"
       }
     ]
   },
@@ -161,6 +165,11 @@
       // players' profiles: usernames, wallets, fomo and X links
       "tag": "v8",
       "new_sqlite_classes": ["Profiles"]
+    },
+    {
+      // players' lasting stats and the leaderboard
+      "tag": "v9",
+      "new_sqlite_classes": ["Stats"]
     }
   ],
   "observability": {

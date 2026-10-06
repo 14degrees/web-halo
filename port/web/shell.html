@@ -826,6 +826,39 @@
     }
     .h3-action:hover, .h3-action:focus-visible { background: #54362e; outline: none; animation: h3-pulse 2s infinite; }
     .h3-quiet { background: rgba(255, 255, 255, .06); }
+    /* the leaderboard (stats_panel.js) and a player's record */
+    .leaderboard-dialog { width: min(46rem, calc(100vw - 2rem)); }
+    .stats-note { color: #8094b4 !important; font-size: .95rem !important; line-height: 1.35; }
+    .stats-verified, .stats-identity {
+      display: inline-block; padding: 0 .4rem; border: 1px solid rgba(101, 194, 255, .5); border-radius: .2rem;
+      color: #65c2ff; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; vertical-align: middle;
+    }
+    .stats-identity[data-identity="wallet"] { border-color: rgba(255, 176, 105, .5); color: #ffb069; }
+    .stats-identity[data-identity="guest"] { border-color: rgba(185, 199, 220, .4); color: #b9c7dc; }
+    .leaderboard-sorts { display: flex; flex-wrap: wrap; gap: .3rem; }
+    .leaderboard-sort {
+      padding: .3rem .8rem; border: 1px solid rgba(128, 148, 180, .35); background: rgba(255, 255, 255, .04); color: #c7d1e6;
+      cursor: pointer; font-family: inherit; font-size: 1rem; text-transform: uppercase; letter-spacing: .05em;
+    }
+    .leaderboard-sort.active, .leaderboard-sort:focus-visible { border-color: #65c2ff; color: #fff; outline: none; }
+    .leaderboard-scroll { max-height: min(50vh, 26rem); overflow-y: auto; }
+    .leaderboard-table { width: 100%; border-collapse: collapse; font-size: 1.05rem; }
+    .leaderboard-table th { position: sticky; top: 0; background: #0a1628; color: #8094b4; font-weight: 400; font-size: .85rem; letter-spacing: .08em; text-transform: uppercase; }
+    .leaderboard-table th, .leaderboard-table td { padding: .35rem .5rem; text-align: left; border-bottom: 1px solid rgba(128, 148, 180, .2); }
+    .leaderboard-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .leaderboard-table .leaderboard-rank { color: #8094b4; }
+    .leaderboard-player { display: flex; align-items: center; gap: .5rem; }
+    .leaderboard-you td { background: rgba(101, 194, 255, .12); color: #fff; }
+    .leaderboard-pager { display: flex; align-items: center; gap: .6rem; }
+    .leaderboard-pager span { flex: 1; text-align: center; color: #8094b4; font-size: 1rem; }
+    .leaderboard-pager .h3-action { font-size: 1rem; padding: .4rem .8rem; }
+    .leaderboard-pager .h3-action:disabled { opacity: .4; cursor: default; animation: none; background: rgba(255, 255, 255, .06); }
+    .spartan-stats { display: grid; gap: .4rem; margin-top: .8rem; padding-top: .8rem; border-top: 1px solid rgba(128, 148, 180, .25); }
+    .spartan-stats h3 { display: flex; align-items: center; gap: .6rem; margin: 0; font-weight: 400; font-size: 1.15rem; letter-spacing: .06em; text-transform: uppercase; color: #fff; }
+    .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem .8rem; margin: 0; }
+    .stats-grid:empty { display: none; }
+    .stats-cell dt { color: #8094b4; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; }
+    .stats-cell dd { margin: 0; color: #e1e8f2; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
     .party-join { display: grid; gap: .4rem; }
     .party-join label { color: #8094b4; font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; }
     .party-join div { display: flex; gap: .5rem; }
@@ -2360,6 +2393,7 @@
         <button id="lobby-spartan-toggle" class="lobby-foot" type="button">Spartan</button>
         <button id="lobby-sound" class="lobby-foot" type="button">Sound: <span id="lobby-sound-state">On</span></button>
         <button id="lobby-friends" class="lobby-foot" type="button">Friends</button>
+        <button id="lobby-leaderboard" class="lobby-foot" type="button">Leaderboard</button>
         <button id="lobby-home" class="lobby-foot" type="button">Home</button>
       </footer>
       <section class="lobby-card" aria-label="Playlist" hidden>
@@ -2460,6 +2494,29 @@
       <p id="party-status" role="status" aria-live="polite"></p>
     </div>
   </dialog>
+  <dialog id="leaderboard-dialog" class="h3-dialog leaderboard-dialog" aria-labelledby="leaderboard-dialog-title">
+    <div class="h3-dialog-card">
+      <button id="leaderboard-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
+      <h2 id="leaderboard-dialog-title">Leaderboard</h2>
+      <p class="stats-note"><span class="stats-verified">Verified</span> Dedicated-server matches only. Custom and player-hosted games aren't counted.</p>
+      <div id="leaderboard-sorts" class="leaderboard-sorts" role="tablist" aria-label="Sort by"></div>
+      <div class="leaderboard-scroll">
+        <table class="leaderboard-table">
+          <thead>
+            <tr><th>#</th><th>Player</th><th class="num">Kills</th><th class="num">Deaths</th><th class="num">K/D</th><th class="num">W–L</th><th class="num">Matches</th><th class="num" title="SOL won or lost in wagered matches">SOL</th></tr>
+          </thead>
+          <tbody id="leaderboard-rows"></tbody>
+        </table>
+      </div>
+      <p id="leaderboard-status" role="status" aria-live="polite"></p>
+      <div class="leaderboard-pager">
+        <button id="leaderboard-prev" class="h3-action h3-quiet" type="button">Previous</button>
+        <span id="leaderboard-page"></span>
+        <button id="leaderboard-next" class="h3-action h3-quiet" type="button">Next</button>
+        <button id="leaderboard-refresh" class="h3-action h3-quiet" type="button">Refresh</button>
+      </div>
+    </div>
+  </dialog>
   <dialog id="choice-dialog" class="h3-dialog" aria-labelledby="choice-dialog-title">
     <div class="h3-dialog-card">
       <button id="choice-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
@@ -2488,6 +2545,11 @@
         <label for="lobby-mouse-sensitivity">Mouse sensitivity <small id="lobby-mouse-sensitivity-value">1.00×</small></label>
         <input id="lobby-mouse-sensitivity" type="range" min="0.1" max="4" step="0.05" value="1" aria-describedby="lobby-mouse-sensitivity-value">
         <label class="spartan-switch" for="lobby-invert-y"><input id="lobby-invert-y" type="checkbox"> Invert mouse Y <small>forward looks down</small></label>
+        <section id="spartan-stats" class="spartan-stats" aria-label="Your record">
+          <h3>Your record <span id="spartan-stats-identity"></span></h3>
+          <dl id="spartan-stats-grid" class="stats-grid"></dl>
+          <p id="spartan-stats-status" class="stats-note" role="status" aria-live="polite"></p>
+        </section>
         <button id="spartan-dialog-done" type="button">Done</button>
       </div>
     </div>
