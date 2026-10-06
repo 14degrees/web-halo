@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { allowChat, censorChatText } from "./chat";
 import {
   hashesMatch,
   randomPeerId,
@@ -8,6 +9,7 @@ import {
 } from "./crypto";
 import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
 import { MATCHMAKER_NAME } from "./matchmaker";
+import { PROFILES_NAME } from "./profiles";
 import { walletPlayerName } from "./solana";
 import type { RoomRoster } from "./stats";
 import type { WagerView } from "./wager";
@@ -74,6 +76,12 @@ interface SocketAttachment {
   matches?: number;
   /* watching the game, not in it */
   spectator?: boolean;
+  /* the account name behind the wallet (src/profiles.ts), shown with chat
+     and the roster when the player has one */
+  username?: string;
+  /* text chat: how often this player has spoken lately (src/chat.ts) */
+  chatCount?: number;
+  chatWindowStartedAt?: number;
 }
 
 interface PreparedSession {
@@ -162,6 +170,9 @@ function isSocketAttachment(value: unknown): value is SocketAttachment {
   }
   const record = value as Record<string, unknown>;
   if (record.profile !== undefined && !parsePlayerProfile(record.profile).ok) {
+    return false;
+  }
+  if (record.username !== undefined && typeof record.username !== "string") {
     return false;
   }
   return (
@@ -710,6 +721,40 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
+    if (message.type === "chat") {
+      /* Everyone in the room hears a player, under the name they play as
+         (and their account name when they have one). A spectator or a
+         player who has not said who they are cannot speak; a flood is
+         dropped with a note, not a disconnect, so a chatty player keeps
+         their game. Nothing is kept. */
+      if (sender.spectator === true || sender.profile === undefined) {
+        this.sendError(socket, "CHAT_FORBIDDEN", "Only players in the room can chat.");
+        return;
+      }
+      const allowed = allowChat(sender, now);
+      try {
+        socket.serializeAttachment(sender);
+      } catch {
+        this.retireSocket(socket, 1011, "Connection state failed.");
+        return;
+      }
+      if (!allowed) {
+        this.sendError(socket, "CHAT_RATE_LIMITED", "You're sending messages too quickly.");
+        return;
+      }
+      this.broadcastAll(jsonMessage({
+        at: now,
+        from: sender.peerId,
+        name: sender.profile.name,
+        style: sender.profile.style,
+        text: censorChatText(message.text),
+        type: "chat",
+        ...(sender.username === undefined ? {} : { username: sender.username }),
+        v: SIGNALING_PROTOCOL_VERSION,
+      }));
+      return;
+    }
+
     if (message.type === "match") {
       if (sender.role !== "host") {
         this.sendError(socket, "MATCH_FORBIDDEN", "Only the host reports the match.");
@@ -765,6 +810,9 @@ export class SignalingRoom extends DurableObject<Env> {
       }
       if (sender.matches === undefined && sender.role === "guest") {
         this.ctx.waitUntil(this.lookUpRank(sender.peerId, sender.identifier));
+      }
+      if (sender.username === undefined && sender.wallet !== undefined) {
+        this.ctx.waitUntil(this.lookUpUsername(sender.peerId, sender.wallet));
       }
       try {
         socket.serializeAttachment(sender);
@@ -978,6 +1026,27 @@ export class SignalingRoom extends DurableObject<Env> {
     this.broadcastRoster();
   }
 
+  /* A wallet's account name (src/profiles.ts): the roster and chat show it
+     beside the in-game name once it is known. */
+  private async lookUpUsername(peerId: string, wallet: string): Promise<void> {
+    let username: string | undefined;
+    try {
+      const profiles = await this.env.PROFILES.getByName(PROFILES_NAME).publicProfilesForWallets([wallet]);
+      username = profiles[wallet]?.username;
+    } catch {
+      return;
+    }
+    const connection = this.connectionForPeer(peerId);
+    if (!connection || username === undefined || connection.attachment.wallet !== wallet) return;
+    connection.attachment.username = username;
+    try {
+      connection.socket.serializeAttachment(connection.attachment);
+    } catch {
+      /* the socket is closing */
+    }
+    this.broadcastRoster();
+  }
+
   private broadcastRoster(): void {
     const connections = this.connections();
     const encoded = jsonMessage({
@@ -987,6 +1056,7 @@ export class SignalingRoom extends DurableObject<Env> {
         role: attachment.role,
         matches: attachment.matches ?? null,
         ...(attachment.spectator ? { spectator: true } : {}),
+        ...(attachment.username === undefined ? {} : { username: attachment.username }),
       })),
       type: "roster",
       v: SIGNALING_PROTOCOL_VERSION,

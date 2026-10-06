@@ -54,6 +54,32 @@
     th { color: var(--muted); font-weight: 600; }
     td { overflow-wrap: anywhere; }
     #matches, #events { overflow-x: auto; }
+    /* held wagers (servers_wagers.js): the admin's sign-in, cards and forms */
+    .admin-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .6rem 0 0; }
+    .admin-bar { margin: 0 0 .6rem; }
+    .admin-bar .meta, .admin-row > span { margin: 0 auto 0 0; }
+    .admin-signin { padding: 1rem; border: 1px dashed var(--line); border-radius: .5rem; }
+    .admin-signin .meta { margin: 0 0 .4rem; }
+    .admin-signin input { flex: 1 1 16rem; }
+    input, textarea, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: .3rem; padding: .4rem .6rem; }
+    textarea { width: 100%; resize: vertical; margin-top: .6rem; }
+    input[type="number"] { width: 5.5rem; }
+    button { cursor: pointer; background: rgba(127, 182, 224, .14); }
+    button:disabled { cursor: default; opacity: .5; }
+    .admin-forfeit { background: rgba(224, 104, 95, .22); }
+    .admin-void { background: rgba(180, 156, 255, .22); }
+    .admin-extend { background: rgba(255, 209, 102, .22); }
+    .admin-confirm { background: var(--countdown); color: #06090c; font-weight: 700; }
+    .admin-status { margin: 0 0 .6rem; padding: .5rem .8rem; border: 1px solid var(--line); border-radius: .4rem; }
+    .admin-status.error { padding: .5rem .8rem; text-align: left; }
+    .admin-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr)); }
+    .admin-held .body { padding-top: .8rem; }
+    .admin-held .rows { margin-bottom: .6rem; }
+    .admin-players { margin: .4rem 0 .6rem; }
+    .admin-history { margin: .2rem 0 0; padding-left: 1.2rem; color: var(--muted); font-size: .85rem; }
+    .admin-form { margin-top: .8rem; padding: .8rem; border: 1px solid var(--countdown); border-radius: .4rem; }
+    .admin-form-title { margin: 0; font-weight: 700; }
+    .admin-form .meta { margin: .2rem 0 0; }
   </style>
 </head>
 <body>
@@ -72,7 +98,10 @@
   <section id="matches"></section>
   <h2>Event log</h2>
   <section id="events"></section>
+  <h2>Held wagers</h2>
+  <section id="held-wagers"></section>
   <footer id="footer">Loading…</footer>
+  <script src="servers_wagers.js"></script>
   <script>
     "use strict";
     /* The matchmaker's view (GET /v1/matchmaker): its queues, the servers in
@@ -99,6 +128,11 @@
       const meta = new DOMParser().parseFromString(page, "text/html")
         .querySelector('meta[name="halo-signaling-url"]');
       return meta && meta.content ? meta.content.replace(/\/$/, "") : location.origin;
+    }
+
+    async function signaling() {
+      signalingUrl = signalingUrl || await findSignaling();
+      return signalingUrl;
     }
 
     function duration(seconds) {
@@ -171,8 +205,7 @@
     async function refresh() {
       const footer = document.getElementById("footer");
       try {
-        signalingUrl = signalingUrl || await findSignaling();
-        const response = await fetch(signalingUrl + "/v1/matchmaker", { cache: "no-store" });
+        const response = await fetch(await signaling() + "/v1/matchmaker", { cache: "no-store" });
         if (!response.ok) throw new Error("The matchmaker answered " + response.status);
         const data = await response.json();
         const live = data.matches.filter((match) => match.state !== "ended");
@@ -213,6 +246,8 @@
 
     refresh();
     setInterval(refresh, 2000);
+    /* the admin's held-wager panel, with its own token and refresh */
+    HaloHeldWagers.mount({ container: document.getElementById("held-wagers"), signalingUrl: signaling });
   </script>
 </body>
 </html>

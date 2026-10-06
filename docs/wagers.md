@@ -138,6 +138,17 @@ ceiling, which the response reports). A decision on a match that is not
 held answers 409. The players' `GET /v1/wagers/:matchId` shows `held` with
 the deadline, and their result card says the match is under review.
 
+The dashboard (`/servers.html`, its "Held wagers" section from
+`port/web/servers_wagers.js`) offers the same over these routes: the
+operator pastes the admin token, which the page keeps only in that tab's
+`sessionStorage` until they sign out or the Worker answers 401, and each
+held match shows its reason, dropped teams, stakes, deadline, ceiling and
+history with Forfeit, Void and Extend buttons that ask for a note (and
+hours) and a confirmation. The page never contains the token (the repo is
+public). The Worker answers the browser's CORS preflight on `/v1/admin/`
+and adds CORS headers for an allowed `Origin`; curl without one works as
+before.
+
 ### The match result
 
 When a dedicated server's match enters postgame, the game captures its
@@ -289,8 +300,7 @@ wallets.
 - The escrow program holds at most 8 players in a match (`MAXIMUM_PLAYERS`,
   with one reclaim bit per player). Larger matches need the program's cap
   raised and redeployed, and the settle transaction checked for size.
-- A held match's deadline cannot pass the program's reclaim delay; the
-  dashboard has no buttons for holds yet (the admin routes above do).
+- A held match's deadline cannot pass the program's reclaim delay.
 - Before real money: an audit of the program, hardware or multisig keys for
   the upgrade authority and operator, legal advice, and a mainnet deploy of
   the program (about 1.3 SOL of refundable rent).

@@ -337,6 +337,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         # before the client, which looks for HaloStats when the lobby opens
         f"--pre-js {WEB_DIR}/stats_panel.js",
         f"--pre-js {WEB_DIR}/online_client.js",
+        f"--pre-js {WEB_DIR}/chat.js",
     ]
     n.build(
         outputs=output,
@@ -349,6 +350,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
             WEB_DIR / "fetch_path_normalization.js",
             WEB_DIR / "stats_panel.js",
             WEB_DIR / "online_client.js",
+            WEB_DIR / "chat.js",
             WEB_DIR / "library_web_transport.js",
         ],
         variables={
