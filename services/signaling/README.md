@@ -55,6 +55,9 @@ Non-secret settings live in `wrangler.jsonc`:
 | `MAX_ROOM_CAPACITY` | Hard capacity ceiling; 128 machines |
 | `DEDICATED_ROOM_TTL_SECONDS` | Room lifetime for a dedicated host between renewals; default one day |
 | `PUBLIC_LOBBY_MAP_INDEX`, `PUBLIC_LOBBY_MODE_INDEX` | The lobby quick join opens when no public room exists; default Blood Gulch (9) Slayer (0), in the order of `port/web/src/web_online_ui.h` |
+| `FOMO_FEE_PAYER` | The mainnet wallet fomo.family pays its users' fees from; a wallet it paid for is a fomo wallet (`src/fomo.ts`) |
+| `FOMO_REFERRAL_CODE` | The referral code in the landing's fomo.family link (`https://fomo.family/r/<code>`, `src/site.ts`); default `ARCH` |
+| `X_PROFILE_URL` | The game's X profile, shown on the landing once set; empty (no account chosen) hides the link |
 
 `wrangler types` generates `worker-configuration.d.ts` from this file. The only
 manual environment augmentation is the required room-signing secret and the two
@@ -82,6 +85,21 @@ Bounty playlists (playing for SOL through the escrow program) need two more
 secrets, `ESCROW_AUTHORITY_SECRET_KEY` and `ESCROW_SESSION_SECRET`; without
 them those playlists are off. Refer to [docs/wagers.md](../../docs/wagers.md).
 
+fomo.family detection (`src/fomo.ts`) reads Solana **mainnet**, while the
+game stays on `SOLANA_CLUSTER`, through one more secret: a mainnet RPC URL
+with its key in it (Helius or similar). Without it, detection is off and
+`GET /v1/site` says so (`fomoDetection: false`):
+
+```sh
+npx wrangler secret put FOMO_RPC_URL
+```
+
+A signed-in wallet is looked up once a day at most (a wallet once seen on
+fomo is never looked up again), through at most 51 RPC calls per look-up,
+so a free plan is enough. `wrangler types` folds any secret it finds in
+`.dev.vars` into `worker-configuration.d.ts`; run it (and `npm run check`)
+without that file, or the committed types will not match elsewhere.
+
 The configured rate-limit bindings cap room creation at 20 per minute and
 session creation at 512 per minute for one connecting address in one Cloudflare
 location. They are an abuse backstop, not billing or quota accounting.
@@ -103,6 +121,7 @@ TURN values in an ignored `.dev.vars` file instead:
 ROOM_ID_SECRET=replace-with-at-least-32-random-characters
 TURN_KEY_ID=your-turn-key-id
 TURN_KEY_SECRET=your-turn-api-token
+FOMO_RPC_URL=https://mainnet.helius-rpc.com/?api-key=your-key
 ```
 
 Deploy the signaling service before the static browser build:
@@ -536,6 +555,16 @@ Trickle ICE candidates (send `candidate: null` for end-of-candidates):
 }
 ```
 
+A player's line of text chat goes to everyone in the room (spectators
+included), under the name they play as and, when their wallet has a profile
+(`src/profiles.ts`), their account name. The text is as the room shows it:
+trimmed, single-spaced, and with the words on the profanity list
+(`src/chat.ts`) masked. The room keeps no chat:
+
+```json
+{ "v": 1, "type": "chat", "from": "g_...", "name": "Spartan 117", "username": "Chief", "style": "sage", "text": "gg", "at": 1700000000000 }
+```
+
 The transport must process `welcome.peers` and `peer-joined.peer` first, pass
 each peer's 12-hex `identifier` to `addPeer`, and only then apply SDP or ICE
 signals for that `peerId`.
@@ -547,6 +576,20 @@ milliseconds (at most 64 entries; the room rejects them from a guest with
 ```json
 { "v": 1, "type": "pings", "pings": { "g_...": 42 } }
 ```
+
+A line of text chat, at most 200 characters once trimmed (`src/chat.ts`,
+`CHAT_MAX_LENGTH`). A player who has not sent a profile, or a spectator, is
+refused with `CHAT_FORBIDDEN`; more than 5 lines in 10 seconds are dropped
+with `CHAT_RATE_LIMITED` (the socket stays open):
+
+```json
+{ "v": 1, "type": "chat", "text": "gg" }
+```
+
+Parties chat the same way over HTTP: `POST /v1/parties/:code/chat` with the
+member's body and `text`; `join`, `poll` and `chat` take `chatSince`, the
+`seq` of the last line the member saw, and answer with the party's lines
+after it (`party.chat`, the last 50 at most).
 
 ## Lifecycle and security properties
 

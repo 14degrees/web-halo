@@ -17,6 +17,11 @@ export type RuntimeEnv = Omit<Env, "ALLOW_NO_ORIGIN" | "ENVIRONMENT"> & {
   /* Optional: an RPC endpoint with an API key (Helius, ...), tried before the
      public SOLANA_RPC_URL list. */
   SOLANA_RPC_PRIVATE_URL?: string;
+  /* Optional: a mainnet RPC endpoint (Helius or similar, its key in the
+     URL) for fomo wallet detection (src/fomo.ts). The game stays on
+     SOLANA_CLUSTER; only that check reads mainnet. Without it, detection
+     is off. */
+  FOMO_RPC_URL?: string;
   /* The escrow program's settlement authority (a 64-byte Solana secret key)
      and the secret the game's per-wallet session keys derive from. Without
      them, wagered playlists are off. */

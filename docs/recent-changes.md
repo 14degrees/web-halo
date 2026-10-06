@@ -43,6 +43,26 @@ Newest ideas first within each part. Commit hashes are on
   (`tickPostMatch`, `finishPostMatch`), `services/signaling/src/vote.ts`,
   `matchmaker.ts` (`vote`, `votedGame`).
 
+## fomo.family and X
+
+- **A fomo wallet is recognised on its own.** fomo pays the network fee
+  for every trade its users make, from one mainnet wallet. After a wallet
+  signs in, the signaling Worker looks through its newest mainnet
+  transactions for one that wallet paid for, and marks the profile's fomo
+  link verified (`fee_payer`) when it finds one. The answer is kept per
+  wallet: once seen, always seen; not seen, looked at again a day later or
+  on request (`POST /v1/profile/fomo/check`, ten minutes apart). The game
+  itself stays on devnet; only this check reads mainnet, through the
+  `FOMO_RPC_URL` secret, and without it the feature is off. Nothing shows
+  to other players until the owner turns on showing fomo. *Why:* a badge
+  that only verified fomo wallets can wear, with no fomo account linking
+  and nothing from fomo. (`services/signaling/src/fomo.ts`)
+- **Links out on the landing.** A fomo.family link with the deployment's
+  referral code (`FOMO_REFERRAL_CODE`, `ARCH` to start), and an X link
+  that stays hidden until an account is chosen (`X_PROFILE_URL`). The page
+  asks `GET /v1/site` once for both. (`port/web/online_client.js`,
+  `services/signaling/src/site.ts`)
+
 ## Ping, before a match
 
 - **Your ping on the landing and in the lobby**, in the scoreboard's colors

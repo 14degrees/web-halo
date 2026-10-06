@@ -1,3 +1,4 @@
+import { normaliseChatText } from "./chat";
 import type { RuntimeEnv } from "./env";
 import { HttpError } from "./errors";
 import { MATCHMAKER_NAME, isPlaylist, partyProblem, playlistWager } from "./matchmaker";
@@ -23,15 +24,18 @@ import { walletForToken } from "./wallet";
      POST /v1/parties/:code/settings   (the leader) lobby, playlist, map, game type
      POST /v1/parties/:code/start      (the leader) search together, or start the custom game
      POST /v1/parties/:code/stop       (the leader) stop searching
+     POST /v1/parties/:code/chat       { text }: say it to the party
 
    Every body carries the member: playerKey, identifier, profile and, to
-   play for SOL, walletToken. */
+   play for SOL, walletToken. join, poll and chat take chatSince, the number
+   of the last chat line the member saw; the answer carries the lines
+   after it. */
 
 /* codes people read aloud and type: no 0/O, 1/I/L */
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 6;
 const CODE_PATTERN = /^[A-HJ-KM-NP-Z2-9]{6}$/u;
-const PARTY_ROUTE = /^\/v1\/parties\/([A-Za-z0-9]{6})\/(join|poll|leave|settings|start|stop)$/u;
+const PARTY_ROUTE = /^\/v1\/parties\/([A-Za-z0-9]{6})\/(join|poll|leave|settings|start|stop|chat)$/u;
 
 function newCode(): string {
   const bytes = new Uint8Array(CODE_LENGTH);
@@ -94,8 +98,14 @@ function answer(result: PartyResult): { party: PartyView } {
     case "NOT_FOUND": throw new HttpError(404, "PARTY_NOT_FOUND", "That party code doesn't exist anymore.");
     case "FULL": throw new HttpError(409, "PARTY_FULL", "That party is full.");
     case "NOT_MEMBER": throw new HttpError(403, "PARTY_NOT_MEMBER", "You're not in that party anymore.");
+    case "CHAT_RATE_LIMITED": throw new HttpError(429, "CHAT_RATE_LIMITED", "You're sending messages too quickly.");
     default: throw new HttpError(403, "PARTY_NOT_LEADER", "Only the party leader can do that.");
   }
+}
+
+/* the number of the last chat line the member saw (0: all of them) */
+function chatSince(input: Record<string, unknown>): number {
+  return typeof input.chatSince === "number" && Number.isInteger(input.chatSince) && input.chatSince >= 0 ? input.chatSince : 0;
 }
 
 export async function handlePartyRequest(
@@ -132,8 +142,13 @@ export async function handlePartyRequest(
     return { left: true };
   }
   const join = await member(env, input);
-  if (action === "join") return answer(await party.join(join, now));
-  if (action === "poll") return answer(await party.poll(join, now));
+  if (action === "join") return answer(await party.join(join, now, chatSince(input)));
+  if (action === "poll") return answer(await party.poll(join, now, chatSince(input)));
+  if (action === "chat") {
+    const text = normaliseChatText(input.text);
+    if (text === null) throw new HttpError(400, "VALIDATION_FAILED", "text is empty, too long, or not text.");
+    return answer(await party.say(join, text, now, chatSince(input)));
+  }
   if (action === "settings") return answer(await party.configure(join.key, settings(input), now));
 
   const starting = await party.startingMembers(join.key, now);

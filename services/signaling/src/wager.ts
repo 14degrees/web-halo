@@ -21,6 +21,7 @@ import {
 } from "./escrow";
 import { alert } from "./alerts";
 import { MATCHMAKER_NAME } from "./matchmaker";
+import { reportWagerNet } from "./stats";
 import { SolanaRpc, SolanaRpcError, base58Encode, keypairFromSecret, type Keypair, walletPlayerName } from "./solana";
 
 /* A wagered match's money: one Durable Object per match (named by the
@@ -791,6 +792,8 @@ export class Wager extends DurableObject<Env> {
         record.error = null;
         this.write(record);
         await this.report(record, record.state);
+        /* what each player won or lost goes to their record (src/stats.ts) */
+        if (record.state === "settled") this.ctx.waitUntil(reportWagerNet(this.env, record));
         return record.closed ? null : 0;
       }
       let instruction: Instruction;

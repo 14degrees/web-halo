@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import { randomToken } from "./crypto";
 import { FlyMachines, type FlyMachine } from "./fly";
+import { reportMatchStats } from "./stats";
 import type { GameVote } from "./vote";
 import type { MatchResult, StakesConfig, WagerMode } from "./wager";
 
@@ -810,6 +811,22 @@ export class Matchmaker extends DurableObject<Env> {
            ON CONFLICT(key) DO UPDATE SET matches = matches + 1, updated_at = excluded.updated_at`,
           key, now,
         );
+      }
+      /* and goes to every player's lasting record (src/stats.ts) */
+      if (result) {
+        this.ctx.waitUntil(reportMatchStats(this.env, {
+          matchId: match.id,
+          playlist: match.playlist,
+          mapIndex: match.map_index,
+          modeIndex: match.mode_index,
+          roomId: match.room_id,
+          stake: match.stake,
+          tickets: players.map((ticket) => ({
+            identifier: ticket.identifier, wallet: ticket.wallet, playerKey: ticket.player_key,
+          })),
+          result,
+          now,
+        }));
       }
     }
     this.ctx.storage.sql.exec(
