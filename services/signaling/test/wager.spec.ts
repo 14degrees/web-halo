@@ -344,6 +344,35 @@ describe("held wagers", () => {
     }));
     expect(invalid.status).toBe(400);
   });
+
+  it("answer the dashboard's preflight and CORS, and curl without an Origin", async () => {
+    const origin = "http://127.0.0.1:8765";
+    const preflight = await exports.default.fetch(new Request("http://signaling.test/v1/admin/wagers/held", {
+      method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" },
+    }));
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+    expect(preflight.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
+    const headers = { Authorization: "Bearer test-only-admin-token-32-bytes-minimum", Origin: origin };
+    const list = await exports.default.fetch(new Request("http://signaling.test/v1/admin/wagers/held", { headers }));
+    expect(list.status).toBe(200);
+    expect(list.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+    const rejected = await exports.default.fetch(new Request("http://signaling.test/v1/admin/wagers/held", {
+      headers: { Authorization: "Bearer wrong", Origin: origin },
+    }));
+    expect(rejected.status).toBe(401);
+    expect(rejected.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+    const forbidden = await exports.default.fetch(new Request("http://signaling.test/v1/admin/wagers/held", {
+      headers: { ...headers, Origin: "https://evil.example" },
+    }));
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    const curl = await exports.default.fetch(new Request("http://signaling.test/v1/admin/wagers/held", {
+      headers: { Authorization: headers.Authorization },
+    }));
+    expect(curl.status).toBe(200);
+    expect(curl.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
 });
 
 describe("wagered playlists", () => {
