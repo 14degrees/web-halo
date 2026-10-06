@@ -334,6 +334,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         "-sERROR_ON_UNDEFINED_SYMBOLS=1",
         f"--shell-file {WEB_DIR}/shell.html",
         f"--pre-js {WEB_DIR}/fetch_path_normalization.js",
+        f"--pre-js {WEB_DIR}/post_match.js",
         f"--pre-js {WEB_DIR}/online_client.js",
     ]
     n.build(
@@ -345,6 +346,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
             WEB_DIR / "shell.html",
             WEB_SDL_PORT,
             WEB_DIR / "fetch_path_normalization.js",
+            WEB_DIR / "post_match.js",
             WEB_DIR / "online_client.js",
             WEB_DIR / "library_web_transport.js",
         ],

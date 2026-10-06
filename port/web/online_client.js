@@ -120,6 +120,11 @@
   /* The browser that hosts a public game because nobody else was playing runs
      the same lobby driver as a dedicated host, so nobody presses Start. */
   var PLAYER_HOST_DRIVER = Object.freeze({ minimumPlayers: 1, countdownSeconds: 15, postgameSeconds: 12 });
+  /* the post-match lobby (port/web/post_match.js): how long the carnage
+     report and the vote show after a server match before those who stay
+     play on (a player-hosted room's is its host's postgame, so the vote is
+     in before its lobby comes back) */
+  var POST_MATCH_SECONDS = 20;
   var LOBBY_TICK_MILLISECONDS = 250;
   var LOBBY_STALE_MILLISECONDS = 6000;
   var LOBBY_REJOIN_ATTEMPTS = 6;
@@ -138,6 +143,10 @@
     /* The public rooms before joining (GET /v1/lobbies), refreshed while idle. */
     listing: null,
     listingAt: 0,
+    /* the post-match lobby after a match (tickPostMatch), and the vote's
+       winner carried onto the next queue ticket */
+    postMatch: null,
+    nextVote: null,
     listingBusy: false,
     /* Host: guests that said they are waiting, by peer ID, with when. */
     waitingPeers: new Map(),
@@ -1530,6 +1539,16 @@
         startsIn: typeof message.startsIn === "number" ? message.startsIn : null,
         receivedAt: Date.now(),
       };
+      /* the post-match vote: the host's offers and tally */
+      if (message.vote && lobby.postMatch && lobby.postMatch.kind === "guest") applyHostedTally(message.vote);
+      return;
+    }
+    if (message.type === "vote") {
+      /* a guest's pick in the post-match vote (the host tallies) */
+      if (session.role === "host" && typeof message.from === "string" && lobby.postMatch && lobby.postMatch.kind === "hosted") {
+        lobby.postMatch.votesBy.set(message.from, { mapIndex: message.mapIndex, modeIndex: message.modeIndex });
+        recountHostedVotes();
+      }
       return;
     }
     if (message.type === "roster") {
@@ -2631,7 +2650,10 @@
         playerKey: playerKey(),
       };
       if (WALLET_ENABLED && wallet.token) request.walletToken = wallet.token;
+      /* the last match's vote: the matchmaker plays the plurality's game */
+      if (lobby.nextVote) request.vote = lobby.nextVote;
       var result = await fetchJson("/v1/queue", { method: "POST", body: JSON.stringify(request) });
+      lobby.nextVote = null;
       if (lobby.queue !== queue) return;
       applyTicket(result.ticket);
     } catch (error) {
@@ -2658,6 +2680,7 @@
     queue.waited = ticket.waitedSeconds;
     if (typeof ticket.matches === "number") lobby.matches = ticket.matches;
     queue.match = ticket.match || null;
+    applyPostMatchTally(ticket);
     if (ticket.state === "ready" && ticket.match && ticket.match.inviteCode && !queue.joined && !session.active) {
       queue.joined = true;
       /* a free match after a wagered one: the old wager stays only as the
@@ -2667,9 +2690,10 @@
       join(ticket.match.inviteCode, null, true).catch(function(error) { fail(error); });
       return;
     }
-    if ((ticket.state === "ended" || ticket.state === "cancelled" || ticket.state === "expired") && !session.active) {
+    if ((ticket.state === "ended" || ticket.state === "cancelled" || ticket.state === "expired") && !session.active &&
+        !(lobby.postMatch && lobby.postMatch.ticketId === ticket.id)) {
       /* the match is over or never happened: back in the queue, if still
-         wanted */
+         wanted (the post-match lobby keeps an ended ticket for its vote) */
       lobby.queue = null;
       lobby.started = false;
     }
@@ -2859,7 +2883,7 @@
 
   /* the landing, or the lobby: a party or a search in progress is the lobby's */
   function homeScreen() {
-    if (partyView() || lobby.pendingParty || (lobby.queue && !lobby.quickPlay)) return "lobby";
+    if (lobby.postMatch || partyView() || lobby.pendingParty || (lobby.queue && !lobby.quickPlay)) return "lobby";
     return lobby.screen || "landing";
   }
 
@@ -3504,7 +3528,10 @@
     lobby.party.starting = true;
     lobby.error = null;
     try {
-      applyParty((await partyRequest("start")).party);
+      /* the last match's vote: the matchmaker plays the plurality's game */
+      var extra = lobby.nextVote ? { vote: lobby.nextVote } : null;
+      lobby.nextVote = null;
+      applyParty((await partyRequest("start", extra)).party);
     } catch (error) {
       lobby.wantsPlay = false;
       lobby.started = false;
@@ -3635,6 +3662,8 @@
 
   function scheduleRejoin(message) {
     if (!lobby.wantsPlay) return;
+    /* the post-match lobby: the match is over, and its end queues again */
+    if (lobby.postMatch) return;
     if (lobby.rejoinTimer) return;
     if (lobby.rejoinAttempts >= LOBBY_REJOIN_ATTEMPTS) {
       lobby.wantsPlay = false;
@@ -3671,6 +3700,7 @@
   }
 
   function lobbyStatus(state) {
+    if (lobby.postMatch && global.HaloPostMatch) return { text: global.HaloPostMatch.status(lobby.postMatch, Date.now()) };
     if (lobby.error && !session.active) return { text: lobby.error, tone: "error" };
     if (lobby.queue && !session.active) return queueStatus();
     if (!session.runtimeReady) {
@@ -3966,12 +3996,16 @@
       try { startsIn = global.Module._platform_web_online_get_countdown_remaining(); } catch (error) { startsIn = null; }
       if (startsIn < 0) startsIn = null;
     }
-    var key = state + ":" + startsIn;
+    /* after a match: the vote's offers and tally, for the guests' panels */
+    var vote = lobby.postMatch && lobby.postMatch.kind === "hosted" ?
+      { offers: lobby.postMatch.offers, votes: lobby.postMatch.votes } : null;
+    var key = state + ":" + startsIn + ":" + (vote ? JSON.stringify(vote) : "");
     if (key === lobby.sentMatch && Date.now() - lobby.sentMatchAt < 3000) return;
     lobby.sentMatch = key;
     lobby.sentMatchAt = Date.now();
     var message = { v: PROTOCOL_VERSION, type: "match", state: state };
     if (startsIn !== null) message.startsIn = startsIn;
+    if (vote) message.vote = vote;
     try { sendSocket(message); } catch (error) { /* The next tick retries. */ }
   }
 
@@ -4282,6 +4316,7 @@
     reportHostKills();
     var state = clientState();
     announceWaiting(state);
+    tickPostMatch(state);
     if (session.active && session.transportConnected && state === CLIENT_STATE.SEARCHING) {
       if (!lobby.searchingSince) lobby.searchingSince = Date.now();
     } else {
@@ -4305,7 +4340,7 @@
     }
     if (session.active && (state === CLIENT_STATE.PREGAME || state === CLIENT_STATE.INGAME)) lobby.rejoinAttempts = 0;
     if (lobby.wantsPlay && session.runtimeReady && !session.active && !lobby.rejoinTimer && !session.leavePromise &&
-        !lobby.error && !lobby.started) {
+        !lobby.error && !lobby.started && !lobby.postMatch) {
       lobby.started = true;
       startQuickPlay();
     }
@@ -4419,9 +4454,16 @@
         lobby.wantsPlay || partyBusy ? "Stop searching" : "Start matchmaking";
       play.disabled = waiting || (customLobby && partyBusy && !session.active);
       if (waiting || (customLobby && partyBusy)) play.dataset.mode = "wait";
+      /* the post-match lobby: its panel has Stay; this is Leave */
+      if (lobby.postMatch) {
+        play.textContent = lobby.postMatch.kind === "party" ? "Leave party" : "Leave";
+        play.dataset.mode = "leave";
+        play.disabled = false;
+      }
     }
     renderLobbyGame();
     renderLobbyPlayers();
+    renderPostMatch();
   }
 
   function renderLobbyColors() {
@@ -5468,12 +5510,251 @@
     renderScoreboard(readScoreboard());
   }
 
+  /* ---------- the post-match lobby (port/web/post_match.js)
+
+     After a public match: the carnage report from the game's scoreboard,
+     a vote for the next game, a timer, and Stay or Leave. Who plays next
+     and where the vote goes depends on the match (post_match.js says):
+     "matchmade" queues again at the end with the vote's winner on the
+     ticket; "party" goes through the leader; "hosted" is this browser's
+     own public room, which plays on with the winner as its next game;
+     "guest" is in someone else's room. A match for SOL stakes nothing
+     again unless the player presses Play again. */
+
+  function postMatchKind() {
+    if (session.dedicated || session.spectating || !session.publicLobby) return null;
+    if (partyView() && lobby.queue && lobby.queue.party) return "party";
+    if (session.matchmade) return "matchmade";
+    if (session.role === "host") return session.lobbyDriver ? "hosted" : null;
+    return "guest";
+  }
+
+  /* the game just played, as the room or the ticket knows it */
+  function playedGame() {
+    var found = lobby.queue && lobby.queue.match;
+    var settings = (session.room && session.room.lobby) || session.hostSettings || found || null;
+    var mapIndex = settings ? Number(settings.mapIndex) : 0;
+    var modeIndex = settings ? Number(settings.modeIndex) : 0;
+    return { mapIndex: mapIndex >= 0 && mapIndex <= LAST_MAP_INDEX ? mapIndex : 0,
+      modeIndex: modeIndex >= 0 && modeIndex < 8 ? modeIndex : 0 };
+  }
+
+  function beginPostMatch(kind) {
+    var played = playedGame();
+    var custom = !!(lobby.queue && lobby.queue.playlist === "custom");
+    var playlist = lobby.queue && !custom ? playlistById(lobby.queue.playlist) : null;
+    var offers = global.HaloPostMatch.offers(played, playlist ? { maps: playlist.maps, modes: playlist.modes } : null);
+    var match = lobby.queue && lobby.queue.match;
+    /* a match for SOL: the one just played, or the playlist's buy-in */
+    var wagered = null;
+    if (lobby.wager && match && lobby.wager.matchId === match.id) wagered = { stake: lobby.wager.stake, label: lobby.wager.label };
+    else if (playlist && playlist.wager) wagered = { stake: playlist.wager.stake, label: playlist.label };
+    lobby.postMatch = {
+      kind: kind,
+      since: Date.now(),
+      seconds: kind === "hosted" || kind === "guest" ? PLAYER_HOST_DRIVER.postgameSeconds : POST_MATCH_SECONDS,
+      board: null,
+      played: played,
+      custom: custom,
+      offers: offers,
+      votes: offers.map(function() { return 0; }),
+      myVote: null,
+      votesBy: new Map(),
+      ticketId: lobby.queue ? lobby.queue.id : null,
+      matchId: match ? match.id : null,
+      wagered: wagered,
+      wagerView: null,
+      /* staying is the default, except for SOL: nothing is staked again
+         without a press */
+      stay: !wagered,
+      decided: false,
+      leader: partyLeader(),
+    };
+    telemetry("post_match", "online");
+  }
+
+  function tickPostMatch(state) {
+    if (!global.HaloPostMatch) return;
+    var model = lobby.postMatch;
+    if (!model) {
+      if (!session.active || session.closing) return;
+      var over = session.role === "host" ? hostMatchState() === MATCH_STATE.POSTGAME : state === CLIENT_STATE.POSTGAME;
+      if (!over) return;
+      var kind = postMatchKind();
+      if (!kind) return;
+      beginPostMatch(kind);
+      model = lobby.postMatch;
+    }
+    /* the scores, while the game still shows them */
+    if (session.active) {
+      var board = readScoreboard();
+      if (board && Array.isArray(board.players) && board.players.length) model.board = board;
+    }
+    if (lobby.wager && lobby.wager.view && lobby.wager.matchId === model.matchId) model.wagerView = lobby.wager.view;
+    if (Date.now() - model.since >= model.seconds * 1000) finishPostMatch(model.stay, false);
+  }
+
+  /* the matchmaker's tally, from a poll of the ended ticket or a vote's answer */
+  function applyPostMatchTally(ticket) {
+    var model = lobby.postMatch;
+    if (!model || !ticket || ticket.id !== model.ticketId || !ticket.match || !Array.isArray(ticket.match.votes)) return;
+    model.votes = global.HaloPostMatch.tally(model.offers, ticket.match.votes);
+  }
+
+  /* the host's offers and tally, in a player-hosted room */
+  function applyHostedTally(vote) {
+    var model = lobby.postMatch;
+    if (!model || !Array.isArray(vote.offers) || !Array.isArray(vote.votes)) return;
+    var mine = model.myVote !== null ? model.offers[model.myVote] : null;
+    model.offers = vote.offers;
+    model.votes = vote.votes;
+    model.myVote = mine ? global.HaloPostMatch.offerIndex(model.offers, mine[0], mine[1]) : null;
+    if (model.myVote < 0) model.myVote = null;
+  }
+
+  function recountHostedVotes() {
+    var model = lobby.postMatch;
+    if (!model) return;
+    var counts = model.offers.map(function() { return 0; });
+    model.votesBy.forEach(function(pick) {
+      var index = global.HaloPostMatch.offerIndex(model.offers, pick.mapIndex, pick.modeIndex);
+      if (index >= 0) counts[index]++;
+    });
+    model.votes = counts;
+  }
+
+  function votePostMatch(index) {
+    var model = lobby.postMatch;
+    if (!model || index < 0 || index >= model.offers.length) return;
+    model.myVote = index;
+    var pick = { mapIndex: model.offers[index][0], modeIndex: model.offers[index][1] };
+    if (model.kind === "hosted") {
+      model.votesBy.set("host", pick);
+      recountHostedVotes();
+      return;
+    }
+    if (model.kind === "guest") {
+      try { sendSocket({ v: PROTOCOL_VERSION, type: "vote", mapIndex: pick.mapIndex, modeIndex: pick.modeIndex }); } catch (error) { /* no room link */ }
+      return;
+    }
+    if (!model.ticketId) return;
+    fetchJson("/v1/queue/" + encodeURIComponent(model.ticketId) + "/vote", { method: "POST", body: JSON.stringify(pick) })
+      .then(function(result) { if (lobby.postMatch === model) applyPostMatchTally(result.ticket); })
+      .catch(function() { /* the next poll of the ticket shows the tally */ });
+  }
+
+  function stayPostMatch() {
+    var model = lobby.postMatch;
+    if (!model) return;
+    /* a match for SOL: the vault must be able to stake again */
+    if (model.wagered && WALLET_ENABLED) {
+      var blocker = stakeBlocker(model.wagered.stake);
+      if (blocker) {
+        openLoadUp(blocker);
+        return;
+      }
+    }
+    model.stay = true;
+    model.decided = true;
+  }
+
+  /* The end of the post-match lobby: the timer ran out (stay: whether to
+     play on) or Leave was pressed (leaving). */
+  function finishPostMatch(stay, leaving) {
+    var model = lobby.postMatch;
+    if (!model) return;
+    lobby.postMatch = null;
+    /* (gone now, whichever screen comes next) */
+    renderPostMatch();
+    var won = global.HaloPostMatch.winner(model.offers, model.votes);
+    var pick = won ? { mapIndex: won[0], modeIndex: won[1] } : null;
+    var play = !!stay && !leaving;
+    telemetry(play ? "post_match_stay" : "post_match_leave", "online");
+    if (model.kind === "hosted") {
+      if (!play) {
+        lobby.wantsPlay = false;
+        leave(false).catch(function() {});
+        return;
+      }
+      /* this room plays on: the vote's winner is its next game */
+      if (pick) {
+        try {
+          if (wasmFunction("platform_web_online_set_next_game")(pick.mapIndex, pick.modeIndex)) {
+            try { session.hostSettings = normalizeHostSettings(pick); } catch (error) { /* a label only */ }
+            renewRoom(session.operationGeneration, pick).catch(function() { /* the directory keeps the old lobby until the next renewal */ });
+          }
+        } catch (error) { /* the room keeps its game */ }
+      }
+      return;
+    }
+    if (model.kind === "guest") {
+      if (!play) {
+        lobby.wantsPlay = false;
+        leave(false).catch(function() {});
+      }
+      return;
+    }
+    /* a server match is over: its ticket has ended, and so has the room */
+    lobby.queue = null;
+    lobby.started = false;
+    if (session.active) leave(false).catch(function() {});
+    if (model.kind === "party") {
+      if (leaving) {
+        lobby.wantsPlay = false;
+        leaveParty();
+        return;
+      }
+      if (!play || !model.leader) {
+        lobby.wantsPlay = false;
+        return;
+      }
+      /* the leader plays the party again, with the vote's winner */
+      if (model.custom) {
+        var start = pick ? configureParty(pick) : Promise.resolve();
+        start.then(function() { if (partyView() && partyLeader()) startParty(); });
+        return;
+      }
+      lobby.nextVote = pick;
+      lobby.wantsPlay = true;
+      return;
+    }
+    lobby.nextVote = play ? pick : null;
+    lobby.wantsPlay = play;
+  }
+
+  function renderPostMatch() {
+    if (!global.HaloPostMatch) return;
+    global.HaloPostMatch.render({
+      root: lobbyElement("lobby-post-match"),
+      title: lobbyElement("post-match-title"),
+      timer: lobbyElement("post-match-timer"),
+      board: lobbyElement("post-match-rows"),
+      moneyHead: lobbyElement("post-match-money-head"),
+      vote: lobbyElement("post-match-vote"),
+      stay: lobbyElement("post-match-stay"),
+      leave: lobbyElement("post-match-leave"),
+      note: lobbyElement("post-match-note"),
+    }, lobby.postMatch, Date.now(), {
+      map: function(index) { return selectedLabel(elements.map, index) || "Map " + index; },
+      mode: function(index) { return selectedLabel(elements.mode, index) || "Game " + index; },
+    }, {
+      vote: votePostMatch,
+      stay: stayPostMatch,
+      leave: function() { finishPostMatch(false, true); },
+    });
+  }
+
   function installLobby() {
     var root = lobbyElement("lobby");
     if (!root || lobby.installed) return;
     lobby.installed = true;
     root.addEventListener("keydown", function(event) { event.stopPropagation(); });
     lobbyElement("lobby-play").addEventListener("click", function() {
+      /* the post-match lobby: leaving now */
+      if (lobby.postMatch) {
+        finishPostMatch(false, true);
+        return;
+      }
       var custom = lobbyKind() === "custom";
       var view = partyView();
       if (!session.active) {
@@ -5540,6 +5821,11 @@
       lobbyElement("lobby-spartan-toggle").click();
     });
     lobbyElement("lobby-party-leave").addEventListener("click", function() { leaveParty(); });
+    /* the post-match lobby's own buttons */
+    var postStay = lobbyElement("post-match-stay");
+    if (postStay) postStay.addEventListener("click", function() { stayPostMatch(); });
+    var postLeave = lobbyElement("post-match-leave");
+    if (postLeave) postLeave.addEventListener("click", function() { finishPostMatch(false, true); });
     /* invite: a party to bring friends into (started if there is none) */
     lobbyElement("lobby-invite").addEventListener("click", async function() {
       if (!partyView()) await createParty();

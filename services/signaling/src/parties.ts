@@ -10,6 +10,7 @@ import {
   isBuildId,
   parsePlayerProfile,
 } from "./protocol";
+import { parseVote } from "./vote";
 import { stakeProblem } from "./wager";
 import { walletForToken } from "./wallet";
 
@@ -174,7 +175,11 @@ export async function handlePartyRequest(
       if (problem) throw new HttpError(409, "STAKE_NOT_READY", `${entry.name}: ${problem}`);
     }
   }
-  const queued = await matchmaker.enqueueParty({ partyId: code, buildId: record.buildId, playlist: record.playlist, members, now });
+  const queued = await matchmaker.enqueueParty({
+    partyId: code, buildId: record.buildId, playlist: record.playlist, members, now,
+    /* the pick from the party's last match */
+    vote: parseVote(input.vote),
+  });
   if ("busy" in queued) throw new HttpError(409, "PARTY_MEMBER_BUSY", `${name(queued.busy)} is still in a match.`);
   return answer(await party.setActivity(join.key, { kind: "queue", playlist: record.playlist, tickets: queued.tickets }, now));
 }

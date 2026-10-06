@@ -720,6 +720,7 @@ export class SignalingRoom extends DurableObject<Env> {
           state: message.state,
           type: "match",
           v: SIGNALING_PROTOCOL_VERSION,
+          ...(message.vote === undefined ? {} : { vote: message.vote }),
         },
         "guest",
       );
@@ -730,6 +731,19 @@ export class SignalingRoom extends DurableObject<Env> {
         this.ctx.storage.kv.put(MATCH_SINCE_KEY, now);
         this.ctx.waitUntil(this.publishToDirectory(now));
       }
+      return;
+    }
+
+    if (message.type === "vote") {
+      /* the post-match vote: a guest's pick, to the host that tallies it */
+      if (sender.role !== "guest") {
+        this.sendError(socket, "VOTE_FORBIDDEN", "Only a guest votes.");
+        return;
+      }
+      this.broadcastToRole(
+        { from: sender.peerId, mapIndex: message.mapIndex, modeIndex: message.modeIndex, type: "vote", v: SIGNALING_PROTOCOL_VERSION },
+        "host",
+      );
       return;
     }
 

@@ -1118,6 +1118,47 @@
     #lobby-wager-result[data-tone="down"] strong { color: #ff8a7e; }
     #lobby-wager-result small { font-size: .78rem; color: #c8b27a; }
     #lobby-wager-result a { color: #9fd4ff; }
+    /* the post-match lobby (port/web/post_match.js): the carnage report,
+       the vote and the timer, in the lobby after a match */
+    #lobby-post-match {
+      display: grid; gap: .45rem; width: min(30rem, 100%); margin: .3rem 0 .2rem; padding: .7rem 1rem .8rem; box-sizing: border-box;
+      border: 1px solid rgba(95, 208, 255, .45); border-radius: .4rem; background: rgba(6, 10, 26, .82); color: #e4e9f2;
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif;
+    }
+    #lobby-post-match[hidden] { display: none; }
+    .pm-head { display: flex; align-items: baseline; gap: .6rem; margin: 0; }
+    #post-match-title { flex: 1; font-size: clamp(1.15rem, 1.6vw, 1.45rem); text-transform: uppercase; letter-spacing: .06em; color: #fff; }
+    .pm-timer-label { color: #9fd4ff; text-transform: uppercase; letter-spacing: .1em; font-size: .8rem; }
+    #post-match-timer { font-size: clamp(1.8rem, 3vw, 2.4rem); line-height: 1; color: #fff; text-shadow: 0 0 1rem rgba(60, 170, 255, .6); }
+    .pm-board { width: 100%; border-collapse: collapse; font-size: clamp(.9rem, 1.2vw, 1.05rem); }
+    .pm-board th { padding: .1rem .4rem; text-align: left; font-weight: 400; color: #9fb4d6; text-transform: uppercase; letter-spacing: .06em; font-size: .72rem; }
+    .pm-board th[hidden] { display: none; }
+    .pm-board td { padding: .12rem .4rem; white-space: nowrap; }
+    .pm-board th:nth-child(n+3), .pm-board td:nth-child(n+3) { text-align: right; }
+    .pm-board td:nth-child(2) { width: 100%; }
+    .pm-board tr.pm-team td { padding-top: .3rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    .pm-board tr.pm-team-red td, .pm-board tr.pm-red td:nth-child(2) { color: #ff8a7e; }
+    .pm-board tr.pm-team-blue td, .pm-board tr.pm-blue td:nth-child(2) { color: #8ec5ff; }
+    .pm-board tr.pm-quit td { opacity: .45; }
+    .pm-board td[data-self] { text-decoration: underline; text-underline-offset: .15em; }
+    .pm-vote-title { margin: .2rem 0 0; color: #ffd65a; text-transform: uppercase; letter-spacing: .06em; font-size: .85rem; }
+    .pm-vote { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .35rem; }
+    .pm-offer {
+      display: grid; gap: .1rem; padding: .4rem .6rem; border: 1px solid rgba(159, 212, 255, .4); background: rgba(18, 28, 66, .55);
+      color: #e4e9f2; font-family: inherit; font-size: .95rem; text-align: left; cursor: pointer;
+    }
+    .pm-offer:hover, .pm-offer:focus-visible { border-color: #ffd65a; outline: none; }
+    .pm-offer[data-mine] { border-color: #ffd65a; background: rgba(84, 54, 46, .75); }
+    .pm-offer small { color: #9fd4ff; font-size: .78rem; }
+    .pm-note { margin: 0; color: #c7d1e6; font-size: .9rem; }
+    .pm-actions { display: flex; gap: .5rem; }
+    .pm-actions button {
+      padding: .45rem 1rem; border: 1px solid #ffd65a; background: rgba(6, 10, 26, .6); color: #fff;
+      font-family: inherit; font-size: .95rem; cursor: pointer;
+    }
+    .pm-actions button:disabled { opacity: .55; cursor: default; }
+    .pm-actions button[hidden] { display: none; }
+    #post-match-stay:not(:disabled) { background: linear-gradient(90deg, #7a4a34, #8c5a3f 60%, #6d4130); }
     .wallet-gate-amounts { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
     .wallet-gate-amounts[hidden] { display: none; }
     .wallet-gate-amounts button {
@@ -2349,6 +2390,20 @@
           <ul id="lobby-live-list"></ul>
         </div>
         <p id="lobby-playlist-description">Two on two Team Slayer.</p>
+        <section id="lobby-post-match" aria-label="Post-match" hidden>
+          <p class="pm-head"><span id="post-match-title">Match over</span><span class="pm-timer-label">Next in</span><strong id="post-match-timer">20</strong></p>
+          <table class="pm-board">
+            <thead><tr><th></th><th>Player</th><th>Score</th><th>K</th><th>D</th><th id="post-match-money-head" hidden>SOL</th></tr></thead>
+            <tbody id="post-match-rows"></tbody>
+          </table>
+          <p class="pm-vote-title">Vote for the next map</p>
+          <div id="post-match-vote" class="pm-vote"></div>
+          <p id="post-match-note" class="pm-note"></p>
+          <div class="pm-actions">
+            <button id="post-match-stay" type="button">Stay</button>
+            <button id="post-match-leave" type="button">Leave</button>
+          </div>
+        </section>
         <p id="lobby-wager-result" role="status" aria-live="polite" hidden></p>
       </div>
       <figure class="lobby-world" aria-hidden="true">
