@@ -536,6 +536,16 @@ Trickle ICE candidates (send `candidate: null` for end-of-candidates):
 }
 ```
 
+A player's line of text chat goes to everyone in the room (spectators
+included), under the name they play as and, when their wallet has a profile
+(`src/profiles.ts`), their account name. The text is as the room shows it:
+trimmed, single-spaced, and with the words on the profanity list
+(`src/chat.ts`) masked. The room keeps no chat:
+
+```json
+{ "v": 1, "type": "chat", "from": "g_...", "name": "Spartan 117", "username": "Chief", "style": "sage", "text": "gg", "at": 1700000000000 }
+```
+
 The transport must process `welcome.peers` and `peer-joined.peer` first, pass
 each peer's 12-hex `identifier` to `addPeer`, and only then apply SDP or ICE
 signals for that `peerId`.
@@ -547,6 +557,20 @@ milliseconds (at most 64 entries; the room rejects them from a guest with
 ```json
 { "v": 1, "type": "pings", "pings": { "g_...": 42 } }
 ```
+
+A line of text chat, at most 200 characters once trimmed (`src/chat.ts`,
+`CHAT_MAX_LENGTH`). A player who has not sent a profile, or a spectator, is
+refused with `CHAT_FORBIDDEN`; more than 5 lines in 10 seconds are dropped
+with `CHAT_RATE_LIMITED` (the socket stays open):
+
+```json
+{ "v": 1, "type": "chat", "text": "gg" }
+```
+
+Parties chat the same way over HTTP: `POST /v1/parties/:code/chat` with the
+member's body and `text`; `join`, `poll` and `chat` take `chatSince`, the
+`seq` of the last line the member saw, and answer with the party's lines
+after it (`party.chat`, the last 50 at most).
 
 ## Lifecycle and security properties
 

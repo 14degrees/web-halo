@@ -1173,6 +1173,67 @@
     }
     #key-tips dd { margin: 0; color: #c9d3e6; }
     @media (max-width: 700px) { #key-tips { display: none; } }
+    /* ---------- text chat (chat.js): the lobby's panel under the roster,
+       and the overlay over the game at the bottom left. A line is its
+       speaker's name in their armour colour and the text. */
+    .chat-log { display: grid; gap: .18rem; margin: 0; padding: 0; list-style: none; }
+    .chat-line { display: flex; gap: .45rem; align-items: baseline; min-width: 0; line-height: 1.3; }
+    .chat-name {
+      flex: none; padding: 0; border: 0; background: none; color: var(--player-color, #a9c6e0); font: inherit; font-weight: 700;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, .7);
+    }
+    .chat-line[data-style="black"] .chat-name { color: #9aa1a8; }
+    button.chat-name { cursor: pointer; }
+    button.chat-name:hover, button.chat-name:focus-visible { text-decoration: underline; outline: none; }
+    .chat-name::after { content: ":"; }
+    .chat-text { min-width: 0; overflow-wrap: anywhere; color: #e9eef6; text-shadow: 0 1px 2px rgba(0, 0, 0, .7); }
+    .chat-line[data-scope="party"] .chat-text::before { content: "(party) "; color: #8fb5d6; font-size: .85em; }
+    .lobby-chat { display: grid; gap: .4rem; margin-top: .9rem; }
+    .lobby-chat .chat-log {
+      max-height: clamp(7rem, 22vh, 14rem); overflow-y: auto; padding: .5rem .7rem; box-sizing: border-box;
+      background: rgba(8, 14, 40, .45); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
+      font-size: clamp(.95rem, 1.2vw, 1.1rem); scrollbar-width: thin;
+    }
+    .lobby-chat .chat-log:empty::before { content: "Nothing said yet."; color: #7f9ab3; font-style: italic; }
+    .lobby-chat[data-scope="none"] .chat-log:empty::before { content: "Chat with your party here, then with your game."; }
+    .chat-form { display: flex; gap: .4rem; }
+    .chat-form input {
+      flex: 1; min-width: 0; padding: .5rem .7rem; border: 0; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
+      background: rgba(8, 14, 40, .6); color: #f4f6fa; font: inherit; font-size: 1.02rem;
+    }
+    .chat-form input:focus { outline: none; box-shadow: inset 0 0 0 1px #5fd0ff; }
+    .chat-form input:disabled { color: #7f9ab3; }
+    .chat-form button {
+      padding: 0 .9rem; border: 0; cursor: pointer; color: #dfe6f2; font: inherit; font-size: 1.02rem; letter-spacing: .02em;
+      background: linear-gradient(180deg, rgba(74, 98, 146, .38), rgba(40, 56, 92, .38)); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
+    }
+    .chat-form button:disabled { cursor: default; opacity: .5; }
+    .chat-form button:not(:disabled):hover, .chat-form button:focus-visible { color: #ffb069; outline: none; }
+    .chat-note { margin: 0; color: #ffb069; font-size: .9rem; }
+    .chat-note[hidden], .chat-muted[hidden], #chat-overlay[hidden], #chat-overlay-input[hidden], #chat-overlay-hint[hidden] { display: none; }
+    .chat-muted { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin: 0; color: #a9c6e0; font-size: .85rem; }
+    .chat-unmute {
+      padding: .1rem .5rem; border: 0; border-radius: 1rem; cursor: pointer; background: rgba(255, 255, 255, .12); color: #e9eef6;
+      font: inherit; font-size: .85rem;
+    }
+    .chat-unmute:hover, .chat-unmute:focus-visible { background: rgba(255, 176, 105, .35); outline: none; }
+    #chat-overlay {
+      position: fixed; z-index: 7; left: clamp(.8rem, 2vw, 1.6rem); bottom: clamp(1rem, 5vh, 3rem);
+      display: grid; gap: .3rem; width: min(30rem, 70vw); pointer-events: none;
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif; font-size: clamp(.9rem, 1.3vw, 1.1rem);
+    }
+    #chat-overlay .chat-log { padding: .3rem .6rem; background: rgba(6, 10, 26, .55); border-left: 3px solid #5fd0ff; }
+    #chat-overlay .chat-log:empty { display: none; }
+    #chat-overlay[data-composing="true"] .chat-log { background: rgba(6, 10, 26, .78); }
+    #chat-overlay-input {
+      pointer-events: auto; width: 100%; padding: .45rem .7rem; border: 0; box-sizing: border-box;
+      background: rgba(6, 10, 26, .85); color: #f4f6fa; box-shadow: inset 0 0 0 1px #5fd0ff; font: inherit;
+    }
+    #chat-overlay-input:focus { outline: none; }
+    #chat-overlay-hint { color: #c9d3e6; font-size: .85em; opacity: .75; }
+    /* the page over the game (the lobby, the Esc menu) has the panel */
+    body[data-lobby="open"] #chat-overlay { display: none; }
+    @media (max-width: 700px) { #chat-overlay-hint { display: none; } }
     /* the scoreboard (Back, Tab, F1; and at game over), as Halo 3 drew it */
     #scoreboard {
       position: fixed; z-index: 7; left: 50%; top: 12vh; transform: translateX(-50%); pointer-events: none;
@@ -2414,6 +2475,16 @@
       <p class="lobby-count" id="lobby-count">Players</p>
       <ul id="lobby-players"><li class="empty">Nobody here yet — press Play</li></ul>
       <button id="lobby-invite" class="lobby-invite" type="button"><span aria-hidden="true">+</span> Invite to party</button>
+      <!-- text chat with the party, then with the game's room (chat.js) -->
+      <section id="lobby-chat" class="lobby-chat" aria-label="Chat" data-scope="none">
+        <ol id="lobby-chat-log" class="chat-log" aria-live="polite"></ol>
+        <p id="lobby-chat-muted" class="chat-muted" hidden></p>
+        <form id="lobby-chat-form" class="chat-form" autocomplete="off">
+          <input id="lobby-chat-input" type="text" maxlength="200" placeholder="Join a party or a game to chat" spellcheck="true" disabled>
+          <button id="lobby-chat-send" type="submit" disabled>Send</button>
+        </form>
+        <p id="lobby-chat-note" class="chat-note" role="status" aria-live="polite" hidden></p>
+      </section>
     </div>
   </section>
   <dialog id="playlist-dialog" aria-labelledby="playlist-dialog-title">
@@ -2534,9 +2605,16 @@
       <div><dt>Z</dt><dd>Zoom</dd></div>
       <div><dt>T</dt><dd>Flashlight</dd></div>
       <div><dt>Tab</dt><dd>Scores</dd></div>
+      <div><dt>Y</dt><dd>Chat</dd></div>
       <div><dt>Esc</dt><dd>Menu</dd></div>
     </dl>
   </aside>
+  <!-- text chat over the game: the last lines, and the composer Y opens (chat.js) -->
+  <section id="chat-overlay" aria-label="Chat" data-composing="false" hidden>
+    <ol id="chat-overlay-log" class="chat-log"></ol>
+    <input id="chat-overlay-input" type="text" maxlength="200" placeholder="Say something… Enter sends, Esc closes" autocomplete="off" spellcheck="true" hidden>
+    <small id="chat-overlay-hint" hidden>Y to chat</small>
+  </section>
   <section id="scoreboard" aria-label="Scores" hidden>
     <h2 id="scoreboard-title" class="sb-title">Scores</h2>
     <div class="sb-row sb-head"><span class="sb-place"></span><span class="sb-emblem"></span><span class="sb-name">Name</span><span id="scoreboard-tag-head" class="sb-tag">K/D</span><span class="sb-score">Score</span><span class="sb-ping">Ping</span></div>

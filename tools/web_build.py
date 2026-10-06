@@ -335,6 +335,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         f"--shell-file {WEB_DIR}/shell.html",
         f"--pre-js {WEB_DIR}/fetch_path_normalization.js",
         f"--pre-js {WEB_DIR}/online_client.js",
+        f"--pre-js {WEB_DIR}/chat.js",
     ]
     n.build(
         outputs=output,
@@ -346,6 +347,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
             WEB_SDL_PORT,
             WEB_DIR / "fetch_path_normalization.js",
             WEB_DIR / "online_client.js",
+            WEB_DIR / "chat.js",
             WEB_DIR / "library_web_transport.js",
         ],
         variables={

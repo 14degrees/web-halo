@@ -1,3 +1,5 @@
+import { normaliseChatText } from "./chat";
+
 export const SIGNALING_PROTOCOL_VERSION = 1 as const;
 export const MAX_HTTP_BODY_BYTES = 4_096;
 export const MAX_WEBSOCKET_MESSAGE_CHARACTERS = 65_536;
@@ -212,6 +214,13 @@ export type ClientMessage =
       /* A guest trying to join a running match, relayed to the host, which
          wraps the match up so the next one includes them. */
       type: "waiting";
+      v: typeof SIGNALING_PROTOCOL_VERSION;
+    }
+  | {
+      /* A line of text chat, passed on to everyone in the room under the
+         sender's name (src/chat.ts: bounds, rate, profanity). */
+      text: string;
+      type: "chat";
       v: typeof SIGNALING_PROTOCOL_VERSION;
     }
   | {
@@ -580,6 +589,12 @@ export function parseClientMessage(value: unknown): ValidationResult<ClientMessa
 
   if (value.type === "waiting") {
     return { ok: true, value: { type: "waiting", v: SIGNALING_PROTOCOL_VERSION } };
+  }
+
+  if (value.type === "chat") {
+    const text = normaliseChatText(value.text);
+    if (text === null) return { ok: false, message: "Chat text is empty, too long, or not text." };
+    return { ok: true, value: { text, type: "chat", v: SIGNALING_PROTOCOL_VERSION } };
   }
 
   if (value.type === "pings") {

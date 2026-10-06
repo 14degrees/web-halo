@@ -1536,6 +1536,11 @@
       replaceRoster(message.players);
       return;
     }
+    if (message.type === "chat") {
+      /* a player's line of text chat (chat.js shows it) */
+      if (global.HaloChat) global.HaloChat.receive("room", message);
+      return;
+    }
     if (message.type === "signal") {
       var transportPeerId = session.peerAliases.get(message.from) || message.from;
       var peerPromise = session.peerPromises.get(transportPeerId);
@@ -2313,6 +2318,8 @@
     syncTelemetryContext();
     renderRoster();
     renderPings();
+    /* the room's chat goes with the room */
+    if (global.HaloChat) global.HaloChat.clear("room");
   }
 
   async function leave(returnToSetup) {
@@ -3352,10 +3359,21 @@
 
   function applyParty(view) {
     if (!view) return;
-    if (!lobby.party || lobby.party.code !== view.code) lobby.party = { code: view.code, adopted: null, polledAt: 0 };
+    if (!lobby.party || lobby.party.code !== view.code) {
+      lobby.party = { code: view.code, adopted: null, polledAt: 0 };
+      if (global.HaloChat) global.HaloChat.clear("party");
+    }
     lobby.party.view = view;
     rememberParty(view.code);
     adoptPartyActivity(view);
+    /* the party's chat since the last poll (chat.js shows it) */
+    if (Array.isArray(view.chat)) {
+      view.chat.forEach(function(line) {
+        if (!line || typeof line.seq !== "number" || line.seq <= (lobby.party.chatSeq || 0)) return;
+        lobby.party.chatSeq = line.seq;
+        if (global.HaloChat) global.HaloChat.receive("party", line);
+      });
+    }
     renderPartyDialog();
   }
 
@@ -3387,6 +3405,8 @@
   async function partyRequest(action, extra) {
     var body = partyMember();
     if (extra) Object.keys(extra).forEach(function(key) { body[key] = extra[key]; });
+    /* the chat: only the lines after the one this page saw */
+    if (action !== "create" && lobby.party) body.chatSince = lobby.party.chatSeq || 0;
     var path = action === "create" ? "/v1/parties" : "/v1/parties/" + encodeURIComponent(lobby.party.code) + "/" + action;
     return fetchJson(path, { method: "POST", body: JSON.stringify(body) });
   }
@@ -3440,6 +3460,7 @@
 
   async function leaveParty() {
     var party = lobby.party;
+    if (global.HaloChat) global.HaloChat.clear("party");
     if (!party) return;
     lobby.party = null;
     rememberParty(null);
@@ -3484,6 +3505,7 @@
           lobby.party = null;
           rememberParty(null);
           lobby.error = "You're no longer in that party.";
+          if (global.HaloChat) global.HaloChat.clear("party");
         }
       })
       .then(function() { party.polling = false; });
@@ -4276,6 +4298,8 @@
       return;
     }
     if (document.body.dataset.lobby === "open") refreshPlaylists();
+    /* the chat panel follows where chat goes (the party, then the room) */
+    if (document.body.dataset.lobby === "open" && global.HaloChat) global.HaloChat.refresh();
     moveToOpenServer(clientState());
     restartForWaitingPlayers();
     broadcastMatch();
@@ -5841,6 +5865,32 @@
     hostDedicated: hostDedicated,
     dedicatedStatus: dedicatedStatus,
     leave: function() { return leave(true); },
+    /* Text chat (chat.js): a line goes to the room when this page is in one,
+       else to the party; and where this page is, for the panel and the
+       overlay. */
+    chat: Object.freeze({
+      send: function(text, scope) {
+        var toRoom = scope === "room" || (scope !== "party" && session.active && session.socket);
+        if (toRoom) {
+          sendSocket({ v: PROTOCOL_VERSION, type: "chat", text: String(text) });
+          return Promise.resolve();
+        }
+        if (lobby.party) {
+          return partyRequest("chat", { text: String(text) }).then(function(result) { applyParty(result.party); });
+        }
+        return Promise.reject(new Error("Join a party or a game to chat."));
+      },
+      context: function() {
+        var inRoom = !!(session.active && session.socket && session.socket.readyState === WebSocket.OPEN);
+        return {
+          room: inRoom,
+          party: !!(lobby.party && lobby.party.view),
+          inGame: inMatch() && document.body.dataset.lobby !== "open",
+          selfName: currentProfile().name,
+          selfPeerId: session.selfPeerId,
+        };
+      },
+    }),
     /* The developer panel (shell.html, Ctrl+Shift+L): this session and who
        each transport peer is. Transport peer IDs are signaling peer IDs,
        except a refreshed browser's, which keeps its connected predecessor's

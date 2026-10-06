@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { PARTY_CHAT_HISTORY, allowChat, censorChatText } from "./chat";
 import { randomToken } from "./crypto";
 
 /* A party: friends together in the lobby, by a short code anyone can share
@@ -11,7 +12,12 @@ import { randomToken } from "./crypto";
    The leader picks the lobby (matchmaking, or a custom game with its map
    and game type) and starts it. Starting gives every member a matchmaker
    ticket (src/matchmaker.ts: enqueueParty, startCustom), which each page
-   then follows as it follows its own. */
+   then follows as it follows its own.
+
+   Members chat by text while they wait (src/chat.ts): a message is kept
+   with the party, numbered, and a poll brings back the ones after the
+   number the member saw last. The party's last PARTY_CHAT_HISTORY messages
+   go with it when it ends. */
 
 export const PARTY_MAXIMUM_MEMBERS = 16;
 /* a member not heard from in this long has left */
@@ -39,6 +45,20 @@ interface PartyMember extends PartyJoin {
   id: string;
   joinedAt: number;
   seenAt: number;
+  /* text chat: how often this member has spoken lately (src/chat.ts) */
+  chatCount?: number;
+  chatWindowStartedAt?: number;
+}
+
+/* a line of chat, as members see it: who (their member id, name and
+   colour), what, when, and its number in the party's chat */
+export interface PartyChatMessage {
+  seq: number;
+  from: string;
+  name: string;
+  style: string;
+  text: string;
+  at: number;
 }
 
 export interface PartyActivity {
@@ -60,6 +80,10 @@ interface PartyRecord {
   modeIndex: number;
   activity: PartyActivity | null;
   createdAt: number;
+  /* the last PARTY_CHAT_HISTORY lines of chat (absent in parties made
+     before chat) */
+  chat?: PartyChatMessage[];
+  chatSeq?: number;
 }
 
 export interface PartySettings {
@@ -81,9 +105,13 @@ export interface PartyView {
   mapIndex: number;
   modeIndex: number;
   activity: { id: string; kind: "queue" | "custom"; playlist: string; ticket: string | null; at: number } | null;
+  /* the chat after the line the member saw last (chatSince), oldest first */
+  chat: PartyChatMessage[];
 }
 
-export type PartyResult = { party: PartyView } | { error: "NOT_FOUND" | "FULL" | "NOT_MEMBER" | "NOT_LEADER" };
+export type PartyResult =
+  | { party: PartyView }
+  | { error: "NOT_FOUND" | "FULL" | "NOT_MEMBER" | "NOT_LEADER" | "CHAT_RATE_LIMITED" };
 
 export class Party extends DurableObject<Env> {
   private read(): PartyRecord | null {
@@ -108,7 +136,7 @@ export class Party extends DurableObject<Env> {
     return record;
   }
 
-  private view(record: PartyRecord, key: string): PartyView {
+  private view(record: PartyRecord, key: string, chatSince = 0): PartyView {
     const self = record.members.find((member) => member.key === key)!;
     return {
       code: record.code,
@@ -133,6 +161,7 @@ export class Party extends DurableObject<Env> {
         ticket: record.activity.tickets[key] ?? null,
         at: record.activity.at,
       } : null,
+      chat: (record.chat ?? []).filter((message) => message.seq > chatSince),
     };
   }
 
@@ -164,7 +193,7 @@ export class Party extends DurableObject<Env> {
     return this.view(record, join.key);
   }
 
-  async join(join: PartyJoin, now: number): Promise<PartyResult> {
+  async join(join: PartyJoin, now: number, chatSince = 0): Promise<PartyResult> {
     const record = this.read();
     const live = record ? this.prune(record, now) : null;
     if (!live) return { error: "NOT_FOUND" };
@@ -173,11 +202,11 @@ export class Party extends DurableObject<Env> {
     }
     this.upsert(live, join, now);
     this.write(live);
-    return { party: this.view(live, join.key) };
+    return { party: this.view(live, join.key, chatSince) };
   }
 
   /* A member's poll: they are still here. */
-  async poll(join: PartyJoin, now: number): Promise<PartyResult> {
+  async poll(join: PartyJoin, now: number, chatSince = 0): Promise<PartyResult> {
     const record = this.read();
     const live = record ? this.prune(record, now) : null;
     if (!live) return { error: "NOT_FOUND" };
@@ -187,7 +216,32 @@ export class Party extends DurableObject<Env> {
     }
     this.upsert(live, join, now);
     this.write(live);
-    return { party: this.view(live, join.key) };
+    return { party: this.view(live, join.key, chatSince) };
+  }
+
+  /* A member says something to the party. The text arrives checked
+     (src/chat.ts, normaliseChatText); the party masks the profanity, holds
+     a flood back, and keeps the last lines for the others' polls. */
+  async say(join: PartyJoin, text: string, now: number, chatSince = 0): Promise<PartyResult> {
+    const record = this.read();
+    const live = record ? this.prune(record, now) : null;
+    if (!live) return { error: "NOT_FOUND" };
+    if (!live.members.some((member) => member.key === join.key)) {
+      this.write(live);
+      return { error: "NOT_MEMBER" };
+    }
+    const member = this.upsert(live, join, now);
+    if (!allowChat(member, now)) {
+      this.write(live);
+      return { error: "CHAT_RATE_LIMITED" };
+    }
+    const seq = (live.chatSeq ?? 0) + 1;
+    live.chatSeq = seq;
+    live.chat = [...(live.chat ?? []), {
+      seq, from: member.id, name: member.profile.name, style: member.profile.style, text: censorChatText(text), at: now,
+    }].slice(-PARTY_CHAT_HISTORY);
+    this.write(live);
+    return { party: this.view(live, join.key, chatSince) };
   }
 
   async leave(key: string, now: number): Promise<void> {
