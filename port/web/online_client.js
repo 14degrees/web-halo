@@ -2874,6 +2874,31 @@
     lobby.landingStatus = { text: text || "", tone: tone || null };
   }
 
+  /* The landing's links out, from the Worker (GET /v1/site): the
+     fomo.family link carries the deployment's referral code, and the X
+     link shows only once an X account is configured. The page's own hrefs
+     stand until the answer comes, or when it never does. The answer also
+     says whether the Worker looks for fomo wallets (lobby.site). */
+  function loadSiteLinks() {
+    if (lobby.siteRequested) return;
+    lobby.siteRequested = true;
+    fetchJson("/v1/site", { method: "GET" }).then(function(site) {
+      var links = site && site.links;
+      if (!links) return;
+      lobby.site = { fomoDetection: !!site.fomoDetection, links: links };
+      var fomo = lobbyElement("landing-fomo-link");
+      if (fomo && typeof links.fomo === "string" && /^https:\/\/fomo\.family\//.test(links.fomo)) fomo.href = links.fomo;
+      var x = lobbyElement("landing-x-link");
+      if (x) {
+        var xUrl = typeof links.x === "string" && /^https:\/\/x\.com\/[A-Za-z0-9_]+$/.test(links.x) ? links.x : null;
+        if (xUrl) x.href = xUrl;
+        x.hidden = !xUrl;
+      }
+    }).catch(function() {
+      /* the page's own links stay */
+    });
+  }
+
   function renderLanding() {
     var setText = function(id, text) {
       var element = lobbyElement(id);
@@ -2881,6 +2906,7 @@
     };
     var root = lobbyElement("landing");
     if (!root) return;
+    loadSiteLinks();
     /* the live map shows through once the game has it up; paused, the game
        itself is behind */
     var live = (backdropState() === 2 || backgroundBroadcastPlaying()) && gameInView() &&

@@ -48,7 +48,9 @@ import { requireHumanVerification } from "./turnstile";
 import { checkSettlementWallet } from "./alerts";
 import { handleBroadcastRequest } from "./broadcast";
 import { handlePartyRequest } from "./parties";
+import { fomoCheckAfterSignIn } from "./fomo";
 import { adminProfileLookup, handleProfileRequest } from "./profile";
+import { siteInfo } from "./site";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
@@ -259,6 +261,10 @@ async function handleAdminRequest(
   if (!url.pathname.startsWith("/v1/admin/")) {
     return null;
   }
+  /* the dashboard's preflight (the bearer header makes every call one) */
+  if (request.method === "OPTIONS") {
+    return corsPreflight();
+  }
   if (!(await requestIsAuthorizedAdmin(request, env))) {
     return jsonResponse({ error: { code: "UNAUTHORIZED", message: "Unauthorized." } }, 401, {
       "WWW-Authenticate": "Bearer",
@@ -453,6 +459,17 @@ export function pingTargets(setting: string | undefined): PingTarget[] {
     targets.push({ id, label, url: probe.href });
   }
   return targets;
+}
+
+function corsPreflight(): Response {
+  return new Response(null, {
+    headers: {
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Methods": "GET, PATCH, POST, DELETE, OPTIONS",
+      "Access-Control-Max-Age": "86400",
+    },
+    status: 204,
+  });
 }
 
 function withCors(response: Response, origin: string | null): Response {
@@ -1111,6 +1128,11 @@ async function handleMatchmaking(
     return spectateMatch(request, env, origin);
   }
 
+  if (request.method === "GET" && url.pathname === "/v1/site") {
+    /* The page's links out and which optional features this deployment
+       has on (src/site.ts); nothing per player, nothing to compute. */
+    return withCors(jsonResponse({ ...siteInfo(env), v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
   if (request.method === "GET" && url.pathname === "/v1/ping") {
     /* The page's ping before a match (port/web/online_client.js,
        refreshPing): a round trip to this Worker, and where else to probe,
@@ -1248,27 +1270,21 @@ async function closeRoom(
   return withCors(new Response(null, { status: 204 }), origin);
 }
 
-async function route(request: Request, env: RuntimeEnv): Promise<Response> {
+async function route(request: Request, env: RuntimeEnv, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/v1/health") {
     return jsonResponse({ ok: true, v: SIGNALING_PROTOCOL_VERSION });
   }
   const adminResponse = await handleAdminRequest(request, env, url);
   if (adminResponse !== null) {
-    return adminResponse;
+    /* the dashboard (servers.html, on the page's origin) calls the admin
+       routes from the browser; curl sends no Origin and needs no CORS */
+    return withCors(adminResponse, request.headers.get("Origin") === null ? null : allowedOrigin(request, env));
   }
 
   const origin = allowedOrigin(request, env);
   if (request.method === "OPTIONS") {
-    const response = new Response(null, {
-      headers: {
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Allow-Methods": "GET, PATCH, POST, DELETE, OPTIONS",
-        "Access-Control-Max-Age": "86400",
-      },
-      status: 204,
-    });
-    return withCors(response, origin);
+    return withCors(corsPreflight(), origin);
   }
   if (request.method === "POST" && url.pathname === "/v1/rooms") {
     await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
@@ -1297,6 +1313,10 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
 
   const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
   if (walletResponse !== null) {
+    if (url.pathname === "/v1/auth/verify" && typeof walletResponse.wallet === "string") {
+      /* a signed-in wallet gets looked for on fomo, after the answer */
+      ctx.waitUntil(fomoCheckAfterSignIn(env, walletResponse.wallet));
+    }
     return withCors(jsonResponse(walletResponse), origin);
   }
 
@@ -1375,12 +1395,12 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: RuntimeEnv): Promise<Response> {
+  async fetch(request: Request, env: RuntimeEnv, ctx: ExecutionContext): Promise<Response> {
     const startedAt = Date.now();
     const requestId = crypto.randomUUID();
     const path = new URL(request.url).pathname;
     try {
-      const response = await route(request, env);
+      const response = await route(request, env, ctx);
       console.log(
         JSON.stringify({
           durationMs: Date.now() - startedAt,

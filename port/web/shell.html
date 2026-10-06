@@ -1275,6 +1275,12 @@
     #lobby-ping::before { content: " · "; color: #c9d4e6; }
     .landing-ping { white-space: nowrap; }
     .landing-now-side { display: flex; gap: 1rem; white-space: nowrap; }
+    /* the links out (fomo.family with the deployment's referral code, X once
+       an account is set; online_client.js, loadSiteLinks) */
+    .landing-links { display: inline-flex; gap: .75rem; }
+    .landing-links a { color: #9fb4d6; text-decoration: none; letter-spacing: .04em; }
+    .landing-links a:hover, .landing-links a:focus-visible { color: #fff; text-decoration: underline; }
+    .landing-links a[hidden] { display: none; }
     .sb-quit { color: rgba(241, 243, 246, .4); }
     .sb-quit .sb-tag { color: rgba(207, 214, 226, .35); }
     .kill-pop { position: absolute; transform: translate(-50%, -100%); will-change: left, top; }
@@ -2366,6 +2372,10 @@
         <span class="landing-now-side">
           <span id="landing-now-detail" class="landing-now-detail"></span>
           <span id="landing-ping" class="landing-ping" title="Ping" hidden></span>
+          <nav class="landing-links" aria-label="Halo elsewhere">
+            <a id="landing-fomo-link" href="https://fomo.family/r/ARCH" target="_blank" rel="noopener noreferrer" title="fomo.family">fomo</a>
+            <a id="landing-x-link" href="https://x.com/" target="_blank" rel="noopener noreferrer" title="Halo on X" hidden>X</a>
+          </nav>
         </span>
       </div>
       <nav class="landing-modes" aria-label="Ways to play">
