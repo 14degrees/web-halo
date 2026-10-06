@@ -8,6 +8,7 @@ import {
   type ProfileView,
   type ProfileVisibility,
 } from "./profiles";
+import { handleFomoRequest } from "./fomo";
 import { base58Decode, parseWallet, verifyWalletSignature } from "./solana";
 import { requireWallet } from "./wallet";
 
@@ -23,6 +24,8 @@ import { requireWallet } from "./wallet";
                                             wallet must sign
      POST   /v1/profile/wallets             { wallet, nonce, signature }: link it
      DELETE /v1/profile/wallets/:wallet     unlink it (the last one stays)
+     POST   /v1/profile/fomo/check          look for the wallets on fomo now
+                                            (src/fomo.ts)
      GET    /v1/profiles/:username          another player's view (no auth)
      GET    /v1/profiles?wallets=a,b,c      the same for a roster's wallets
                                             (no auth, at most 16)
@@ -229,6 +232,9 @@ export async function handleProfileRequest(
     if (wallet === null) throw new HttpError(400, "VALIDATION_FAILED", "wallet must be a Solana address.");
     return answer(await profiles(env).unlinkWallet(owner, wallet, now));
   }
+
+  const fomoResponse = await handleFomoRequest(request, env, path, now);
+  if (fomoResponse !== null) return fomoResponse;
 
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
 }

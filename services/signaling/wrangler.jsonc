@@ -40,7 +40,15 @@
     // goes and the fee's rate (it may not exceed the program's own setting).
     // Its authority key and session secret are secrets.
     "ESCROW_FEE_VAULT": "8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM",
-    "ESCROW_FEE_BPS": "500"
+    "ESCROW_FEE_BPS": "500",
+    // fomo.family detection (src/fomo.ts): the mainnet wallet fomo pays its
+    // users' fees from. The mainnet RPC URL is the FOMO_RPC_URL secret.
+    "FOMO_FEE_PAYER": "AgmLJBMDCqWynYnQiPCuj9ewsNNsBJXyzoUhD9LJzN51",
+    // The page's links out (src/site.ts): the fomo referral code behind
+    // the landing's fomo.family link, and the game's X profile URL (none
+    // chosen yet: the link stays hidden until this is set).
+    "FOMO_REFERRAL_CODE": "ARCH",
+    "X_PROFILE_URL": ""
   },
   "triggers": {
     "crons": ["*/5 * * * *"]
