@@ -1,4 +1,3 @@
-import type { WagerView } from "./wager";
 import { DurableObject } from "cloudflare:workers";
 
 import { allowChat, censorChatText } from "./chat";
@@ -12,6 +11,8 @@ import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobb
 import { MATCHMAKER_NAME } from "./matchmaker";
 import { PROFILES_NAME } from "./profiles";
 import { walletPlayerName } from "./solana";
+import type { RoomRoster } from "./stats";
+import type { WagerView } from "./wager";
 
 /* when the room's dedicated host last pinged (lobby.ts, DEDICATED_HOST_LEASE_MS) */
 const HOST_SEEN_KEY = "hostSeenAt";
@@ -804,6 +805,9 @@ export class SignalingRoom extends DurableObject<Env> {
          can never be pinned on someone else. */
       sender.profile = sender.wallet === undefined ? message.profile :
         { ...message.profile, name: walletPlayerName(sender.wallet) };
+      if (sender.role === "guest" && !sender.spectator) {
+        this.rememberSeat(sender.identifier, sender.profile.name, sender.wallet ?? null);
+      }
       if (sender.matches === undefined && sender.role === "guest") {
         this.ctx.waitUntil(this.lookUpRank(sender.peerId, sender.identifier));
       }
@@ -1210,6 +1214,57 @@ export class SignalingRoom extends DurableObject<Env> {
     }
   }
 
+  /* ---------- who played, for the match's stats (src/stats.ts) */
+
+  /* The room keeps each player's seat (their machine, the name they play
+     under, their wallet) and the kills the dedicated host reported, so a
+     finished match's result, which names players, can be put to the
+     players' lasting records after they have gone. */
+  private seatTables(): void {
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS match_seats (identifier TEXT PRIMARY KEY, name TEXT NOT NULL, wallet TEXT);
+      CREATE TABLE IF NOT EXISTS match_kills (
+        name TEXT PRIMARY KEY, kills INTEGER NOT NULL DEFAULT 0, deaths INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  }
+
+  private rememberSeat(identifier: string, name: string, wallet: string | null): void {
+    this.seatTables();
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO match_seats (identifier, name, wallet) VALUES (?, ?, ?)", identifier, name, wallet,
+    );
+  }
+
+  /* an enemy kill, as the server reports them: a kill for one, a death
+     for the other */
+  private countKill(killerName: string, victimName: string): void {
+    this.seatTables();
+    if (killerName !== victimName) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO match_kills (name, kills) VALUES (?, 1)
+         ON CONFLICT(name) DO UPDATE SET kills = kills + 1`, killerName,
+      );
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO match_kills (name, deaths) VALUES (?, 1)
+       ON CONFLICT(name) DO UPDATE SET deaths = deaths + 1`, victimName,
+    );
+  }
+
+  /* Every seat the room has had, and every name's kills and deaths. */
+  async matchRoster(): Promise<RoomRoster> {
+    this.seatTables();
+    return {
+      seats: this.ctx.storage.sql.exec<{ identifier: string; name: string; wallet: string | null }>(
+        "SELECT identifier, name, wallet FROM match_seats ORDER BY identifier",
+      ).toArray(),
+      kills: this.ctx.storage.sql.exec<{ name: string; kills: number; deaths: number }>(
+        "SELECT name, kills, deaths FROM match_kills ORDER BY name",
+      ).toArray(),
+    };
+  }
+
   /* A pending session's wallet, until its socket opens. */
   private walletTable(): void {
     this.ctx.storage.sql.exec(
@@ -1250,6 +1305,7 @@ export class SignalingRoom extends DurableObject<Env> {
       this.sendError(socket, "KILL_FORBIDDEN", "Only a dedicated host reports kills.");
       return;
     }
+    this.countKill(killerName, victimName);
     const wagerMatch = this.ctx.storage.kv.get(WAGER_KEY) as string | undefined;
     if (wagerMatch !== undefined) {
       const result = await this.env.WAGERS.getByName(wagerMatch).kill(killerName, victimName);

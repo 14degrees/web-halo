@@ -5662,6 +5662,7 @@
       lobbyElement("lobby-name").value = currentProfile().name;
       renderLobbyColors();
       renderMouseLookSettings();
+      if (global.HaloStats) global.HaloStats.refreshPlayerStats();
       spartanDialog.showModal();
     });
     lobbyElement("spartan-dialog-close").addEventListener("click", closeSpartan);
@@ -5817,6 +5818,18 @@
       setPartyStatus("");
       openPartyDialog();
     });
+    /* the leaderboard and the player's record (stats_panel.js) */
+    if (global.HaloStats) {
+      global.HaloStats.init({
+        fetchJson: fetchJson,
+        playerKey: playerKey,
+        walletAddress: function() { return wallet.address; },
+      });
+      var leaderboardButton = lobbyElement("lobby-leaderboard");
+      if (leaderboardButton) {
+        leaderboardButton.addEventListener("click", function() { global.HaloStats.openLeaderboard(); });
+      }
+    }
     var prompt = lobbyElement("lobby-deploy");
     prompt.addEventListener("click", deploy);
     prompt.addEventListener("keydown", function(event) {

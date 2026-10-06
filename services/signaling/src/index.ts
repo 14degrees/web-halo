@@ -51,6 +51,7 @@ import { handlePartyRequest } from "./parties";
 import { fomoCheckAfterSignIn } from "./fomo";
 import { adminProfileLookup, handleProfileRequest } from "./profile";
 import { siteInfo } from "./site";
+import { handleStatsRequest } from "./stats";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
@@ -61,6 +62,7 @@ export { SignalingRoom } from "./room";
 export { Wager } from "./wager";
 export { Party } from "./party";
 export { Profiles } from "./profiles";
+export { Stats } from "./stats";
 export type {
   ClientMessage,
   CreateRoomResponse,
@@ -1328,6 +1330,13 @@ async function route(request: Request, env: RuntimeEnv, ctx: ExecutionContext): 
     }
     const profileResponse = await handleProfileRequest(request, env, url, () => readJsonBody(request));
     if (profileResponse !== null) return withCors(jsonResponse(profileResponse), origin);
+  }
+
+  /* the leaderboard and players' records (src/stats.ts) */
+  if (url.pathname === "/v1/leaderboard" || url.pathname.startsWith("/v1/players/")) {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "stats");
+    const statsResponse = await handleStatsRequest(request, env, url);
+    if (statsResponse !== null) return withCors(jsonResponse(statsResponse), origin);
   }
 
   const matchmakingResponse = await handleMatchmaking(request, env, origin, url);
