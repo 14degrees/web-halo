@@ -53,6 +53,34 @@ export type PeerRole = "host" | "guest";
 export const MATCH_STATES = ["lobby", "countdown", "ingame", "postgame"] as const;
 export type MatchState = (typeof MATCH_STATES)[number];
 
+/* the post-match vote in a player-hosted room: the games offered for the
+   next match ([map, mode], at most this many) and the votes each has */
+export const MATCH_VOTE_MAXIMUM_OFFERS = 4;
+export interface MatchVote {
+  offers: Array<[number, number]>;
+  votes: number[];
+}
+
+function isGameIndex(map: unknown, mode: unknown): boolean {
+  return Number.isInteger(map) && (map as number) >= 0 && (map as number) < LOBBY_MAP_COUNT &&
+    Number.isInteger(mode) && (mode as number) >= 0 && (mode as number) < LOBBY_MODE_COUNT;
+}
+
+function parseMatchVote(value: unknown): MatchVote | null {
+  if (!isRecord(value) || !Array.isArray(value.offers) || !Array.isArray(value.votes)) return null;
+  if (value.offers.length === 0 || value.offers.length > MATCH_VOTE_MAXIMUM_OFFERS ||
+      value.votes.length !== value.offers.length) {
+    return null;
+  }
+  const offers: Array<[number, number]> = [];
+  for (const offer of value.offers) {
+    if (!Array.isArray(offer) || offer.length !== 2 || !isGameIndex(offer[0], offer[1])) return null;
+    offers.push([offer[0] as number, offer[1] as number]);
+  }
+  if (!value.votes.every((count) => Number.isInteger(count) && (count as number) >= 0 && (count as number) <= 64)) return null;
+  return { offers, votes: value.votes as number[] };
+}
+
 /* A private room is reachable only through its invite capability. A public
    room is additionally listed in the lobby directory, and anyone on the same
    build may join it through quick join or a ticket-less session request. */
@@ -225,10 +253,21 @@ export type ClientMessage =
     }
   | {
       /* The host's match status, relayed to its guests (the lobby's
-         countdown). startsIn is set while counting down. */
+         countdown). startsIn is set while counting down; vote, after a
+         match, is the post-match vote: the games offered for the next one
+         and the votes each has. */
       startsIn?: number;
       state: MatchState;
       type: "match";
+      v: typeof SIGNALING_PROTOCOL_VERSION;
+      vote?: MatchVote;
+    }
+  | {
+      /* A guest's pick in the post-match vote, relayed to the host, which
+         plays the plurality's game next. */
+      mapIndex: number;
+      modeIndex: number;
+      type: "vote";
       v: typeof SIGNALING_PROTOCOL_VERSION;
     }
   | {
@@ -618,6 +657,12 @@ export function parseClientMessage(value: unknown): ValidationResult<ClientMessa
     ) {
       return { ok: false, message: "startsIn must be an integer from 0 to 255." };
     }
+    let vote: MatchVote | undefined;
+    if (value.vote !== undefined) {
+      const parsed = parseMatchVote(value.vote);
+      if (!parsed) return { ok: false, message: "The match's vote is invalid." };
+      vote = parsed;
+    }
     return {
       ok: true,
       value: {
@@ -625,7 +670,16 @@ export function parseClientMessage(value: unknown): ValidationResult<ClientMessa
         state: value.state as MatchState,
         type: "match",
         v: SIGNALING_PROTOCOL_VERSION,
+        ...(vote === undefined ? {} : { vote }),
       },
+    };
+  }
+
+  if (value.type === "vote") {
+    if (!isGameIndex(value.mapIndex, value.modeIndex)) return { ok: false, message: "The vote is invalid." };
+    return {
+      ok: true,
+      value: { mapIndex: value.mapIndex as number, modeIndex: value.modeIndex as number, type: "vote", v: SIGNALING_PROTOCOL_VERSION },
     };
   }
 

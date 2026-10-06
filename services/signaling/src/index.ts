@@ -54,6 +54,7 @@ import { siteInfo } from "./site";
 import { handleStatsRequest } from "./stats";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
+import { handleVoteRequest, parseVote } from "./vote";
 import { handleWalletRequest, walletForToken } from "./wallet";
 
 export { LobbyDirectory } from "./lobby";
@@ -1068,6 +1069,8 @@ async function enqueue(request: Request, env: RuntimeEnv, origin: string | null)
     now: Date.now(),
     playlist,
     wallet: wallet ?? null,
+    /* the pick from the last match's vote, carried to the next */
+    vote: parseVote(body.vote),
   });
   return withCors(jsonResponse({ ticket, v: SIGNALING_PROTOCOL_VERSION }, 201), origin);
 }
@@ -1343,6 +1346,9 @@ async function route(request: Request, env: RuntimeEnv, ctx: ExecutionContext): 
   if (matchmakingResponse !== null) {
     return matchmakingResponse;
   }
+  /* the post-match vote (src/vote.ts) */
+  const voteResponse = await handleVoteRequest(request, env, url, () => readJsonBody(request));
+  if (voteResponse !== null) return withCors(jsonResponse(voteResponse), origin);
 
   if (request.method === "GET" && url.pathname === "/v1/servers") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");

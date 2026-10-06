@@ -20,6 +20,29 @@ Newest ideas first within each part. Commit hashes are on
   resume, or go elsewhere (it leaves the match first). Halo's own pause
   menu no longer opens under it. (`eeea0e4`)
 
+## The post-match lobby
+
+- **A lobby phase after every public match**, as in Halo 3: the carnage
+  report (place, score, kills, deaths; teams under their totals; in a
+  match for SOL each player's take), a vote for the next game with live
+  counts, a timer (20 s; 12 s in a player-hosted room) and Stay or Leave.
+  *Why:* the old return was a bare rejoin of the queue with nothing to
+  look at and no say in what comes next.
+- **The vote** is kept on the matchmaker's tickets (`POST
+  /v1/queue/:ticket/vote`, shown in every poll of the ended ticket); the
+  players who stay queue again with the winner on their new ticket, and
+  the matchmaker plays the plurality's game among the tickets it groups
+  (the rotation otherwise). A party's leader starts the party again with
+  it. In a player-hosted room the guests' picks go through the room
+  (`vote` message) and the host's `match` message carries the tally; the
+  host sets the winner as its next game.
+- **Nothing is staked again without a press**: a match for SOL ends with
+  "Play again for 0.050 SOL", and the timer running out leaves the player
+  in the lobby.
+- Code: `port/web/post_match.js`, `port/web/online_client.js`
+  (`tickPostMatch`, `finishPostMatch`), `services/signaling/src/vote.ts`,
+  `matchmaker.ts` (`vote`, `votedGame`).
+
 ## fomo.family and X
 
 - **A fomo wallet is recognised on its own.** fomo pays the network fee
