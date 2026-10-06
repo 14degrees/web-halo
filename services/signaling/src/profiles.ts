@@ -18,10 +18,13 @@ import { randomToken } from "./crypto";
    username; every further wallet proves itself with a signed message
    (src/profile.ts). A profile keeps at least one wallet.
 
-   The fomo and X columns are filled by later work (fomo detection, the X
-   tweet proof); this object only stores and shows them. Every link is
-   private until its owner turns on showing it. Other players see a
-   profile's links only when they are both shown and verified. */
+   fomo: the Worker checks each wallet against mainnet (src/fomo.ts) and
+   records the answer here, per wallet, in `fomo_checks`; a profile with a
+   detected wallet is verified with method "fee_payer". The X columns are
+   filled by later work (the X tweet proof); this object only stores and
+   shows them. Every link is private until its owner turns on showing it.
+   Other players see a profile's links only when they are both shown and
+   verified. */
 
 export const PROFILES_NAME = "main";
 
@@ -44,6 +47,9 @@ const DAY_MS = 24 * 60 * 60_000;
 export const RELEASED_USERNAME_HOLD_MS = 7 * DAY_MS;
 /* how far back the admin view and the per-profile event list reach */
 const EVENTS_SHOWN = 50;
+/* a wallet not seen on fomo is looked at again after this long; a wallet
+   once detected stays detected */
+export const FOMO_RECHECK_MS = DAY_MS;
 
 export type UsernameProblem = "USERNAME_INVALID" | "USERNAME_RESERVED";
 
@@ -78,6 +84,21 @@ export function normaliseUsername(input: unknown):
 
 export type FomoMethod = "fee_payer" | "transfer" | "official";
 
+/* what the chain check found for one wallet (src/fomo.ts) */
+export interface FomoCheckView {
+  wallet: string;
+  checkedAt: number;
+  detected: boolean;
+  /* the transaction that proved it */
+  signature: string | null;
+}
+
+export interface FomoDetectionInput {
+  detected: boolean;
+  signature: string | null;
+  scanned: number;
+}
+
 export interface ProfileVisibility {
   wallets: boolean;
   fomo: boolean;
@@ -93,6 +114,8 @@ export interface ProfileView {
   wallets: Array<{ wallet: string; linkedAt: number }>;
   fomo: { handle: string | null; wallet: string | null; verified: boolean; verifiedAt: number | null; method: FomoMethod | null } | null;
   x: { handle: string | null; verified: boolean; verifiedAt: number | null } | null;
+  /* the chain check's answer for each linked wallet it has looked at */
+  fomoChecks: FomoCheckView[];
   show: ProfileVisibility;
   /* username changes the profile can still make today */
   usernameChangesLeft: number;
@@ -140,6 +163,14 @@ interface WalletRow extends Record<string, SqlStorageValue> {
   wallet: string;
   profile_id: string;
   linked_at: number;
+}
+
+interface FomoCheckRow extends Record<string, SqlStorageValue> {
+  wallet: string;
+  checked_at: number;
+  detected: number;
+  signature: string | null;
+  scanned: number;
 }
 
 interface UsernameRow extends Record<string, SqlStorageValue> {
@@ -224,6 +255,15 @@ export class Profiles extends DurableObject<Env> {
         wallet TEXT,
         detail TEXT
       );
+      /* the chain check's answer per wallet (src/fomo.ts), kept whether or
+         not the wallet has a profile yet */
+      CREATE TABLE IF NOT EXISTS fomo_checks (
+        wallet TEXT PRIMARY KEY,
+        checked_at INTEGER NOT NULL,
+        detected INTEGER NOT NULL DEFAULT 0,
+        signature TEXT,
+        scanned INTEGER NOT NULL DEFAULT 0
+      );
       CREATE INDEX IF NOT EXISTS usernames_profile ON usernames(profile_id);
       CREATE INDEX IF NOT EXISTS username_history_key ON username_history(username_key, at);
       CREATE INDEX IF NOT EXISTS username_history_to ON username_history(to_profile_id, at);
@@ -260,6 +300,19 @@ export class Profiles extends DurableObject<Env> {
       .exec<WalletRow>("SELECT * FROM wallets WHERE profile_id = ? ORDER BY linked_at, wallet", profileId).toArray();
   }
 
+  private fomoCheckRows(wallets: string[]): FomoCheckRow[] {
+    const out: FomoCheckRow[] = [];
+    for (const wallet of wallets) {
+      const row = this.ctx.storage.sql.exec<FomoCheckRow>("SELECT * FROM fomo_checks WHERE wallet = ?", wallet).toArray()[0];
+      if (row !== undefined) out.push(row);
+    }
+    return out;
+  }
+
+  private fomoCheckView(row: FomoCheckRow): FomoCheckView {
+    return { wallet: row.wallet, checkedAt: row.checked_at, detected: row.detected === 1, signature: row.signature };
+  }
+
   private usernameChangesSince(profileId: string, since: number): number {
     return Number(this.ctx.storage.sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM username_history WHERE to_profile_id = ? AND kind = 'rename' AND at > ?",
@@ -286,6 +339,7 @@ export class Profiles extends DurableObject<Env> {
         verified: row.x_verified_at !== null,
         verifiedAt: row.x_verified_at,
       },
+      fomoChecks: this.fomoCheckRows(this.walletsOf(row.id).map(({ wallet }) => wallet)).map((check) => this.fomoCheckView(check)),
       show: { wallets: row.show_wallets === 1, fomo: row.show_fomo === 1, x: row.show_x === 1 },
       usernameChangesLeft: Math.max(0, USERNAME_CHANGES_PER_DAY - this.usernameChangesSince(row.id, now - DAY_MS)),
     };
@@ -371,6 +425,7 @@ export class Profiles extends DurableObject<Env> {
         );
         this.log(now, "profile_created", id, wallet);
         this.log(now, "wallet_linked", id, wallet, { first: true });
+        this.syncFomo(id, wallet, now);
         kind = "claim";
       } else {
         const row = this.profileRow(id)!;
@@ -423,6 +478,7 @@ export class Profiles extends DurableObject<Env> {
       this.ctx.storage.sql.exec("INSERT INTO wallets (wallet, profile_id, linked_at) VALUES (?, ?, ?)", wallet, id, now);
       this.ctx.storage.sql.exec("UPDATE profiles SET updated_at = ? WHERE id = ?", now, id);
       this.log(now, "wallet_linked", id, wallet, { by: ownerWallet });
+      this.syncFomo(id, wallet, now);
       return { profile: this.view(this.profileRow(id)!, now) };
     });
   }
@@ -437,8 +493,65 @@ export class Profiles extends DurableObject<Env> {
       this.ctx.storage.sql.exec("DELETE FROM wallets WHERE wallet = ?", wallet);
       this.ctx.storage.sql.exec("UPDATE profiles SET updated_at = ? WHERE id = ?", now, id);
       this.log(now, "wallet_unlinked", id, wallet, { by: ownerWallet });
+      this.syncFomo(id, wallet, now);
       return { profile: this.view(this.profileRow(id)!, now) };
     });
+  }
+
+  /* ---------- fomo detection (src/fomo.ts) */
+
+  /* The chain check's answer for each of the wallets it has looked at. */
+  fomoChecks(wallets: string[]): FomoCheckView[] {
+    return this.fomoCheckRows(wallets).map((row) => this.fomoCheckView(row));
+  }
+
+  /* Record what the chain check found for a wallet, and bring its
+     profile's fomo verification in line, if it has one. */
+  recordFomoCheck(wallet: string, detection: FomoDetectionInput, now: number): FomoCheckView {
+    return this.ctx.storage.transactionSync(() => {
+      const before = this.fomoCheckRows([wallet])[0] ?? null;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO fomo_checks (wallet, checked_at, detected, signature, scanned) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(wallet) DO UPDATE SET checked_at = excluded.checked_at, detected = excluded.detected,
+           signature = excluded.signature, scanned = excluded.scanned`,
+        wallet, now, detection.detected ? 1 : 0, detection.signature, detection.scanned,
+      );
+      const id = this.profileIdForWallet(wallet);
+      if (detection.detected && (before === null || before.detected === 0)) {
+        this.log(now, "fomo_wallet_detected", id, wallet, { signature: detection.signature, scanned: detection.scanned });
+      }
+      if (id !== null) this.syncFomo(id, wallet, now);
+      return this.fomoCheckView(this.fomoCheckRows([wallet])[0]!);
+    });
+  }
+
+  /* Make the profile's fee-payer verification match its wallets' checks:
+     verified through its first detected linked wallet, or not at all. A
+     verification by another method (a transfer, an official lookup) is
+     not touched. */
+  private syncFomo(profileId: string, by: string, now: number): void {
+    const row = this.profileRow(profileId);
+    if (row === null) return;
+    if (row.fomo_verified_at !== null && row.fomo_method !== "fee_payer") return;
+    const detected = this.fomoCheckRows(this.walletsOf(profileId).map(({ wallet }) => wallet))
+      .filter((check) => check.detected === 1);
+    const current = row.fomo_verified_at === null ? null : row.fomo_wallet;
+    if (current !== null && detected.some((check) => check.wallet === current)) return;
+    const next = detected[0] ?? null;
+    if (next === null) {
+      if (current === null) return;
+      this.ctx.storage.sql.exec(
+        "UPDATE profiles SET fomo_wallet = NULL, fomo_verified_at = NULL, fomo_method = NULL, updated_at = ? WHERE id = ?",
+        now, profileId,
+      );
+      this.log(now, "fomo_unverified", profileId, by, { wallet: current });
+      return;
+    }
+    this.ctx.storage.sql.exec(
+      "UPDATE profiles SET fomo_wallet = ?, fomo_verified_at = ?, fomo_method = 'fee_payer', updated_at = ? WHERE id = ?",
+      next.wallet, now, now, profileId,
+    );
+    this.log(now, "fomo_verified", profileId, by, { wallet: next.wallet, method: "fee_payer", signature: next.signature });
   }
 
   /* ---------- visibility */

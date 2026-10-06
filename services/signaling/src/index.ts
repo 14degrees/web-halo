@@ -48,7 +48,9 @@ import { requireHumanVerification } from "./turnstile";
 import { checkSettlementWallet } from "./alerts";
 import { handleBroadcastRequest } from "./broadcast";
 import { handlePartyRequest } from "./parties";
+import { fomoCheckAfterSignIn } from "./fomo";
 import { adminProfileLookup, handleProfileRequest } from "./profile";
+import { siteInfo } from "./site";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
 import { handleWalletRequest, walletForToken } from "./wallet";
@@ -1126,6 +1128,11 @@ async function handleMatchmaking(
     return spectateMatch(request, env, origin);
   }
 
+  if (request.method === "GET" && url.pathname === "/v1/site") {
+    /* The page's links out and which optional features this deployment
+       has on (src/site.ts); nothing per player, nothing to compute. */
+    return withCors(jsonResponse({ ...siteInfo(env), v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
   if (request.method === "GET" && url.pathname === "/v1/ping") {
     /* The page's ping before a match (port/web/online_client.js,
        refreshPing): a round trip to this Worker, and where else to probe,
@@ -1263,7 +1270,7 @@ async function closeRoom(
   return withCors(new Response(null, { status: 204 }), origin);
 }
 
-async function route(request: Request, env: RuntimeEnv): Promise<Response> {
+async function route(request: Request, env: RuntimeEnv, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/v1/health") {
     return jsonResponse({ ok: true, v: SIGNALING_PROTOCOL_VERSION });
@@ -1306,6 +1313,10 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
 
   const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
   if (walletResponse !== null) {
+    if (url.pathname === "/v1/auth/verify" && typeof walletResponse.wallet === "string") {
+      /* a signed-in wallet gets looked for on fomo, after the answer */
+      ctx.waitUntil(fomoCheckAfterSignIn(env, walletResponse.wallet));
+    }
     return withCors(jsonResponse(walletResponse), origin);
   }
 
@@ -1384,12 +1395,12 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: RuntimeEnv): Promise<Response> {
+  async fetch(request: Request, env: RuntimeEnv, ctx: ExecutionContext): Promise<Response> {
     const startedAt = Date.now();
     const requestId = crypto.randomUUID();
     const path = new URL(request.url).pathname;
     try {
-      const response = await route(request, env);
+      const response = await route(request, env, ctx);
       console.log(
         JSON.stringify({
           durationMs: Date.now() - startedAt,
