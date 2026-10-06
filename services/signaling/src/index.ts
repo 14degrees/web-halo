@@ -261,6 +261,10 @@ async function handleAdminRequest(
   if (!url.pathname.startsWith("/v1/admin/")) {
     return null;
   }
+  /* the dashboard's preflight (the bearer header makes every call one) */
+  if (request.method === "OPTIONS") {
+    return corsPreflight();
+  }
   if (!(await requestIsAuthorizedAdmin(request, env))) {
     return jsonResponse({ error: { code: "UNAUTHORIZED", message: "Unauthorized." } }, 401, {
       "WWW-Authenticate": "Bearer",
@@ -455,6 +459,17 @@ export function pingTargets(setting: string | undefined): PingTarget[] {
     targets.push({ id, label, url: probe.href });
   }
   return targets;
+}
+
+function corsPreflight(): Response {
+  return new Response(null, {
+    headers: {
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Methods": "GET, PATCH, POST, DELETE, OPTIONS",
+      "Access-Control-Max-Age": "86400",
+    },
+    status: 204,
+  });
 }
 
 function withCors(response: Response, origin: string | null): Response {
@@ -1262,20 +1277,14 @@ async function route(request: Request, env: RuntimeEnv, ctx: ExecutionContext): 
   }
   const adminResponse = await handleAdminRequest(request, env, url);
   if (adminResponse !== null) {
-    return adminResponse;
+    /* the dashboard (servers.html, on the page's origin) calls the admin
+       routes from the browser; curl sends no Origin and needs no CORS */
+    return withCors(adminResponse, request.headers.get("Origin") === null ? null : allowedOrigin(request, env));
   }
 
   const origin = allowedOrigin(request, env);
   if (request.method === "OPTIONS") {
-    const response = new Response(null, {
-      headers: {
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Allow-Methods": "GET, PATCH, POST, DELETE, OPTIONS",
-        "Access-Control-Max-Age": "86400",
-      },
-      status: 204,
-    });
-    return withCors(response, origin);
+    return withCors(corsPreflight(), origin);
   }
   if (request.method === "POST" && url.pathname === "/v1/rooms") {
     await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
