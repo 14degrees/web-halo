@@ -15,6 +15,8 @@
      for it, with ?sol=1 once (?sol=0 hides it again), so the game reads as a
      game. Matches for SOL themselves are unchanged. */
   var WALLET_ENABLED = (function() {
+    /* never inside an X post: X's rules keep money out of cards */
+    if (global.document && global.document.body && global.document.body.dataset.embed) return false;
     var asked = /[?&#]sol=([01])\b/.exec(String((global.location && global.location.search) || "") +
       String((global.location && global.location.hash) || ""));
     try {
@@ -2882,7 +2884,7 @@
       /* the page owns the mouse and keys while the landing shows, even with
          the live backdrop's map running behind it */
       if (document.body.dataset.lobby !== "open") document.body.dataset.lobby = "open";
-      if (document.pointerLockElement && typeof document.exitPointerLock === "function") document.exitPointerLock();
+      releaseMouse();
     }
     if (element.hidden === !visible) return;
     element.hidden = !visible;
@@ -3938,9 +3940,7 @@
       element.hidden = false;
       element.classList.remove("fading");
       document.body.dataset.lobby = "open";
-      if (document.pointerLockElement && typeof document.exitPointerLock === "function") {
-        document.exitPointerLock();
-      }
+      releaseMouse();
       /* The match's fullscreen covers only the game; the lobby needs the page. */
       if (document.fullscreenElement && typeof document.exitFullscreen === "function") {
         document.exitFullscreen().catch(function() {});
@@ -3989,7 +3989,14 @@
   }
 
   function mouseCaptured() {
-    return document.pointerLockElement === byId("canvas");
+    /* in the X player card the page aims instead (shell.html, embedAim) */
+    return document.pointerLockElement === byId("canvas") ||
+      !!(global.HaloEmbedAim && global.HaloEmbedAim.engaged);
+  }
+
+  function releaseMouse() {
+    if (document.pointerLockElement && typeof document.exitPointerLock === "function") document.exitPointerLock();
+    if (global.HaloEmbedAim) global.HaloEmbedAim.release();
   }
 
   /* The host's side: guests trying to join a running match say so (a
@@ -6026,7 +6033,7 @@
       setLandingStatus("");
     };
     lobbyElement("landing").addEventListener("click", function(event) {
-      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave")) return;
+      if (event.target.closest && event.target.closest(".landing-mode, .landing-customize, .landing-leave, .landing-full")) return;
       if (lobby.paused) resumeGame();
       else landingQuickPlay();
     });

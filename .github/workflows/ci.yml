@@ -37,5 +37,7 @@ jobs:
         run: node --test services/dedicated-host/test/*.mjs && node --check services/dedicated-host/host.mjs
       - name: Validate hosting Worker syntax
         run: node --check services/web/src/index.js
+      - name: Test hosting Worker
+        run: node --test services/web/test/*.mjs
       - name: Validate operations CLI syntax
         run: node --check tools/halo_telemetry.mjs

@@ -186,7 +186,7 @@ describe("profiles", () => {
     const linked = await link(auth, second);
     expect(linked.status).toBe(200);
     expect(linked.challenge.message).toContain(`Wallet: ${second.address}`);
-    expect(linked.challenge.message).toContain("Domain: halo.lilchocobo2.workers.dev");
+    expect(linked.challenge.message).toContain("Domain: halois.fun");
     expect(linked.challenge.message).toMatch(/Expires: \d{4}-/u);
     expect(linked.body.profile.wallets.map((entry: { wallet: string }) => entry.wallet))
       .toEqual([first.address, second.address]);

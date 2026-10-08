@@ -1,10 +1,11 @@
 /* Add cross-origin isolation on static hosts that cannot configure headers.
- * Hosts that already send COOP/COEP never register this worker. */
+ * Hosts that already send COOP/COEP never register this worker. Nor does a
+ * frame: its headers cannot isolate it unless its embedder is isolated too. */
 (function bootstrapIsolation(scope) {
   "use strict";
 
   if (typeof Window !== "undefined" && scope instanceof Window) {
-    if (scope.crossOriginIsolated || !scope.isSecureContext ||
+    if (scope.crossOriginIsolated || !scope.isSecureContext || scope.top !== scope ||
         !("serviceWorker" in navigator)) {
       return;
     }

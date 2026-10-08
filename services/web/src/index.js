@@ -1,3 +1,5 @@
+import { EMBED_PATH, gamePage } from "./embed.js";
+
 const CAMPAIGN_MAP_NAMES = Object.freeze([
   "a10.map",
   "a30.map",
@@ -438,9 +440,38 @@ async function serveCampaignMap(request, bucket, name) {
   return new Response(object.body, { status: 200, headers });
 }
 
+/* The game page, with the X Player Card tags (/) or as the card's player
+   (/embed). wrangler.jsonc runs the Worker first for these paths. */
+async function serveGamePage(request, env, url) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response("Method not allowed.\n", { status: 405, headers: secureHeaders({ Allow: "GET, HEAD" }) });
+  }
+  const asset = await env.ASSETS.fetch(new URL("/", url));
+  if (!asset.ok) {
+    return asset;
+  }
+  const page = gamePage(await asset.text(), {
+    url,
+    twitterSite: env.TWITTER_SITE,
+    extraFrameAncestors: env.EMBED_FRAME_ANCESTORS,
+    embed: url.pathname === EMBED_PATH,
+  });
+  return new Response(request.method === "HEAD" ? null : page.html, {
+    headers: secureHeaders(page.headers),
+  });
+}
+
 export default {
   async fetch(request, env) {
-    const pathname = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const pathname = url.pathname;
+    if (pathname === "/" || pathname === EMBED_PATH) {
+      return serveGamePage(request, env, url);
+    }
+    if (pathname === `${EMBED_PATH}/`) {
+      /* the page's asset URLs are relative to / */
+      return Response.redirect(new URL(EMBED_PATH + url.search, url), 301);
+    }
     if (pathname === PERFORMANCE_ROUTE) {
       return recordPerformance(request, env);
     }
