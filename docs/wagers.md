@@ -2,8 +2,8 @@
 
 The browser game has wagered playlists: Bounty Duel and Bounty Rumble, where
 each kill moves a bounty from the victim to the killer, and Team Stakes,
-where the winning team takes the pot. The match pays out on Solana when it
-ends. It runs on **Solana devnet**
+where the winners get their stake back and split the losers' stakes by
+kills. The match pays out on Solana when it ends. It runs on **Solana devnet**
 (test SOL) for now; nothing here moves real money until the program is
 deployed to mainnet.
 
@@ -21,8 +21,9 @@ Production Money System". This page describes what is built.
 3. When a match forms, everyone's stake is locked on chain (about three
    seconds). Nobody gets the server's invite until the stakes are locked.
 4. In the match, each kill pops its bounty ("+0.010") over the body. The HUD
-   shows the player's running total and the pot. The Back (F1) scoreboard
-   has a SOL column and the pot.
+   shows the player's running total and the pot (in Team Stakes, what they
+   take home if their team wins now, and what a kill is worth). The Back
+   (F1) scoreboard has a SOL column and the pot.
 5. After the match the lobby shows the result ("+0.019 SOL", or "Stake
    returned") with a link to the transaction on Solana. The balance chip in
    the top right opens the vault: free balance, what is in play, the
@@ -34,7 +35,7 @@ Production Money System". This page describes what is built.
 | --- | --- | --- | --- |
 | Players | 2 | 2 to 4, free-for-all | exactly 4, two on two Team Slayer |
 | Buy-in | 0.05 SOL | 0.05 SOL | 0.05 SOL |
-| Pays | 0.01 SOL a kill | 0.01 SOL a kill | the winning team takes the pot |
+| Pays | 0.01 SOL a kill | 0.01 SOL a kill | the winners get their stake back and split the losers' stakes: a quarter evenly, the rest by kills |
 
 **Bounty** (Bounty Duel, Bounty Rumble):
 
@@ -51,17 +52,48 @@ Production Money System". This page describes what is built.
   won. Nobody pays a fee on their own stake, and a match nobody won anything
   in costs nothing.
 
-**Team Stakes** (pot against pot):
+**Team Stakes** (`stakesOutcome` in `services/signaling/src/wager.ts`):
 
-- The playlist waits for a full two on two; an uneven match at equal stakes
-  isn't fair.
+The rule is written once for any match shape: teams of any size, even or
+not, more than two teams, or a free-for-all where every player is their own
+team. Its numbers (the stake, the kill target, the team share) travel with
+the match as its stakes configuration, from the playlist today and from a
+custom game's settings later.
+
 - Halo's own scoring decides the winner: the dedicated server reports the
-  team scores and each player's team when the match ends.
-- The winning team's players who did not quit split the whole pot, each less
-  the 5% fee on what they won (a 2v2 winner gets 0.1 SOL less 0.0025). A
-  quitter's stake stays in the pot and they get nothing, even if their team
-  wins; a teammate who stays takes it all.
-- A tie is void, and so is a match without a team result.
+  team scores, each player's team and score, and who quit, when the match
+  ends. Everyone who **stayed** on a **top-scoring team** is a winner; equal
+  top scores all win.
+- Each winner gets their own stake back. Every other stake (the losers',
+  and the stake of anyone who quit, even on the winning team) is forfeited
+  and, less the 5% fee, is the **prize**.
+- A quarter of the prize (the **team share**) is split evenly among the
+  winners, so a winner with no kills still gets paid. The rest (the **kill
+  pool**) pays each winner's kills at exactly `kill pool / kill target`:
+  the kill target is the variant's score to win (50 for Team Slayer), so
+  the team's kills use the pool up exactly as the team reaches it. Kills are
+  enemy kills; suicides and betrayals earn nothing (and cost Halo's score).
+  Should the winners' kills exceed the target, the pool is shared by kills
+  so it never overpays.
+- Kill money nobody earned (the match ended on the time limit, or short of
+  the target) is split evenly too. Everything is whole lamports: the
+  payouts plus the fee equal the pot exactly, and the odd lamports go one
+  each to the winners with the most kills.
+- In a 2v2 at 0.05 SOL a kill is worth 0.001425 SOL and a winner's team
+  share is 0.011875 SOL. A 50-0 carry nets +0.083 SOL and their 0-kill
+  teammate +0.012; a 17/14/11/8 winning 4v4 team nets +0.060/+0.052/+0.043/
+  +0.035.
+- A staked player who never connects counts as having quit. A tie among
+  everyone who stayed is void, and so is a match without a result.
+- **A whole team that drops out** does not void or refund the match (that
+  could be abused): the match is **held**. Its stakes stay locked in
+  escrow, the admin is alerted, and unless an admin decides otherwise the
+  dropped team forfeits when the hold's deadline passes (12 hours, and
+  always at least an hour before the players could reclaim their stakes
+  themselves). See "Held matches" below.
+- During the match the HUD and the F1 column show each player's projected
+  take if their team wins now (as if the teams were even), and what a kill
+  is worth. The projection only becomes exact with the result.
 
 **Every playlist:**
 
@@ -72,8 +104,50 @@ Production Money System". This page describes what is built.
 
 The playlists are `bountyduel`, `bounty` and `teamstakes` in
 `services/signaling/src/matchmaker.ts` (`PLAYLISTS`); the rules are
-`killTransfer`, `bountyPayouts` and `teamPayouts` in
+`killTransfer`, `bountyPayouts` and `stakesOutcome` in
 `services/signaling/src/wager.ts`.
+
+### Held matches
+
+A Team Stakes match whose whole team dropped out is held in state `held`.
+Nothing moves on chain; the wager's record keeps the server's result, the
+settlement a forfeit would pay, and a history of every action. The hold's
+ceiling comes from the program: a player may `reclaim` their stake once the
+match's `reclaim_delay` (24 hours on devnet) has passed, and a settle after
+that fails, so a hold always ends an hour before that, and no extension can
+pass it. To give admins more room, raise the program's configured
+`reclaim_delay` (the operator's `update_config`, up to a week); it applies
+to matches created after the change.
+
+The admin routes, with the `ADMIN_TOKEN` bearer credential:
+
+```sh
+curl -H "Authorization: Bearer $ADMIN_TOKEN" $WORKER/v1/admin/wagers/held
+curl -H "Authorization: Bearer $ADMIN_TOKEN" $WORKER/v1/admin/wagers/<matchId>
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"action":"forfeit","note":"red quit while behind"}' $WORKER/v1/admin/wagers/<matchId>/decide
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"action":"void","note":"server outage confirmed"}' $WORKER/v1/admin/wagers/<matchId>/decide
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"hours":6,"note":"waiting on the players"}' $WORKER/v1/admin/wagers/<matchId>/hold
+```
+
+`forfeit` pays the settlement proposed when the match was held; `void`
+returns every stake with no fee; `hold` extends the deadline (clamped at the
+ceiling, which the response reports). A decision on a match that is not
+held answers 409. The players' `GET /v1/wagers/:matchId` shows `held` with
+the deadline, and their result card says the match is under review.
+
+The dashboard (`/servers.html`, its "Held wagers" section from
+`port/web/servers_wagers.js`) offers the same over these routes: the
+operator pastes the admin token, which the page keeps only in that tab's
+`sessionStorage` until they sign out or the Worker answers 401, and each
+held match shows its reason, dropped teams, stakes, deadline, ceiling and
+history with Forfeit, Void and Extend buttons that ask for a note (and
+hours) and a confirmation. The page never contains the token (the repo is
+public). The Worker answers the browser's CORS preflight on `/v1/admin/`
+and adds CORS headers for an allowed `Origin`; curl without one works as
+before.
 
 ### The match result
 
@@ -199,12 +273,16 @@ wallets.
 
 - Money problems raise an alert: a settlement the network kept refusing
   (the stakes stay locked until it's retried or the players reclaim them),
-  stakes that wouldn't lock, and the settlement wallet under 0.05 SOL
-  (checked every five minutes). Alerts go to the Worker's logs, and to a
-  Discord or Slack incoming webhook if one is set
-  (`npx wrangler secret put ALERT_WEBHOOK_URL`), at most once an hour each.
+  stakes that wouldn't lock, a Team Stakes match held for an admin, and the
+  settlement wallet under 0.05 SOL (checked every five minutes). Alerts go
+  to the Worker's logs, and to a Discord or Slack incoming webhook if one is
+  set (`npx wrangler secret put ALERT_WEBHOOK_URL`), at most once an hour
+  each.
 - The dashboard's event log shows how each wagered match's money ended
-  (`wager_settled`, `wager_void`, `wager_settle_gave_up`).
+  (`wager_settled`, `wager_void`, `wager_settle_gave_up`) and each hold's
+  life (`wager_held`, `wager_hold_extended`, `wager_hold_decided`,
+  `wager_hold_expired`). `GET /v1/admin/wagers/held` lists the matches held
+  now.
 - `/servers.html` (the dashboard) logs `stakes_locked` and `stakes_failed`
   beside each match.
 - `GET /v1/wagers/:matchId` returns a match's wager: state, balances,
@@ -215,6 +293,14 @@ wallets.
 ## Known gaps
 
 - Team Stakes is Team Slayer only; there is no objective (CTF) wagering.
+  The payout rule already handles any team sizes and free-for-alls; a
+  playlist or custom game only has to pass its stakes configuration. The
+  dedicated server reports two team scores, so games with more than two
+  teams would need the result to carry one per team.
+- The escrow program holds at most 8 players in a match (`MAXIMUM_PLAYERS`,
+  with one reclaim bit per player). Larger matches need the program's cap
+  raised and redeployed, and the settle transaction checked for size.
+- A held match's deadline cannot pass the program's reclaim delay.
 - Before real money: an audit of the program, hardware or multisig keys for
   the upgrade authority and operator, legal advice, and a mainnet deploy of
   the program (about 1.3 SOL of refundable rent).

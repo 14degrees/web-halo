@@ -114,8 +114,9 @@ def main() -> int:
     stamp_build_id(output / "halo.html", build_id)
     stamp_build_id(output / "index.html", build_id)
 
-    # the dedicated server dashboard (/servers)
+    # the dedicated server dashboard (/servers) and its held-wager panel
     total += checked_copy(repository / "port" / "web" / "servers.html", output / "servers.html")
+    total += checked_copy(repository / "port" / "web" / "servers_wagers.js", output / "servers_wagers.js")
 
     for name in ("ui.map", *MULTIPLAYER_MAPS):
         total += checked_copy(maps / name, output / "assets" / "maps" / name)

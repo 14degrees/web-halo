@@ -174,7 +174,47 @@ export function toBase64(bytes: Uint8Array): string {
 /* Some public RPC endpoints refuse requests from cloud networks (Solana's
    own devnet endpoint answers Cloudflare with 403), so the Worker takes a
    comma-separated list and moves to the next endpoint when one refuses or
-   cannot be reached. An answer that is an RPC error is final. */
+   cannot be reached. An answer that is an RPC error is final. A 429 (a
+   plan's requests per second, on Helius' free tier for one) is waited
+   out and tried again a few times before the next endpoint. */
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_PAUSE_MS = 400;
+const RATE_LIMIT_PAUSE_MAXIMUM_MS = 2_000;
+/* An entry of getSignaturesForAddress. */
+export interface SignatureInfo {
+  signature: string;
+  slot: number;
+  err: unknown;
+  blockTime?: number | null;
+}
+
+/* A transaction from getTransaction with the json encoding: the static
+   account keys and the header that says which of them sign and which are
+   writable; addresses a versioned transaction loads from lookup tables are
+   in meta.loadedAddresses. */
+export interface TransactionJson {
+  slot?: number;
+  blockTime?: number | null;
+  meta: {
+    err: unknown;
+    fee?: number;
+    preBalances?: number[];
+    postBalances?: number[];
+    loadedAddresses?: { writable?: string[]; readonly?: string[] } | null;
+  } | null;
+  transaction: {
+    signatures?: string[];
+    message: {
+      accountKeys: string[];
+      header?: {
+        numRequiredSignatures: number;
+        numReadonlySignedAccounts: number;
+        numReadonlyUnsignedAccounts: number;
+      };
+    };
+  };
+}
+
 /* The network answered and refused: a transaction that failed its checks
    (a program error), not a network that could not be reached. */
 export class SolanaRpcError extends Error {}
@@ -189,25 +229,34 @@ export class SolanaRpc {
   private async call<T>(method: string, params: unknown[]): Promise<T> {
     let failure = "no RPC endpoint is configured";
     for (const url of this.urls) {
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          body: JSON.stringify({ id: 1, jsonrpc: "2.0", method, params }),
-          headers: { "Content-Type": "application/json", "User-Agent": "halo-web-signaling/1" },
-          method: "POST",
-          signal: AbortSignal.timeout(15_000),
-        });
-      } catch (error) {
-        failure = `${new URL(url).host} unreachable (${error instanceof Error ? error.message : String(error)})`;
-        continue;
+      for (let attempt = 0; attempt <= RATE_LIMIT_RETRIES; attempt += 1) {
+        let response: Response;
+        try {
+          response = await fetch(url, {
+            body: JSON.stringify({ id: 1, jsonrpc: "2.0", method, params }),
+            headers: { "Content-Type": "application/json", "User-Agent": "halo-web-signaling/1" },
+            method: "POST",
+            signal: AbortSignal.timeout(15_000),
+          });
+        } catch (error) {
+          failure = `${new URL(url).host} unreachable (${error instanceof Error ? error.message : String(error)})`;
+          break;
+        }
+        if (response.status === 429 && attempt < RATE_LIMIT_RETRIES) {
+          const retryAfter = Number(response.headers.get("Retry-After"));
+          const pause = Number.isFinite(retryAfter) && retryAfter > 0 ?
+            Math.min(retryAfter * 1_000, RATE_LIMIT_PAUSE_MAXIMUM_MS) : RATE_LIMIT_PAUSE_MS * (attempt + 1);
+          await new Promise((resolve) => setTimeout(resolve, pause));
+          continue;
+        }
+        if (!response.ok) {
+          failure = `${new URL(url).host} answered ${response.status}`;
+          break;
+        }
+        const body = await response.json<{ error?: { message?: string }; result?: T }>();
+        if (body.error) throw new SolanaRpcError(`Solana RPC ${method}: ${body.error.message ?? "error"}`);
+        return body.result as T;
       }
-      if (!response.ok) {
-        failure = `${new URL(url).host} answered ${response.status}`;
-        continue;
-      }
-      const body = await response.json<{ error?: { message?: string }; result?: T }>();
-      if (body.error) throw new SolanaRpcError(`Solana RPC ${method}: ${body.error.message ?? "error"}`);
-      return body.result as T;
     }
     throw new Error(`Solana RPC ${method} failed: ${failure}.`);
   }
@@ -256,6 +305,35 @@ export class SolanaRpc {
       toBase64(bytes),
       { encoding: "base64", preflightCommitment: "confirmed" },
     ]);
+  }
+
+  /* The newest transactions an address took part in, newest first; at most
+     `limit` (the network caps it at 1000). */
+  async signaturesForAddress(address: string, limit: number): Promise<SignatureInfo[]> {
+    return this.call<SignatureInfo[]>("getSignaturesForAddress", [
+      address,
+      { commitment: "confirmed", limit },
+    ]);
+  }
+
+  /* A transaction as the network describes it (json encoding, versioned
+     transactions included), or null when it is unknown. The node refuses
+     a transaction newer than the version asked for, naming the version
+     it needs (fomo's trades are version 1 as of October 2026); the call
+     is then made again for that version. */
+  async transaction(signature: string, maxVersion = 0): Promise<TransactionJson | null> {
+    try {
+      return await this.call<TransactionJson | null>("getTransaction", [
+        signature,
+        { commitment: "confirmed", encoding: "json", maxSupportedTransactionVersion: maxVersion },
+      ]);
+    } catch (error) {
+      const needed = error instanceof SolanaRpcError ?
+        /Transaction version \((\d+)\) is not supported/u.exec(error.message) : null;
+      const version = needed === null ? NaN : Number(needed[1]);
+      if (!Number.isInteger(version) || version <= maxVersion || version > 255) throw error;
+      return this.transaction(signature, version);
+    }
   }
 
   /* How many lamports a confirmed transaction moved from `from` to `to`, or

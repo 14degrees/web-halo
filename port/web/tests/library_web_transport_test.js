@@ -138,6 +138,29 @@ HaloWebTransportRuntime.install();
 
   record.reliable.bufferedAmount = HaloWebTransportRuntime.RELIABLE_HIGH_WATER + 1;
   assert.equal(library.web_transport_send(0x01004064, 1, 512, outbound.length), 0);
+
+  /* the developer panel's counters: frames and bytes each way per channel */
+  const listed = HaloWebTransport.listPeers();
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].peerId, 'friend');
+  assert.equal(listed[0].state, 'connected');
+  assert.equal(listed[0].droppedDatagrams, 0);
+  assert.equal(listed[0].sendRefusals, 1, 'a send over the high-water mark is counted');
+  assert.deepEqual(listed[0].reliable, {
+    bytesIn: 0, bytesOut: 12, packetsIn: 0, packetsOut: 1, queuedBytes: 0,
+    bufferedAmount: HaloWebTransportRuntime.RELIABLE_HIGH_WATER + 1,
+  });
+  assert.deepEqual(listed[0].unreliable, {
+    bytesIn: 12, bytesOut: 0, packetsIn: 1, packetsOut: 0, queuedBytes: 0, bufferedAmount: 0,
+  });
+  for (let index = 0; index <= HaloWebTransportRuntime.UNRELIABLE_PACKET_LIMIT; index++) {
+    record.unreliable.onmessage({ data: inbound.buffer });
+  }
+  const flooded = HaloWebTransport.listPeers()[0];
+  assert(flooded.droppedDatagrams >= 1, 'an overfull unreliable queue drops and counts');
+  assert.equal(flooded.unreliable.packetsIn, 2 + HaloWebTransportRuntime.UNRELIABLE_PACKET_LIMIT,
+    'dropped frames still count as received');
+  await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(HaloWebTransport.removePeer('friend'), true);
   await new Promise(resolve => setTimeout(resolve, 5));
   assert.deepEqual(calls.removed, [0x01004064]);

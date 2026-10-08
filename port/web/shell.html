@@ -124,9 +124,9 @@
       inset: clamp(.75rem, 3vw, 2rem);
       z-index: 8;
       display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr) auto;
-      width: min(50rem, calc(100% - 1.5rem));
-      max-height: min(36rem, calc(100% - 1.5rem));
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      width: min(66rem, calc(100% - 1.5rem));
+      max-height: min(46rem, calc(100% - 1.5rem));
       margin: auto;
       padding: 1rem;
       border: 1px solid rgba(151, 189, 169, .28);
@@ -169,6 +169,20 @@
     }
     #diagnostics:empty::before { content: "No runtime messages."; color: #718078; }
     .diagnostics-shortcut { margin: .65rem 0 0; color: #64736b; font-size: .68rem; text-align: right; }
+    /* the developer network panel: per-peer rows and the netcode's counters */
+    .diagnostics-network { display: grid; gap: .5rem; min-height: 0; max-height: 18rem; margin: 0 0 .85rem; overflow: auto; }
+    .diagnostics-network-heading { display: flex; align-items: baseline; gap: .6rem; }
+    .diagnostics-network-heading span { color: #82958b; font-size: .67rem; letter-spacing: .08em; text-transform: uppercase; }
+    .diagnostics-network-heading output { color: #bde0cd; font: .7rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .net-peers { width: 100%; border-collapse: collapse; color: #bde0cd; font: .66rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; }
+    .net-peers th { padding: .15rem .4rem; color: #82958b; font-size: .58rem; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+    .net-peers td { padding: .2rem .4rem; border-top: 1px solid rgba(151, 189, 169, .12); vertical-align: top; white-space: pre; }
+    .net-peers td.net-spark { color: #81b796; letter-spacing: -.08em; }
+    .net-peers tr[data-path="relay"] td.net-path { color: #ffd28a; }
+    .net-peers tr[data-state="failed"] td, .net-peers tr[data-state="disconnected"] td { color: #8c9a93; }
+    .net-peers tbody:empty::after { content: "No peers."; display: block; padding: .2rem .4rem; color: #718078; }
+    .net-game { margin: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .net-game output { white-space: normal; }
     progress { width: 100%; height: .4rem; margin-top: .8rem; accent-color: #81b796; }
     footer {
       position: relative;
@@ -812,6 +826,39 @@
     }
     .h3-action:hover, .h3-action:focus-visible { background: #54362e; outline: none; animation: h3-pulse 2s infinite; }
     .h3-quiet { background: rgba(255, 255, 255, .06); }
+    /* the leaderboard (stats_panel.js) and a player's record */
+    .leaderboard-dialog { width: min(46rem, calc(100vw - 2rem)); }
+    .stats-note { color: #8094b4 !important; font-size: .95rem !important; line-height: 1.35; }
+    .stats-verified, .stats-identity {
+      display: inline-block; padding: 0 .4rem; border: 1px solid rgba(101, 194, 255, .5); border-radius: .2rem;
+      color: #65c2ff; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; vertical-align: middle;
+    }
+    .stats-identity[data-identity="wallet"] { border-color: rgba(255, 176, 105, .5); color: #ffb069; }
+    .stats-identity[data-identity="guest"] { border-color: rgba(185, 199, 220, .4); color: #b9c7dc; }
+    .leaderboard-sorts { display: flex; flex-wrap: wrap; gap: .3rem; }
+    .leaderboard-sort {
+      padding: .3rem .8rem; border: 1px solid rgba(128, 148, 180, .35); background: rgba(255, 255, 255, .04); color: #c7d1e6;
+      cursor: pointer; font-family: inherit; font-size: 1rem; text-transform: uppercase; letter-spacing: .05em;
+    }
+    .leaderboard-sort.active, .leaderboard-sort:focus-visible { border-color: #65c2ff; color: #fff; outline: none; }
+    .leaderboard-scroll { max-height: min(50vh, 26rem); overflow-y: auto; }
+    .leaderboard-table { width: 100%; border-collapse: collapse; font-size: 1.05rem; }
+    .leaderboard-table th { position: sticky; top: 0; background: #0a1628; color: #8094b4; font-weight: 400; font-size: .85rem; letter-spacing: .08em; text-transform: uppercase; }
+    .leaderboard-table th, .leaderboard-table td { padding: .35rem .5rem; text-align: left; border-bottom: 1px solid rgba(128, 148, 180, .2); }
+    .leaderboard-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .leaderboard-table .leaderboard-rank { color: #8094b4; }
+    .leaderboard-player { display: flex; align-items: center; gap: .5rem; }
+    .leaderboard-you td { background: rgba(101, 194, 255, .12); color: #fff; }
+    .leaderboard-pager { display: flex; align-items: center; gap: .6rem; }
+    .leaderboard-pager span { flex: 1; text-align: center; color: #8094b4; font-size: 1rem; }
+    .leaderboard-pager .h3-action { font-size: 1rem; padding: .4rem .8rem; }
+    .leaderboard-pager .h3-action:disabled { opacity: .4; cursor: default; animation: none; background: rgba(255, 255, 255, .06); }
+    .spartan-stats { display: grid; gap: .4rem; margin-top: .8rem; padding-top: .8rem; border-top: 1px solid rgba(128, 148, 180, .25); }
+    .spartan-stats h3 { display: flex; align-items: center; gap: .6rem; margin: 0; font-weight: 400; font-size: 1.15rem; letter-spacing: .06em; text-transform: uppercase; color: #fff; }
+    .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem .8rem; margin: 0; }
+    .stats-grid:empty { display: none; }
+    .stats-cell dt { color: #8094b4; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; }
+    .stats-cell dd { margin: 0; color: #e1e8f2; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
     .party-join { display: grid; gap: .4rem; }
     .party-join label { color: #8094b4; font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; }
     .party-join div { display: flex; gap: .5rem; }
@@ -1007,6 +1054,10 @@
     .spartan-settings label { margin-top: .5rem; color: #8094b4; font-size: .95rem; letter-spacing: .08em; text-transform: uppercase; }
     .spartan-settings label small { margin-left: .4rem; letter-spacing: 0; text-transform: none; opacity: .75; }
     .spartan-settings input { padding: .55rem .7rem; border: 1px solid rgba(128, 148, 180, .5); background: #040a16; color: #fff; font: inherit; font-size: 1.15rem; }
+    /* mouse look: a slider and a switch, live and kept in this browser */
+    .spartan-settings input[type="range"] { width: 100%; margin: .2rem 0 0; padding: 0; border: 0; background: transparent; accent-color: #5fd0ff; cursor: pointer; }
+    .spartan-settings .spartan-switch { display: flex; align-items: center; gap: .6rem; cursor: pointer; }
+    .spartan-settings .spartan-switch input { width: 1.1rem; height: 1.1rem; margin: 0; padding: 0; accent-color: #5fd0ff; cursor: pointer; }
     .spartan-settings #lobby-emblems { max-height: 15rem; grid-template-columns: repeat(10, 1fr); }
     #spartan-dialog-done {
       align-self: flex-start; margin-top: .9rem; padding: .55rem 1.6rem; border: 0;
@@ -1100,6 +1151,47 @@
     #lobby-wager-result[data-tone="down"] strong { color: #ff8a7e; }
     #lobby-wager-result small { font-size: .78rem; color: #c8b27a; }
     #lobby-wager-result a { color: #9fd4ff; }
+    /* the post-match lobby (port/web/post_match.js): the carnage report,
+       the vote and the timer, in the lobby after a match */
+    #lobby-post-match {
+      display: grid; gap: .45rem; width: min(30rem, 100%); margin: .3rem 0 .2rem; padding: .7rem 1rem .8rem; box-sizing: border-box;
+      border: 1px solid rgba(95, 208, 255, .45); border-radius: .4rem; background: rgba(6, 10, 26, .82); color: #e4e9f2;
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif;
+    }
+    #lobby-post-match[hidden] { display: none; }
+    .pm-head { display: flex; align-items: baseline; gap: .6rem; margin: 0; }
+    #post-match-title { flex: 1; font-size: clamp(1.15rem, 1.6vw, 1.45rem); text-transform: uppercase; letter-spacing: .06em; color: #fff; }
+    .pm-timer-label { color: #9fd4ff; text-transform: uppercase; letter-spacing: .1em; font-size: .8rem; }
+    #post-match-timer { font-size: clamp(1.8rem, 3vw, 2.4rem); line-height: 1; color: #fff; text-shadow: 0 0 1rem rgba(60, 170, 255, .6); }
+    .pm-board { width: 100%; border-collapse: collapse; font-size: clamp(.9rem, 1.2vw, 1.05rem); }
+    .pm-board th { padding: .1rem .4rem; text-align: left; font-weight: 400; color: #9fb4d6; text-transform: uppercase; letter-spacing: .06em; font-size: .72rem; }
+    .pm-board th[hidden] { display: none; }
+    .pm-board td { padding: .12rem .4rem; white-space: nowrap; }
+    .pm-board th:nth-child(n+3), .pm-board td:nth-child(n+3) { text-align: right; }
+    .pm-board td:nth-child(2) { width: 100%; }
+    .pm-board tr.pm-team td { padding-top: .3rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    .pm-board tr.pm-team-red td, .pm-board tr.pm-red td:nth-child(2) { color: #ff8a7e; }
+    .pm-board tr.pm-team-blue td, .pm-board tr.pm-blue td:nth-child(2) { color: #8ec5ff; }
+    .pm-board tr.pm-quit td { opacity: .45; }
+    .pm-board td[data-self] { text-decoration: underline; text-underline-offset: .15em; }
+    .pm-vote-title { margin: .2rem 0 0; color: #ffd65a; text-transform: uppercase; letter-spacing: .06em; font-size: .85rem; }
+    .pm-vote { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .35rem; }
+    .pm-offer {
+      display: grid; gap: .1rem; padding: .4rem .6rem; border: 1px solid rgba(159, 212, 255, .4); background: rgba(18, 28, 66, .55);
+      color: #e4e9f2; font-family: inherit; font-size: .95rem; text-align: left; cursor: pointer;
+    }
+    .pm-offer:hover, .pm-offer:focus-visible { border-color: #ffd65a; outline: none; }
+    .pm-offer[data-mine] { border-color: #ffd65a; background: rgba(84, 54, 46, .75); }
+    .pm-offer small { color: #9fd4ff; font-size: .78rem; }
+    .pm-note { margin: 0; color: #c7d1e6; font-size: .9rem; }
+    .pm-actions { display: flex; gap: .5rem; }
+    .pm-actions button {
+      padding: .45rem 1rem; border: 1px solid #ffd65a; background: rgba(6, 10, 26, .6); color: #fff;
+      font-family: inherit; font-size: .95rem; cursor: pointer;
+    }
+    .pm-actions button:disabled { opacity: .55; cursor: default; }
+    .pm-actions button[hidden] { display: none; }
+    #post-match-stay:not(:disabled) { background: linear-gradient(90deg, #7a4a34, #8c5a3f 60%, #6d4130); }
     .wallet-gate-amounts { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
     .wallet-gate-amounts[hidden] { display: none; }
     .wallet-gate-amounts button {
@@ -1155,6 +1247,67 @@
     }
     #key-tips dd { margin: 0; color: #c9d3e6; }
     @media (max-width: 700px) { #key-tips { display: none; } }
+    /* ---------- text chat (chat.js): the lobby's panel under the roster,
+       and the overlay over the game at the bottom left. A line is its
+       speaker's name in their armour colour and the text. */
+    .chat-log { display: grid; gap: .18rem; margin: 0; padding: 0; list-style: none; }
+    .chat-line { display: flex; gap: .45rem; align-items: baseline; min-width: 0; line-height: 1.3; }
+    .chat-name {
+      flex: none; padding: 0; border: 0; background: none; color: var(--player-color, #a9c6e0); font: inherit; font-weight: 700;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, .7);
+    }
+    .chat-line[data-style="black"] .chat-name { color: #9aa1a8; }
+    button.chat-name { cursor: pointer; }
+    button.chat-name:hover, button.chat-name:focus-visible { text-decoration: underline; outline: none; }
+    .chat-name::after { content: ":"; }
+    .chat-text { min-width: 0; overflow-wrap: anywhere; color: #e9eef6; text-shadow: 0 1px 2px rgba(0, 0, 0, .7); }
+    .chat-line[data-scope="party"] .chat-text::before { content: "(party) "; color: #8fb5d6; font-size: .85em; }
+    .lobby-chat { display: grid; gap: .4rem; margin-top: .9rem; }
+    .lobby-chat .chat-log {
+      max-height: clamp(7rem, 22vh, 14rem); overflow-y: auto; padding: .5rem .7rem; box-sizing: border-box;
+      background: rgba(8, 14, 40, .45); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
+      font-size: clamp(.95rem, 1.2vw, 1.1rem); scrollbar-width: thin;
+    }
+    .lobby-chat .chat-log:empty::before { content: "Nothing said yet."; color: #7f9ab3; font-style: italic; }
+    .lobby-chat[data-scope="none"] .chat-log:empty::before { content: "Chat with your party here, then with your game."; }
+    .chat-form { display: flex; gap: .4rem; }
+    .chat-form input {
+      flex: 1; min-width: 0; padding: .5rem .7rem; border: 0; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
+      background: rgba(8, 14, 40, .6); color: #f4f6fa; font: inherit; font-size: 1.02rem;
+    }
+    .chat-form input:focus { outline: none; box-shadow: inset 0 0 0 1px #5fd0ff; }
+    .chat-form input:disabled { color: #7f9ab3; }
+    .chat-form button {
+      padding: 0 .9rem; border: 0; cursor: pointer; color: #dfe6f2; font: inherit; font-size: 1.02rem; letter-spacing: .02em;
+      background: linear-gradient(180deg, rgba(74, 98, 146, .38), rgba(40, 56, 92, .38)); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
+    }
+    .chat-form button:disabled { cursor: default; opacity: .5; }
+    .chat-form button:not(:disabled):hover, .chat-form button:focus-visible { color: #ffb069; outline: none; }
+    .chat-note { margin: 0; color: #ffb069; font-size: .9rem; }
+    .chat-note[hidden], .chat-muted[hidden], #chat-overlay[hidden], #chat-overlay-input[hidden], #chat-overlay-hint[hidden] { display: none; }
+    .chat-muted { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin: 0; color: #a9c6e0; font-size: .85rem; }
+    .chat-unmute {
+      padding: .1rem .5rem; border: 0; border-radius: 1rem; cursor: pointer; background: rgba(255, 255, 255, .12); color: #e9eef6;
+      font: inherit; font-size: .85rem;
+    }
+    .chat-unmute:hover, .chat-unmute:focus-visible { background: rgba(255, 176, 105, .35); outline: none; }
+    #chat-overlay {
+      position: fixed; z-index: 7; left: clamp(.8rem, 2vw, 1.6rem); bottom: clamp(1rem, 5vh, 3rem);
+      display: grid; gap: .3rem; width: min(30rem, 70vw); pointer-events: none;
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif; font-size: clamp(.9rem, 1.3vw, 1.1rem);
+    }
+    #chat-overlay .chat-log { padding: .3rem .6rem; background: rgba(6, 10, 26, .55); border-left: 3px solid #5fd0ff; }
+    #chat-overlay .chat-log:empty { display: none; }
+    #chat-overlay[data-composing="true"] .chat-log { background: rgba(6, 10, 26, .78); }
+    #chat-overlay-input {
+      pointer-events: auto; width: 100%; padding: .45rem .7rem; border: 0; box-sizing: border-box;
+      background: rgba(6, 10, 26, .85); color: #f4f6fa; box-shadow: inset 0 0 0 1px #5fd0ff; font: inherit;
+    }
+    #chat-overlay-input:focus { outline: none; }
+    #chat-overlay-hint { color: #c9d3e6; font-size: .85em; opacity: .75; }
+    /* the page over the game (the lobby, the Esc menu) has the panel */
+    body[data-lobby="open"] #chat-overlay { display: none; }
+    @media (max-width: 700px) { #chat-overlay-hint { display: none; } }
     /* the scoreboard (Back, Tab, F1; and at game over), as Halo 3 drew it */
     #scoreboard {
       position: fixed; z-index: 7; left: 50%; top: 12vh; transform: translateX(-50%); pointer-events: none;
@@ -1186,9 +1339,22 @@
     .sb-gap { height: .55em; }
     .sb-self { border-color: rgba(230, 236, 245, .75); }
     .sb-ping { text-align: center; font-size: .82em; color: #cfd6e2; }
-    .sb-ping[data-tone="good"] { color: #8fe3a0; }
-    .sb-ping[data-tone="fair"] { color: #ffd65a; }
-    .sb-ping[data-tone="poor"] { color: #ff8a7a; }
+    /* a ping's colors, everywhere one shows (online_client.js, pingTone) */
+    .sb-ping[data-tone="good"], .ping[data-tone="good"], #lobby-ping[data-tone="good"], #landing-ping[data-tone="good"] { color: #8fe3a0; }
+    .sb-ping[data-tone="fair"], .ping[data-tone="fair"], #lobby-ping[data-tone="fair"], #landing-ping[data-tone="fair"] { color: #ffd65a; }
+    .sb-ping[data-tone="poor"], .ping[data-tone="poor"], #lobby-ping[data-tone="poor"], #landing-ping[data-tone="poor"] { color: #ff8a7a; }
+    .ping[hidden], #lobby-ping[hidden], #landing-ping[hidden] { display: none; }
+    #lobby-players li .ping { font-size: .8rem; letter-spacing: .04em; white-space: nowrap; }
+    .player-row .ping { margin-left: .4rem; font-size: .78rem; white-space: nowrap; }
+    #lobby-ping::before { content: " · "; color: #c9d4e6; }
+    .landing-ping { white-space: nowrap; }
+    .landing-now-side { display: flex; gap: 1rem; white-space: nowrap; }
+    /* the links out (fomo.family with the deployment's referral code, X once
+       an account is set; online_client.js, loadSiteLinks) */
+    .landing-links { display: inline-flex; gap: .75rem; }
+    .landing-links a { color: #9fb4d6; text-decoration: none; letter-spacing: .04em; }
+    .landing-links a:hover, .landing-links a:focus-visible { color: #fff; text-decoration: underline; }
+    .landing-links a[hidden] { display: none; }
     .sb-quit { color: rgba(241, 243, 246, .4); }
     .sb-quit .sb-tag { color: rgba(207, 214, 226, .35); }
     .kill-pop { position: absolute; transform: translate(-50%, -100%); will-change: left, top; }
@@ -2059,6 +2225,7 @@
       .mode-choice-card { grid-template-columns: 2.7rem minmax(0, 1fr); }
       .mode-choice-card img { width: 2.35rem; height: 2.35rem; }
       .diagnostics-stats { grid-template-columns: 1fr; }
+      .net-game { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       #player-sidebar { width: min(16rem, calc(100% - 1.5rem)); }
       #player-sidebar[data-collapsed="true"] #player-list,
       #player-sidebar[data-collapsed="true"] #player-empty { display: none; }
@@ -2273,6 +2440,39 @@
           <output id="memory-stats">Measuring…</output>
         </div>
       </div>
+      <section id="diagnostics-network" class="diagnostics-network" aria-label="Network and game counters">
+        <div class="diagnostics-network-heading">
+          <span>Network</span>
+          <output id="net-summary">Offline</output>
+        </div>
+        <table id="net-peers" class="net-peers">
+          <thead>
+            <tr>
+              <th>Peer</th><th>Path</th><th>RTT</th><th>Min / avg / max</th><th>Jitter</th>
+              <th>RTT, last 60 s</th><th>In rel / unrel</th><th>Out rel / unrel</th><th>Loss</th>
+            </tr>
+          </thead>
+          <tbody id="net-peer-rows"></tbody>
+        </table>
+        <div class="diagnostics-stats net-game">
+          <div class="diagnostic-stat">
+            <span>Game clock</span>
+            <output id="net-ticks">No game running</output>
+          </div>
+          <div class="diagnostic-stat">
+            <span>Distributed</span>
+            <output id="net-distributed">—</output>
+          </div>
+          <div class="diagnostic-stat">
+            <span>Items</span>
+            <output id="net-items">—</output>
+          </div>
+          <div class="diagnostic-stat">
+            <span>Damage</span>
+            <output id="net-damage">—</output>
+          </div>
+        </div>
+      </section>
       <pre id="diagnostics" aria-live="polite"></pre>
       <p class="diagnostics-shortcut">⌘/Ctrl + Shift + L</p>
     </section>
@@ -2299,7 +2499,14 @@
     <div class="landing-bar">
       <div class="landing-now">
         <span id="landing-now">Now playing: Slayer</span>
-        <span id="landing-now-detail" class="landing-now-detail"></span>
+        <span class="landing-now-side">
+          <span id="landing-now-detail" class="landing-now-detail"></span>
+          <span id="landing-ping" class="landing-ping" title="Ping" hidden></span>
+          <nav class="landing-links" aria-label="Halo elsewhere">
+            <a id="landing-fomo-link" href="https://fomo.family/r/ARCH" target="_blank" rel="noopener noreferrer" title="fomo.family">fomo</a>
+            <a id="landing-x-link" href="https://x.com/" target="_blank" rel="noopener noreferrer" title="Halo on X" hidden>X</a>
+          </nav>
+        </span>
       </div>
       <nav class="landing-modes" aria-label="Ways to play">
         <button id="landing-quick" class="landing-mode" data-tone="quick" type="button">Quick Play</button>
@@ -2325,7 +2532,7 @@
       <nav class="lobby-menu" aria-label="Matchmaking">
         <div class="lobby-info">
           <button id="lobby-switch" class="lobby-menu-item" type="button">Switch Lobby</button>
-          <p class="lobby-menu-item lobby-menu-static">Network: <span id="lobby-network">Online</span></p>
+          <p class="lobby-menu-item lobby-menu-static">Network: <span id="lobby-network">Online</span><span id="lobby-ping" title="Ping" hidden></span></p>
           <button id="lobby-party-code" class="lobby-menu-item" type="button" hidden>Party: <span id="lobby-party-code-text"></span></button>
           <button id="lobby-playlist-open" class="lobby-menu-item" type="button">Playlist: <span id="lobby-playlist">Team Doubles</span></button>
           <button id="lobby-game-open" class="lobby-menu-item lobby-pick" type="button" hidden>Game: <span id="lobby-game">Slayer</span></button>
@@ -2343,6 +2550,20 @@
           <ul id="lobby-live-list"></ul>
         </div>
         <p id="lobby-playlist-description">Two on two Team Slayer.</p>
+        <section id="lobby-post-match" aria-label="Post-match" hidden>
+          <p class="pm-head"><span id="post-match-title">Match over</span><span class="pm-timer-label">Next in</span><strong id="post-match-timer">20</strong></p>
+          <table class="pm-board">
+            <thead><tr><th></th><th>Player</th><th>Score</th><th>K</th><th>D</th><th id="post-match-money-head" hidden>SOL</th></tr></thead>
+            <tbody id="post-match-rows"></tbody>
+          </table>
+          <p class="pm-vote-title">Vote for the next map</p>
+          <div id="post-match-vote" class="pm-vote"></div>
+          <p id="post-match-note" class="pm-note"></p>
+          <div class="pm-actions">
+            <button id="post-match-stay" type="button">Stay</button>
+            <button id="post-match-leave" type="button">Leave</button>
+          </div>
+        </section>
         <p id="lobby-wager-result" role="status" aria-live="polite" hidden></p>
       </div>
       <figure class="lobby-world" aria-hidden="true">
@@ -2354,6 +2575,7 @@
         <button id="lobby-spartan-toggle" class="lobby-foot" type="button">Spartan</button>
         <button id="lobby-sound" class="lobby-foot" type="button">Sound: <span id="lobby-sound-state">On</span></button>
         <button id="lobby-friends" class="lobby-foot" type="button">Friends</button>
+        <button id="lobby-leaderboard" class="lobby-foot" type="button">Leaderboard</button>
         <button id="lobby-home" class="lobby-foot" type="button">Home</button>
       </footer>
       <section class="lobby-card" aria-label="Playlist" hidden>
@@ -2408,6 +2630,16 @@
       <p class="lobby-count" id="lobby-count">Players</p>
       <ul id="lobby-players"><li class="empty">Nobody here yet — press Play</li></ul>
       <button id="lobby-invite" class="lobby-invite" type="button"><span aria-hidden="true">+</span> Invite to party</button>
+      <!-- text chat with the party, then with the game's room (chat.js) -->
+      <section id="lobby-chat" class="lobby-chat" aria-label="Chat" data-scope="none">
+        <ol id="lobby-chat-log" class="chat-log" aria-live="polite"></ol>
+        <p id="lobby-chat-muted" class="chat-muted" hidden></p>
+        <form id="lobby-chat-form" class="chat-form" autocomplete="off">
+          <input id="lobby-chat-input" type="text" maxlength="200" placeholder="Join a party or a game to chat" spellcheck="true" disabled>
+          <button id="lobby-chat-send" type="submit" disabled>Send</button>
+        </form>
+        <p id="lobby-chat-note" class="chat-note" role="status" aria-live="polite" hidden></p>
+      </section>
     </div>
   </section>
   <dialog id="playlist-dialog" aria-labelledby="playlist-dialog-title">
@@ -2454,6 +2686,29 @@
       <p id="party-status" role="status" aria-live="polite"></p>
     </div>
   </dialog>
+  <dialog id="leaderboard-dialog" class="h3-dialog leaderboard-dialog" aria-labelledby="leaderboard-dialog-title">
+    <div class="h3-dialog-card">
+      <button id="leaderboard-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
+      <h2 id="leaderboard-dialog-title">Leaderboard</h2>
+      <p class="stats-note"><span class="stats-verified">Verified</span> Dedicated-server matches only. Custom and player-hosted games aren't counted.</p>
+      <div id="leaderboard-sorts" class="leaderboard-sorts" role="tablist" aria-label="Sort by"></div>
+      <div class="leaderboard-scroll">
+        <table class="leaderboard-table">
+          <thead>
+            <tr><th>#</th><th>Player</th><th class="num">Kills</th><th class="num">Deaths</th><th class="num">K/D</th><th class="num">W–L</th><th class="num">Matches</th><th class="num" title="SOL won or lost in wagered matches">SOL</th></tr>
+          </thead>
+          <tbody id="leaderboard-rows"></tbody>
+        </table>
+      </div>
+      <p id="leaderboard-status" role="status" aria-live="polite"></p>
+      <div class="leaderboard-pager">
+        <button id="leaderboard-prev" class="h3-action h3-quiet" type="button">Previous</button>
+        <span id="leaderboard-page"></span>
+        <button id="leaderboard-next" class="h3-action h3-quiet" type="button">Next</button>
+        <button id="leaderboard-refresh" class="h3-action h3-quiet" type="button">Refresh</button>
+      </div>
+    </div>
+  </dialog>
   <dialog id="choice-dialog" class="h3-dialog" aria-labelledby="choice-dialog-title">
     <div class="h3-dialog-card">
       <button id="choice-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
@@ -2479,6 +2734,14 @@
         <div id="lobby-colors" role="group" aria-label="Armor color"></div>
         <label>Emblem</label>
         <div id="lobby-emblems" role="group" aria-label="Emblem"></div>
+        <label for="lobby-mouse-sensitivity">Mouse sensitivity <small id="lobby-mouse-sensitivity-value">1.00×</small></label>
+        <input id="lobby-mouse-sensitivity" type="range" min="0.1" max="4" step="0.05" value="1" aria-describedby="lobby-mouse-sensitivity-value">
+        <label class="spartan-switch" for="lobby-invert-y"><input id="lobby-invert-y" type="checkbox"> Invert mouse Y <small>forward looks down</small></label>
+        <section id="spartan-stats" class="spartan-stats" aria-label="Your record">
+          <h3>Your record <span id="spartan-stats-identity"></span></h3>
+          <dl id="spartan-stats-grid" class="stats-grid"></dl>
+          <p id="spartan-stats-status" class="stats-note" role="status" aria-live="polite"></p>
+        </section>
         <button id="spartan-dialog-done" type="button">Done</button>
       </div>
     </div>
@@ -2525,9 +2788,16 @@
       <div><dt>Z</dt><dd>Zoom</dd></div>
       <div><dt>T</dt><dd>Flashlight</dd></div>
       <div><dt>Tab</dt><dd>Scores</dd></div>
+      <div><dt>Y</dt><dd>Chat</dd></div>
       <div><dt>Esc</dt><dd>Menu</dd></div>
     </dl>
   </aside>
+  <!-- text chat over the game: the last lines, and the composer Y opens (chat.js) -->
+  <section id="chat-overlay" aria-label="Chat" data-composing="false" hidden>
+    <ol id="chat-overlay-log" class="chat-log"></ol>
+    <input id="chat-overlay-input" type="text" maxlength="200" placeholder="Say something… Enter sends, Esc closes" autocomplete="off" spellcheck="true" hidden>
+    <small id="chat-overlay-hint" hidden>Y to chat</small>
+  </section>
   <section id="scoreboard" aria-label="Scores" hidden>
     <h2 id="scoreboard-title" class="sb-title">Scores</h2>
     <div class="sb-row sb-head"><span class="sb-place"></span><span class="sb-emblem"></span><span class="sb-name">Name</span><span id="scoreboard-tag-head" class="sb-tag">K/D</span><span class="sb-score">Score</span><span class="sb-ping">Ping</span></div>
@@ -3408,6 +3678,311 @@
       memoryElement.textContent = values.length ? values.join(" · ") : "Unavailable in this browser";
     }
 
+    /* ---- The developer network panel (Ctrl+Shift+L).
+       Sampled once a second, and only while the overlay is open and the page
+       is visible: the transport's per-peer counters (HaloWebTransport
+       .listPeers), each connection's selected ICE pair (RTCPeerConnection
+       .getStats) and the netcode's counters (platform_web_net_statistic). */
+    const NET_SAMPLE_INTERVAL = 1000;
+    const NET_HISTORY = 60;
+    const GAME_TICKS_PER_SECOND = 30;
+    /* enum web_net_statistic (port/web/src/web_online_ui.h), in order */
+    const NET_STATISTIC = Object.freeze({
+      gameTime: 0,
+      distributedSent: 1, distributedReceived: 2, distributedCorrections: 3,
+      itemCreates: 4, itemDeletes: 5, itemFailures: 6, itemRemoved: 7,
+      damageSent: 8, damageDealt: 9, damageRejected: 10, damageReplayed: 11,
+    });
+    const netSummaryElement = document.getElementById("net-summary");
+    const netPeerRows = document.getElementById("net-peer-rows");
+    const netTicksElement = document.getElementById("net-ticks");
+    const netDistributedElement = document.getElementById("net-distributed");
+    const netItemsElement = document.getElementById("net-items");
+    const netDamageElement = document.getElementById("net-damage");
+    const netPeers = new Map();
+    /* the game clock over the last ten samples, for its tick rate; empty
+       outside a game */
+    const netGameHistory = [];
+    let netGamePrevious = null;
+    let netSampling = false;
+    let netSampleTimer = 0;
+    let netSampleInFlight = false;
+
+    /* The selected ICE candidate pair of an RTCStatsReport: the path, its
+       round trip and its connectivity-check counts; null before one is
+       chosen. Chrome names the pair on the transport; Firefox flags it. */
+    function summarizeCandidatePair(reports) {
+      let selected = null;
+      reports.forEach(report => {
+        if (report.type === "transport" && report.selectedCandidatePairId) {
+          selected = reports.get(report.selectedCandidatePairId) || selected;
+        }
+      });
+      if (!selected) {
+        reports.forEach(report => {
+          if (report.type === "candidate-pair" &&
+              (report.selected || (report.nominated && report.state === "succeeded"))) {
+            selected = report;
+          }
+        });
+      }
+      if (!selected) return null;
+      const local = reports.get(selected.localCandidateId) || null;
+      const remote = reports.get(selected.remoteCandidateId) || null;
+      const relay = (local && local.candidateType === "relay") ||
+        (remote && remote.candidateType === "relay");
+      const count = value => (Number.isFinite(value) ? value : null);
+      return {
+        path: relay ? "relay" : "direct",
+        protocol: (local && (local.relayProtocol || local.protocol)) ||
+          (remote && remote.protocol) || null,
+        localType: local ? local.candidateType || null : null,
+        remoteType: remote ? remote.candidateType || null : null,
+        rtt: Number.isFinite(selected.currentRoundTripTime) ? selected.currentRoundTripTime * 1000 : null,
+        averageRtt: Number.isFinite(selected.totalRoundTripTime) && selected.responsesReceived > 0 ?
+          selected.totalRoundTripTime * 1000 / selected.responsesReceived : null,
+        requestsSent: count(selected.requestsSent),
+        responsesReceived: count(selected.responsesReceived),
+        bytesSent: count(selected.bytesSent),
+        bytesReceived: count(selected.bytesReceived),
+        availableOutgoingBitrate: count(selected.availableOutgoingBitrate),
+      };
+    }
+
+    /* A row of block characters scaled between the samples' lowest and
+       highest; gaps (null) are skipped. */
+    function sparkline(values, width = NET_HISTORY) {
+      const blocks = "▁▂▃▄▅▆▇█";
+      const samples = values.slice(-width).filter(value => Number.isFinite(value));
+      if (!samples.length) return "";
+      const low = Math.min(...samples);
+      const span = Math.max(...samples) - low;
+      return samples.map(value => blocks[span > 0 ?
+        Math.min(blocks.length - 1, Math.floor((value - low) / span * blocks.length)) : 0]).join("");
+    }
+
+    /* The mean change between consecutive samples, as RFC 3550's jitter
+       before smoothing; null with fewer than two. */
+    function jitterOf(values) {
+      let total = 0;
+      let count = 0;
+      for (let index = 1; index < values.length; index++) {
+        if (!Number.isFinite(values[index]) || !Number.isFinite(values[index - 1])) continue;
+        total += Math.abs(values[index] - values[index - 1]);
+        count++;
+      }
+      return count ? total / count : null;
+    }
+
+    function formatRate(bytesPerSecond) {
+      if (!Number.isFinite(bytesPerSecond) || bytesPerSecond < 0) return "—";
+      if (bytesPerSecond < 1000) return `${Math.round(bytesPerSecond)} B/s`;
+      if (bytesPerSecond < 1e6) return `${(bytesPerSecond / 1000).toFixed(1)} kB/s`;
+      return `${(bytesPerSecond / 1e6).toFixed(2)} MB/s`;
+    }
+
+    function formatMilliseconds(value) {
+      if (!Number.isFinite(value)) return "—";
+      return `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`;
+    }
+
+    function formatCount(value) {
+      return Number.isFinite(value) ? value.toLocaleString("en-US") : "—";
+    }
+
+    function createNetPeerRow(peerId) {
+      const row = document.createElement("tr");
+      row.dataset.peerId = peerId;
+      const cells = {};
+      ["peer", "path", "rtt", "range", "jitter", "spark", "in", "out", "loss"].forEach(name => {
+        const cell = document.createElement("td");
+        cell.className = `net-${name}`;
+        cells[name] = cell;
+        row.appendChild(cell);
+      });
+      netPeerRows.appendChild(row);
+      return { row, cells, rtt: [], probes: [], previous: null };
+    }
+
+    function updateNetPeerRow(entry, peer, pair, who, now) {
+      const { row, cells } = entry;
+      const name = who && who.name ? who.name : peer.peerId.slice(0, 10);
+      const role = who && who.role ? (who.spectator ? "spectator" : who.role) : "";
+      cells.peer.textContent = `${name}${role ? ` · ${role}` : ""}\n${peer.state || "new"} · ${peer.address}`;
+      cells.peer.title = peer.peerId;
+      row.dataset.state = peer.state || "new";
+      row.dataset.path = pair ? pair.path : "unknown";
+      if (pair) {
+        const protocol = pair.protocol ? ` ${pair.protocol}` : "";
+        cells.path.textContent = `${pair.path}${protocol}\n${pair.localType || "?"} → ${pair.remoteType || "?"}`;
+      } else {
+        cells.path.textContent = "pending";
+      }
+
+      entry.rtt.push(pair ? pair.rtt : null);
+      if (entry.rtt.length > NET_HISTORY) entry.rtt.splice(0, entry.rtt.length - NET_HISTORY);
+      const known = entry.rtt.filter(value => Number.isFinite(value));
+      cells.rtt.textContent = formatMilliseconds(pair ? pair.rtt : null);
+      cells.range.textContent = known.length ?
+        `${formatMilliseconds(Math.min(...known))} / ${formatMilliseconds(
+          known.reduce((sum, value) => sum + value, 0) / known.length)} / ${formatMilliseconds(Math.max(...known))}` :
+        "—";
+      cells.jitter.textContent = formatMilliseconds(jitterOf(entry.rtt));
+      cells.spark.textContent = sparkline(entry.rtt);
+      cells.spark.title = "Round trip, one sample a second, scaled between its lowest and highest";
+
+      /* connectivity checks (STUN) answered over the last minute: a request
+         without an answer is the one loss the browser reports on a data channel */
+      entry.probes.push(pair ? { requests: pair.requestsSent, responses: pair.responsesReceived } : null);
+      if (entry.probes.length > NET_HISTORY) entry.probes.splice(0, entry.probes.length - NET_HISTORY);
+      let probeLoss = null;
+      const first = entry.probes.find(probe => probe && Number.isFinite(probe.requests));
+      const last = entry.probes[entry.probes.length - 1];
+      if (first && last && first !== last && Number.isFinite(last.requests)) {
+        const requests = last.requests - first.requests;
+        const responses = (last.responses || 0) - (first.responses || 0);
+        if (requests > 0) probeLoss = Math.max(0, requests - responses) / requests * 100;
+      }
+
+      const previous = entry.previous;
+      const elapsed = previous ? (now - previous.time) / 1000 : 0;
+      const rate = (current, before) => (elapsed > 0 ? (current - before) / elapsed : null);
+      const channels = ["reliable", "unreliable"];
+      const inRates = channels.map((channel, index) => previous ?
+        rate(peer[channel].bytesIn, previous.bytesIn[index]) : null);
+      const outRates = channels.map((channel, index) => previous ?
+        rate(peer[channel].bytesOut, previous.bytesOut[index]) : null);
+      cells.in.textContent = `${formatRate(inRates[0])} / ${formatRate(inRates[1])}\n${
+        formatBytes(peer.reliable.bytesIn)} / ${formatBytes(peer.unreliable.bytesIn)}`;
+      cells.in.title = `Frames in: ${formatCount(peer.reliable.packetsIn)} reliable, ${
+        formatCount(peer.unreliable.packetsIn)} unreliable`;
+      const queued = peer.reliable.bufferedAmount + peer.unreliable.bufferedAmount;
+      cells.out.textContent = `${formatRate(outRates[0])} / ${formatRate(outRates[1])}\n${
+        formatBytes(peer.reliable.bytesOut)} / ${formatBytes(peer.unreliable.bytesOut)}${
+        queued ? ` · ${formatBytes(queued)} queued` : ""}`;
+      cells.out.title = `Frames out: ${formatCount(peer.reliable.packetsOut)} reliable, ${
+        formatCount(peer.unreliable.packetsOut)} unreliable${
+        pair && Number.isFinite(pair.availableOutgoingBitrate) ?
+          `; ${formatRate(pair.availableOutgoingBitrate / 8)} available` : ""}`;
+      const dropRate = previous ? rate(peer.droppedDatagrams, previous.dropped) : null;
+      cells.loss.textContent = `drops ${formatCount(peer.droppedDatagrams)}${
+        Number.isFinite(dropRate) && dropRate > 0 ? ` (${dropRate.toFixed(1)}/s)` : ""} · refused ${
+        formatCount(peer.sendRefusals)}\nprobe loss ${probeLoss === null ? "—" : `${probeLoss.toFixed(1)}%`}`;
+      cells.loss.title = "drops: unreliable frames discarded because the game fell behind; " +
+        "refused: sends declined while a channel was over its high-water mark; " +
+        "probe loss: unanswered connectivity checks in the last minute";
+      entry.previous = {
+        time: now,
+        bytesIn: channels.map(channel => peer[channel].bytesIn),
+        bytesOut: channels.map(channel => peer[channel].bytesOut),
+        dropped: peer.droppedDatagrams,
+      };
+    }
+
+    function sampleGameCounters(now) {
+      const read = typeof Module !== "undefined" &&
+        typeof Module._platform_web_net_statistic === "function" ?
+        Module._platform_web_net_statistic : null;
+      if (!read) {
+        netTicksElement.textContent = "Unavailable";
+        return;
+      }
+      const sample = { time: now };
+      Object.entries(NET_STATISTIC).forEach(([key, index]) => { sample[key] = read(index); });
+      /* the tick rate over the last ten seconds, restarted when a game does */
+      if (sample.gameTime < 0 ||
+          (netGameHistory.length && sample.gameTime < netGameHistory[netGameHistory.length - 1].gameTime)) {
+        netGameHistory.length = 0;
+      }
+      if (sample.gameTime >= 0) {
+        netGameHistory.push(sample);
+        if (netGameHistory.length > 10) netGameHistory.splice(0, netGameHistory.length - 10);
+      }
+      const oldest = netGameHistory[0];
+      const elapsed = oldest ? (sample.time - oldest.time) / 1000 : 0;
+      if (sample.gameTime < 0) {
+        netTicksElement.textContent = "No game running";
+      } else if (elapsed <= 0) {
+        netTicksElement.textContent = `tick ${formatCount(sample.gameTime)}`;
+      } else {
+        const ticksPerSecond = (sample.gameTime - oldest.gameTime) / elapsed;
+        const drift = (ticksPerSecond / GAME_TICKS_PER_SECOND - 1) * 100;
+        netTicksElement.textContent = `tick ${formatCount(sample.gameTime)} · ${
+          ticksPerSecond.toFixed(1)} ticks/s · drift ${drift >= 0 ? "+" : ""}${drift.toFixed(1)}% over ${
+          Math.round(elapsed)} s`;
+      }
+      const previous = netGamePrevious;
+      netGamePrevious = sample;
+      const perSecond = key => {
+        if (!previous) return "";
+        const seconds = (sample.time - previous.time) / 1000;
+        return seconds > 0 ? ` (${((sample[key] - previous[key]) / seconds).toFixed(1)}/s)` : "";
+      };
+      netDistributedElement.textContent = `sent ${formatCount(sample.distributedSent)}${perSecond("distributedSent")} · received ${
+        formatCount(sample.distributedReceived)}${perSecond("distributedReceived")} · corrections ${
+        formatCount(sample.distributedCorrections)}${perSecond("distributedCorrections")}`;
+      netItemsElement.textContent = `created ${formatCount(sample.itemCreates)} · deleted ${
+        formatCount(sample.itemDeletes)} · failed ${formatCount(sample.itemFailures)} · own removed ${
+        formatCount(sample.itemRemoved)}`;
+      netDamageElement.textContent = `reports sent ${formatCount(sample.damageSent)} · dealt ${
+        formatCount(sample.damageDealt)} · rejected ${formatCount(sample.damageRejected)} · replayed ${
+        formatCount(sample.damageReplayed)}`;
+    }
+
+    async function sampleNetwork() {
+      if (!netSampling || netSampleInFlight) return;
+      netSampleInFlight = true;
+      try {
+        const now = performance.now();
+        sampleGameCounters(now);
+        const transport = window.HaloWebTransport;
+        const peers = transport && typeof transport.listPeers === "function" ? transport.listPeers() : [];
+        const online = window.HaloOnline && typeof window.HaloOnline.diagnostics === "function" ?
+          window.HaloOnline.diagnostics() : null;
+        const who = new Map((online ? online.peers : []).map(peer => [peer.peerId, peer]));
+        const pairs = await Promise.all(peers.map(peer => transport.getStats(peer.peerId)
+          .then(summarizeCandidatePair, () => null)));
+        if (!netSampling) return;
+        const seen = new Set();
+        peers.forEach((peer, index) => {
+          seen.add(peer.peerId);
+          let entry = netPeers.get(peer.peerId);
+          if (!entry) {
+            entry = createNetPeerRow(peer.peerId);
+            netPeers.set(peer.peerId, entry);
+          }
+          updateNetPeerRow(entry, peer, pairs[index], who.get(peer.peerId) || null, now);
+        });
+        netPeers.forEach((entry, peerId) => {
+          if (seen.has(peerId)) return;
+          entry.row.remove();
+          netPeers.delete(peerId);
+        });
+        const connected = peers.filter(peer => peer.state === "connected").length;
+        netSummaryElement.textContent = online && online.active ?
+          `${online.role || "joining"}${online.publicLobby ? " · public" : ""} · ${connected}/${peers.length} connected${
+            online.connectionPath ? ` · ${online.connectionPath}` : ""}` :
+          (peers.length ? `${connected}/${peers.length} connected` : "Offline");
+      } finally {
+        netSampleInFlight = false;
+      }
+    }
+
+    function setNetworkSampling(on) {
+      on = !!on;
+      if (on === netSampling) return;
+      netSampling = on;
+      window.clearInterval(netSampleTimer);
+      netSampleTimer = 0;
+      if (!on) return;
+      /* rates restart: a gap would average over it */
+      netPeers.forEach(entry => { entry.previous = null; });
+      netGameHistory.length = 0;
+      netGamePrevious = null;
+      sampleNetwork();
+      netSampleTimer = window.setInterval(sampleNetwork, NET_SAMPLE_INTERVAL);
+    }
+
     function updatePerformance() {
       const functions = [
         Module._platform_web_profile_loops,
@@ -3475,6 +4050,7 @@
       performanceElement.textContent = document.hidden ? "Paused" : "Measuring…";
       if (document.hidden) flushPerformanceTelemetry();
       if (!document.hidden) updatePerformance();
+      setNetworkSampling(!diagnosticsOverlay.hidden && !document.hidden);
     });
     window.addEventListener("pagehide", flushPerformanceTelemetry);
     window.addEventListener("pagehide", () => finishCampaignLoad("abandoned"));
@@ -3586,6 +4162,7 @@
 
     function setDiagnosticsOpen(open) {
       diagnosticsOverlay.hidden = !open;
+      setNetworkSampling(open && !document.hidden);
       if (open) {
         updatePerformance();
         updateMemory();

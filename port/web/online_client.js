@@ -29,6 +29,9 @@
   var ROOM_CAPACITY = 128;
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
+  /* a ping's colors, the scoreboard's: green under 80 ms, yellow under 150 */
+  var PING_GOOD_BELOW_MILLISECONDS = 80;
+  var PING_FAIR_BELOW_MILLISECONDS = 150;
   var GAME_POLL_MILLISECONDS = 200;
   /* A host extends its room before the service's six-hour room life ends. */
   var ROOM_RENEW_MILLISECONDS = 50 * 60 * 1000;
@@ -38,6 +41,10 @@
   var TURNSTILE_RENDER_ATTEMPTS = 80;
   var HOST_SETTINGS_STORAGE_KEY = "halo.web.host-settings.v1";
   var PLAYER_PROFILE_STORAGE_KEY = "halo.web.player-profile.v1";
+  /* the Spartan dialog's mouse look settings, kept in this browser */
+  var MOUSE_LOOK_STORAGE_KEY = "halo.web.mouse-look.v1";
+  var MOUSE_SENSITIVITY_MINIMUM = 0.1;
+  var MOUSE_SENSITIVITY_MAXIMUM = 4;
   var PLAYER_NAME_MAXIMUM_LENGTH = 11;
   var LAST_MAP_INDEX = 12;
   var LAST_MODE_INDEX = 5;
@@ -115,6 +122,11 @@
   /* The browser that hosts a public game because nobody else was playing runs
      the same lobby driver as a dedicated host, so nobody presses Start. */
   var PLAYER_HOST_DRIVER = Object.freeze({ minimumPlayers: 1, countdownSeconds: 15, postgameSeconds: 12 });
+  /* the post-match lobby (port/web/post_match.js): how long the carnage
+     report and the vote show after a server match before those who stay
+     play on (a player-hosted room's is its host's postgame, so the vote is
+     in before its lobby comes back) */
+  var POST_MATCH_SECONDS = 20;
   var LOBBY_TICK_MILLISECONDS = 250;
   var LOBBY_STALE_MILLISECONDS = 6000;
   var LOBBY_REJOIN_ATTEMPTS = 6;
@@ -133,6 +145,10 @@
     /* The public rooms before joining (GET /v1/lobbies), refreshed while idle. */
     listing: null,
     listingAt: 0,
+    /* the post-match lobby after a match (tickPostMatch), and the vote's
+       winner carried onto the next queue ticket */
+    postMatch: null,
+    nextVote: null,
     listingBusy: false,
     /* Host: guests that said they are waiting, by peer ID, with when. */
     waitingPeers: new Map(),
@@ -207,6 +223,10 @@
     /* A dedicated host: its credential, rotation and progress through it. */
     dedicated: null,
     matchState: MATCH_STATE.NONE,
+    /* everyone's ping to the host or server, by name (the scoreboard, the
+       lobby): a dedicated server's gateway measures and sends them; a
+       browser host measures its own (tickPeerPings) */
+    pings: null,
   };
 
   function byId(id) {
@@ -742,6 +762,84 @@
     }
   }
 
+  /* ---------- mouse look: the Spartan dialog's sensitivity slider and
+     invert-Y switch. Saved in this browser, handed to the game thread
+     (platform_web_set_mouse_look, atomics it reads on the next mouse poll)
+     when the runtime comes up and on every change, so a change is felt
+     mid-match. */
+  function normalizeMouseLook(saved) {
+    var settings = { sensitivity: 1, invertY: false };
+    if (saved && typeof saved === "object") {
+      var sensitivity = Number(saved.sensitivity);
+      if (Number.isFinite(sensitivity)) {
+        settings.sensitivity = Math.min(MOUSE_SENSITIVITY_MAXIMUM,
+          Math.max(MOUSE_SENSITIVITY_MINIMUM, Math.round(sensitivity * 100) / 100));
+      }
+      settings.invertY = saved.invertY === true;
+    }
+    return settings;
+  }
+
+  function mouseLookSettings() {
+    if (session.mouseLook) return session.mouseLook;
+    var saved = null;
+    try { saved = JSON.parse(global.localStorage.getItem(MOUSE_LOOK_STORAGE_KEY)); } catch (error) { saved = null; }
+    session.mouseLook = normalizeMouseLook(saved);
+    return session.mouseLook;
+  }
+
+  function saveMouseLookSettings(settings) {
+    session.mouseLook = normalizeMouseLook(settings);
+    try {
+      global.localStorage.setItem(MOUSE_LOOK_STORAGE_KEY, JSON.stringify(session.mouseLook));
+    } catch (error) {
+      /* A blocked store keeps the setting for this load only. */
+    }
+    applyMouseLookSettings();
+    renderMouseLookSettings();
+  }
+
+  /* hands the game the settings; nothing to do until the runtime is up,
+     and runtimeReady calls it then */
+  function applyMouseLookSettings() {
+    var fn = global.Module && global.Module._platform_web_set_mouse_look;
+    if (typeof fn !== "function") return;
+    var settings = mouseLookSettings();
+    try { fn(settings.sensitivity, settings.invertY ? 1 : 0); } catch (error) { /* older build */ }
+  }
+
+  function renderMouseLookSettings() {
+    var settings = mouseLookSettings();
+    var slider = byId("lobby-mouse-sensitivity");
+    var readout = byId("lobby-mouse-sensitivity-value");
+    var invert = byId("lobby-invert-y");
+    if (slider) slider.value = String(settings.sensitivity);
+    if (readout) readout.textContent = settings.sensitivity.toFixed(2) + "\u00d7";
+    if (invert) invert.checked = settings.invertY;
+  }
+
+  function installMouseLook() {
+    var slider = byId("lobby-mouse-sensitivity");
+    var invert = byId("lobby-invert-y");
+    if (slider) {
+      slider.addEventListener("input", function(event) {
+        saveMouseLookSettings({
+          sensitivity: Number(event.target.value),
+          invertY: mouseLookSettings().invertY,
+        });
+      });
+    }
+    if (invert) {
+      invert.addEventListener("change", function(event) {
+        saveMouseLookSettings({
+          sensitivity: mouseLookSettings().sensitivity,
+          invertY: !!event.target.checked,
+        });
+      });
+    }
+    renderMouseLookSettings();
+  }
+
   function setWizardStep(step) {
     session.wizardStep = step;
     if (elements.wizard) elements.wizard.dataset.step = step;
@@ -811,6 +909,7 @@
     if (elements.playerEmpty) elements.playerEmpty.hidden = players.length !== 0;
     if (elements.playerList && typeof document.createElement === "function") {
       while (elements.playerList.firstChild) elements.playerList.removeChild(elements.playerList.firstChild);
+      network.rows.sidebar = [];
       players.forEach(function(player) {
         var profile = player.profile || {
           name: playerFallbackName(player),
@@ -835,9 +934,11 @@
         row.appendChild(swatch);
         row.appendChild(label);
         row.appendChild(role);
+        row.appendChild(pingSpan("sidebar", player));
         elements.playerList.appendChild(row);
       });
     }
+    updateRowPings("sidebar");
   }
 
   function replaceRoster(players) {
@@ -1440,10 +1541,25 @@
         startsIn: typeof message.startsIn === "number" ? message.startsIn : null,
         receivedAt: Date.now(),
       };
+      /* the post-match vote: the host's offers and tally */
+      if (message.vote && lobby.postMatch && lobby.postMatch.kind === "guest") applyHostedTally(message.vote);
+      return;
+    }
+    if (message.type === "vote") {
+      /* a guest's pick in the post-match vote (the host tallies) */
+      if (session.role === "host" && typeof message.from === "string" && lobby.postMatch && lobby.postMatch.kind === "hosted") {
+        lobby.postMatch.votesBy.set(message.from, { mapIndex: message.mapIndex, modeIndex: message.modeIndex });
+        recountHostedVotes();
+      }
       return;
     }
     if (message.type === "roster") {
       replaceRoster(message.players);
+      return;
+    }
+    if (message.type === "chat") {
+      /* a player's line of text chat (chat.js shows it) */
+      if (global.HaloChat) global.HaloChat.receive("room", message);
       return;
     }
     if (message.type === "signal") {
@@ -2218,8 +2334,13 @@
     session.matchInfo = null;
     session.matchState = MATCH_STATE.NONE;
     session.wizardStep = "map";
+    session.pings = null;
+    network.hostRoundTrip = null;
     syncTelemetryContext();
     renderRoster();
+    renderPings();
+    /* the room's chat goes with the room */
+    if (global.HaloChat) global.HaloChat.clear("room");
   }
 
   async function leave(returnToSetup) {
@@ -2538,7 +2659,10 @@
         playerKey: playerKey(),
       };
       if (WALLET_ENABLED && wallet.token) request.walletToken = wallet.token;
+      /* the last match's vote: the matchmaker plays the plurality's game */
+      if (lobby.nextVote) request.vote = lobby.nextVote;
       var result = await fetchJson("/v1/queue", { method: "POST", body: JSON.stringify(request) });
+      lobby.nextVote = null;
       if (lobby.queue !== queue) return;
       applyTicket(result.ticket);
     } catch (error) {
@@ -2565,6 +2689,7 @@
     queue.waited = ticket.waitedSeconds;
     if (typeof ticket.matches === "number") lobby.matches = ticket.matches;
     queue.match = ticket.match || null;
+    applyPostMatchTally(ticket);
     if (ticket.state === "ready" && ticket.match && ticket.match.inviteCode && !queue.joined && !session.active) {
       queue.joined = true;
       /* a free match after a wagered one: the old wager stays only as the
@@ -2574,9 +2699,10 @@
       join(ticket.match.inviteCode, null, true).catch(function(error) { fail(error); });
       return;
     }
-    if ((ticket.state === "ended" || ticket.state === "cancelled" || ticket.state === "expired") && !session.active) {
+    if ((ticket.state === "ended" || ticket.state === "cancelled" || ticket.state === "expired") && !session.active &&
+        !(lobby.postMatch && lobby.postMatch.ticketId === ticket.id)) {
       /* the match is over or never happened: back in the queue, if still
-         wanted */
+         wanted (the post-match lobby keeps an ended ticket for its vote) */
       lobby.queue = null;
       lobby.started = false;
     }
@@ -2720,7 +2846,7 @@
     var wagerLine = lobbyElement("playlist-detail-wager");
     wagerLine.hidden = !focused.wager;
     wagerLine.textContent = !focused.wager ? "" : "\u25ce " + formatSol(focused.wager.stake) + " SOL buy-in · " +
-      (focused.wager.mode === "team" ? "the winning team takes the pot" :
+      (focused.wager.mode === "team" ? "winners get their stake back and split the losers' stakes by kills" :
         formatSol(focused.wager.perKill) + " SOL a kill") + " · 5% fee on winnings";
     lobbyElement("playlist-detail-counts").textContent = playlistCounts(focused);
     var maps = lobbyElement("playlist-detail-maps");
@@ -2766,12 +2892,37 @@
 
   /* the landing, or the lobby: a party or a search in progress is the lobby's */
   function homeScreen() {
-    if (partyView() || lobby.pendingParty || (lobby.queue && !lobby.quickPlay)) return "lobby";
+    if (lobby.postMatch || partyView() || lobby.pendingParty || (lobby.queue && !lobby.quickPlay)) return "lobby";
     return lobby.screen || "landing";
   }
 
   function setLandingStatus(text, tone) {
     lobby.landingStatus = { text: text || "", tone: tone || null };
+  }
+
+  /* The landing's links out, from the Worker (GET /v1/site): the
+     fomo.family link carries the deployment's referral code, and the X
+     link shows only once an X account is configured. The page's own hrefs
+     stand until the answer comes, or when it never does. The answer also
+     says whether the Worker looks for fomo wallets (lobby.site). */
+  function loadSiteLinks() {
+    if (lobby.siteRequested) return;
+    lobby.siteRequested = true;
+    fetchJson("/v1/site", { method: "GET" }).then(function(site) {
+      var links = site && site.links;
+      if (!links) return;
+      lobby.site = { fomoDetection: !!site.fomoDetection, links: links };
+      var fomo = lobbyElement("landing-fomo-link");
+      if (fomo && typeof links.fomo === "string" && /^https:\/\/fomo\.family\//.test(links.fomo)) fomo.href = links.fomo;
+      var x = lobbyElement("landing-x-link");
+      if (x) {
+        var xUrl = typeof links.x === "string" && /^https:\/\/x\.com\/[A-Za-z0-9_]+$/.test(links.x) ? links.x : null;
+        if (xUrl) x.href = xUrl;
+        x.hidden = !xUrl;
+      }
+    }).catch(function() {
+      /* the page's own links stay */
+    });
   }
 
   function renderLanding() {
@@ -2781,6 +2932,7 @@
     };
     var root = lobbyElement("landing");
     if (!root) return;
+    loadSiteLinks();
     /* the live map shows through once the game has it up; paused, the game
        itself is behind */
     var live = (backdropState() === 2 || backgroundBroadcastPlaying()) && gameInView() &&
@@ -3259,10 +3411,21 @@
 
   function applyParty(view) {
     if (!view) return;
-    if (!lobby.party || lobby.party.code !== view.code) lobby.party = { code: view.code, adopted: null, polledAt: 0 };
+    if (!lobby.party || lobby.party.code !== view.code) {
+      lobby.party = { code: view.code, adopted: null, polledAt: 0 };
+      if (global.HaloChat) global.HaloChat.clear("party");
+    }
     lobby.party.view = view;
     rememberParty(view.code);
     adoptPartyActivity(view);
+    /* the party's chat since the last poll (chat.js shows it) */
+    if (Array.isArray(view.chat)) {
+      view.chat.forEach(function(line) {
+        if (!line || typeof line.seq !== "number" || line.seq <= (lobby.party.chatSeq || 0)) return;
+        lobby.party.chatSeq = line.seq;
+        if (global.HaloChat) global.HaloChat.receive("party", line);
+      });
+    }
     renderPartyDialog();
   }
 
@@ -3294,6 +3457,8 @@
   async function partyRequest(action, extra) {
     var body = partyMember();
     if (extra) Object.keys(extra).forEach(function(key) { body[key] = extra[key]; });
+    /* the chat: only the lines after the one this page saw */
+    if (action !== "create" && lobby.party) body.chatSince = lobby.party.chatSeq || 0;
     var path = action === "create" ? "/v1/parties" : "/v1/parties/" + encodeURIComponent(lobby.party.code) + "/" + action;
     return fetchJson(path, { method: "POST", body: JSON.stringify(body) });
   }
@@ -3347,6 +3512,7 @@
 
   async function leaveParty() {
     var party = lobby.party;
+    if (global.HaloChat) global.HaloChat.clear("party");
     if (!party) return;
     lobby.party = null;
     rememberParty(null);
@@ -3391,6 +3557,7 @@
           lobby.party = null;
           rememberParty(null);
           lobby.error = "You're no longer in that party.";
+          if (global.HaloChat) global.HaloChat.clear("party");
         }
       })
       .then(function() { party.polling = false; });
@@ -3411,7 +3578,10 @@
     lobby.party.starting = true;
     lobby.error = null;
     try {
-      applyParty((await partyRequest("start")).party);
+      /* the last match's vote: the matchmaker plays the plurality's game */
+      var extra = lobby.nextVote ? { vote: lobby.nextVote } : null;
+      lobby.nextVote = null;
+      applyParty((await partyRequest("start", extra)).party);
     } catch (error) {
       lobby.wantsPlay = false;
       lobby.started = false;
@@ -3542,6 +3712,8 @@
 
   function scheduleRejoin(message) {
     if (!lobby.wantsPlay) return;
+    /* the post-match lobby: the match is over, and its end queues again */
+    if (lobby.postMatch) return;
     if (lobby.rejoinTimer) return;
     if (lobby.rejoinAttempts >= LOBBY_REJOIN_ATTEMPTS) {
       lobby.wantsPlay = false;
@@ -3578,6 +3750,7 @@
   }
 
   function lobbyStatus(state) {
+    if (lobby.postMatch && global.HaloPostMatch) return { text: global.HaloPostMatch.status(lobby.postMatch, Date.now()) };
     if (lobby.error && !session.active) return { text: lobby.error, tone: "error" };
     if (lobby.queue && !session.active) return queueStatus();
     if (!session.runtimeReady) {
@@ -3657,9 +3830,13 @@
       return player.peerId + (player.leader ? "*" : "") + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
         player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches);
     }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "");
-    if (list.dataset.signature === signature) return;
+    if (list.dataset.signature === signature) {
+      updateRowPings("lobby");
+      return;
+    }
     list.dataset.signature = signature;
     while (list.firstChild) list.removeChild(list.firstChild);
+    network.rows.lobby = [];
     if (!players.length) {
       var empty = document.createElement("li");
       empty.className = "empty";
@@ -3696,11 +3873,14 @@
         row.appendChild(star);
       }
       row.appendChild(role);
+      /* a ping once the room has one (nothing for a party at home) */
+      if (session.active) row.appendChild(pingSpan("lobby", player));
       var matches = typeof player.matches === "number" ? player.matches :
         (self && typeof lobby.matches === "number" ? lobby.matches : null);
       if (matches !== null) row.appendChild(rankElement(matches));
       list.appendChild(row);
     });
+    updateRowPings("lobby");
     for (var slot = 0; slot < slots; slot++) {
       var open = document.createElement("li");
       open.className = "slot" + (searching ? " searching" : "");
@@ -3871,12 +4051,16 @@
       try { startsIn = global.Module._platform_web_online_get_countdown_remaining(); } catch (error) { startsIn = null; }
       if (startsIn < 0) startsIn = null;
     }
-    var key = state + ":" + startsIn;
+    /* after a match: the vote's offers and tally, for the guests' panels */
+    var vote = lobby.postMatch && lobby.postMatch.kind === "hosted" ?
+      { offers: lobby.postMatch.offers, votes: lobby.postMatch.votes } : null;
+    var key = state + ":" + startsIn + ":" + (vote ? JSON.stringify(vote) : "");
     if (key === lobby.sentMatch && Date.now() - lobby.sentMatchAt < 3000) return;
     lobby.sentMatch = key;
     lobby.sentMatchAt = Date.now();
     var message = { v: PROTOCOL_VERSION, type: "match", state: state };
     if (startsIn !== null) message.startsIn = startsIn;
+    if (vote) message.vote = vote;
     try { sendSocket(message); } catch (error) { /* The next tick retries. */ }
   }
 
@@ -3928,9 +4112,252 @@
     leave(false).then(function() { scheduleRejoin("Could not reach an open server."); });
   }
 
+  /* ---------- ping, outside a match: a round trip to the signaling Worker
+     (GET /v1/ping, which also lists where else to probe: one URL per game
+     region, the gateway's GET /ping) timed in the page, the least of a few
+     samples after one that warms the connection up; in a room, what WebRTC
+     measured to the host or server. The landing and the lobby show it in
+     the scoreboard's colors. Region-aware matchmaking can later send
+     network.results, by target id, with a ticket. */
+  var PING_REFRESH_MILLISECONDS = 20000;
+  var PING_SAMPLES = 3;
+  var PEER_PINGS_MILLISECONDS = 2000;
+  var network = {
+    /* the Worker's list: [{id, label, url}] */
+    targets: [],
+    /* by target id: {label, ms}, or null when it did not answer */
+    results: {},
+    /* the Worker itself: {ms}, or null */
+    signaling: null,
+    busy: false,
+    at: 0,
+    /* a guest's round trip to the host or server, in ms, from WebRTC */
+    hostRoundTrip: null,
+    peersAt: 0,
+    peersBusy: false,
+    /* the rows with a ping cell, by list: [{player, cell}] */
+    rows: { lobby: [], sidebar: [] },
+  };
+
+  function pingTone(ms) {
+    return ms < PING_GOOD_BELOW_MILLISECONDS ? "good" : ms < PING_FAIR_BELOW_MILLISECONDS ? "fair" : "poor";
+  }
+
+  function clock() {
+    return global.performance && typeof global.performance.now === "function" ?
+      global.performance.now() : Date.now();
+  }
+
+  function validProbeUrl(value) {
+    try {
+      var url = new URL(String(value));
+      return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /* the least of `samples` timed GETs of `url` after a warm-up one, in
+     whole ms, or null when it does not answer; `onFirst` reads the warm-up
+     response's text */
+  async function roundTrip(url, samples, onFirst) {
+    var best = null;
+    for (var index = 0; index <= samples; index++) {
+      var started = clock();
+      var text;
+      try {
+        var response = await fetch(url, { method: "GET", cache: "no-store", credentials: "omit", mode: "cors" });
+        if (!response.ok) return null;
+        text = await response.text();
+      } catch (error) {
+        return null;
+      }
+      var elapsed = clock() - started;
+      if (index === 0) {
+        if (onFirst) onFirst(text);
+      } else if (best === null || elapsed < best) {
+        best = elapsed;
+      }
+    }
+    return best === null ? null : Math.max(0, Math.round(best));
+  }
+
+  function refreshPing(now) {
+    if (network.busy || now - network.at < PING_REFRESH_MILLISECONDS || typeof fetch !== "function") return;
+    network.busy = true;
+    network.at = now;
+    (async function() {
+      var targets = null;
+      var signaling = await roundTrip(apiBase() + "/v1/ping", PING_SAMPLES, function(text) {
+        try {
+          var result = JSON.parse(text);
+          if (result && Array.isArray(result.targets)) targets = result.targets;
+        } catch (error) {
+          /* a proxy's page: the targets stay as they were */
+        }
+      });
+      network.signaling = signaling === null ? null : { ms: signaling };
+      if (targets) {
+        network.targets = targets.filter(function(target) {
+          return target && typeof target.id === "string" && typeof target.label === "string" && validProbeUrl(target.url);
+        }).slice(0, 16).map(function(target) {
+          return { id: target.id, label: target.label, url: validProbeUrl(target.url) };
+        });
+      }
+      for (var index = 0; index < network.targets.length; index++) {
+        var target = network.targets[index];
+        var ms = await roundTrip(target.url, PING_SAMPLES);
+        network.results[target.id] = ms === null ? null : { label: target.label, ms: ms };
+      }
+    })().catch(function() {
+      /* the ping is a readout; nothing depends on it */
+    }).then(function() {
+      network.busy = false;
+      renderPings();
+    });
+  }
+
+  /* a peer's round trip from WebRTC's chosen candidate pair, in whole ms, or
+     null before it has one */
+  async function peerRoundTrip(transportPeerId) {
+    var reports = await transport().getStats(transportPeerId);
+    var trip = null;
+    reports.forEach(function(report) {
+      if (report.type === "candidate-pair" &&
+          (report.selected || (report.nominated && report.state === "succeeded")) &&
+          typeof report.currentRoundTripTime === "number") {
+        trip = Math.round(report.currentRoundTripTime * 1000);
+      }
+    });
+    return trip;
+  }
+
+  /* every two seconds in a room: a host measures each player and tells the
+     room, which passes them on by name (as a dedicated server's gateway
+     does, services/game-server/gateway/room.go); a guest measures the host */
+  function tickPeerPings(now) {
+    if (!session.active || !session.transportConnected || network.peersBusy ||
+        now - network.peersAt < PEER_PINGS_MILLISECONDS) return;
+    network.peersAt = now;
+    network.peersBusy = true;
+    var generation = session.socketGeneration;
+    var peers = [];
+    session.peerAliases.forEach(function(transportPeerId, signalingPeerId) {
+      if (session.peerStates.get(transportPeerId) === "connected") {
+        peers.push({ id: signalingPeerId, transport: transportPeerId });
+      }
+    });
+    Promise.all(peers.map(function(peer) {
+      return peerRoundTrip(peer.transport).catch(function() { return null; });
+    })).then(function(trips) {
+      if (generation !== session.socketGeneration || !session.active) return;
+      if (session.role === "host") {
+        var byPeer = {};
+        var byName = {};
+        peers.forEach(function(peer, index) {
+          if (trips[index] === null) return;
+          byPeer[peer.id] = trips[index];
+          var player = session.roster.get(peer.id);
+          if (player && player.profile && player.profile.name) byName[player.profile.name] = trips[index];
+        });
+        session.pings = byName;
+        if (Object.keys(byPeer).length) {
+          try {
+            sendSocket({ v: PROTOCOL_VERSION, type: "pings", pings: byPeer });
+          } catch (error) {
+            /* between room connections: the next measure goes out */
+          }
+        }
+      } else {
+        var trip = trips.filter(function(value) { return value !== null; })[0];
+        network.hostRoundTrip = trip === undefined ? null : trip;
+      }
+      renderPings();
+    }).catch(function() {}).then(function() {
+      network.peersBusy = false;
+    });
+  }
+
+  /* the one ping to show: in a room, a guest's to the host or server;
+     otherwise the nearest game region's, or the lobby service's */
+  function pingSummary() {
+    if (session.active && session.role === "guest" && session.transportConnected && network.hostRoundTrip !== null) {
+      return { ms: network.hostRoundTrip, label: session.room && session.room.dedicated ? "to the server" : "to the host" };
+    }
+    var best = null;
+    network.targets.forEach(function(target) {
+      var result = network.results[target.id];
+      if (result && (best === null || result.ms < best.ms)) best = { ms: result.ms, label: "to " + result.label };
+    });
+    if (best) return best;
+    if (network.signaling) return { ms: network.signaling.ms, label: "to the lobby service" };
+    return null;
+  }
+
+  /* a player's ping in a room: a guest's own from WebRTC, everyone else's
+     as the host measured them */
+  function pingFor(player) {
+    var self = player.self || player.peerId === session.selfPeerId;
+    if (self && session.role === "guest" && network.hostRoundTrip !== null) return network.hostRoundTrip;
+    if (self && session.role === "host") return null;
+    var name = player.profile && player.profile.name;
+    var pings = session.pings || {};
+    return name && typeof pings[name] === "number" ? pings[name] : null;
+  }
+
+  function paintPing(cell, ms, suffix) {
+    if (ms === null) {
+      if (!cell.hidden) cell.hidden = true;
+      return;
+    }
+    var text = ms + (suffix || "");
+    if (cell.textContent !== text) cell.textContent = text;
+    if (cell.dataset.tone !== pingTone(ms)) cell.dataset.tone = pingTone(ms);
+    if (cell.hidden) cell.hidden = false;
+  }
+
+  function pingSpan(listName, player) {
+    var cell = document.createElement("span");
+    cell.className = "ping";
+    cell.title = "Ping";
+    cell.hidden = true;
+    network.rows[listName].push({ player: player, cell: cell });
+    return cell;
+  }
+
+  function updateRowPings(listName) {
+    network.rows[listName].forEach(function(row) {
+      paintPing(row.cell, pingFor(row.player), " ms");
+    });
+  }
+
+  function renderPingReadout(id) {
+    var element = lobbyElement(id);
+    if (!element) return;
+    var summary = pingSummary();
+    paintPing(element, summary ? summary.ms : null, " ms");
+    if (!summary) return;
+    var detail = [];
+    network.targets.forEach(function(target) {
+      var result = network.results[target.id];
+      if (result) detail.push(result.label + " " + result.ms + " ms");
+    });
+    if (network.signaling) detail.push("lobby service " + network.signaling.ms + " ms");
+    var title = "Ping " + summary.ms + " ms " + summary.label + (detail.length ? " (" + detail.join(", ") + ")" : "");
+    if (element.title !== title) element.title = title;
+  }
+
+  function renderPings() {
+    renderPingReadout("landing-ping");
+    renderPingReadout("lobby-ping");
+    updateRowPings("lobby");
+    updateRowPings("sidebar");
+  }
+
   function tickLobby() {
     pollQueue();
     pollParty();
+    tickPeerPings(Date.now());
     /* watching a broadcast: no session; the game plays the recording (the
        landing's own, behind it, leaves the page as it is) */
     if (lobby.broadcast && !lobby.broadcast.background) {
@@ -3938,12 +4365,15 @@
       return;
     }
     if (document.body.dataset.lobby === "open") refreshPlaylists();
+    /* the chat panel follows where chat goes (the party, then the room) */
+    if (document.body.dataset.lobby === "open" && global.HaloChat) global.HaloChat.refresh();
     moveToOpenServer(clientState());
     restartForWaitingPlayers();
     broadcastMatch();
     reportHostKills();
     var state = clientState();
     announceWaiting(state);
+    tickPostMatch(state);
     if (session.active && session.transportConnected && state === CLIENT_STATE.SEARCHING) {
       if (!lobby.searchingSince) lobby.searchingSince = Date.now();
     } else {
@@ -3952,6 +4382,7 @@
     var publicPlay = !session.active || session.publicLobby;
     var inMatch = session.active && session.publicLobby && state === CLIENT_STATE.INGAME &&
       (session.role === "host" || session.transportConnected);
+    if (session.runtimeReady && !inMatch && state !== CLIENT_STATE.INGAME) refreshPing(Date.now());
 
     /* A guest whose host vanished still shows the old lobby; start over. */
     if (lobby.wantsPlay && session.active && session.role === "guest" && !session.transportConnected &&
@@ -3966,7 +4397,7 @@
     }
     if (session.active && (state === CLIENT_STATE.PREGAME || state === CLIENT_STATE.INGAME)) lobby.rejoinAttempts = 0;
     if (lobby.wantsPlay && session.runtimeReady && !session.active && !lobby.rejoinTimer && !session.leavePromise &&
-        !lobby.error && !lobby.started) {
+        !lobby.error && !lobby.started && !lobby.postMatch) {
       lobby.started = true;
       startQuickPlay();
     }
@@ -4080,9 +4511,16 @@
         lobby.wantsPlay || partyBusy ? "Stop searching" : "Start matchmaking";
       play.disabled = waiting || (customLobby && partyBusy && !session.active);
       if (waiting || (customLobby && partyBusy)) play.dataset.mode = "wait";
+      /* the post-match lobby: its panel has Stay; this is Leave */
+      if (lobby.postMatch) {
+        play.textContent = lobby.postMatch.kind === "party" ? "Leave party" : "Leave";
+        play.dataset.mode = "leave";
+        play.disabled = false;
+      }
     }
     renderLobbyGame();
     renderLobbyPlayers();
+    renderPostMatch();
   }
 
   function renderLobbyColors() {
@@ -4233,11 +4671,23 @@
     return (lamports / LAMPORTS_PER_SOL).toFixed(3);
   }
 
+  /* small amounts (a Team Stakes kill, 0.0014): four places */
+  function formatSolFine(lamports) {
+    return (lamports / LAMPORTS_PER_SOL).toFixed(4);
+  }
+
   /* "+0.019" / "\u22120.010" / "0.000" */
   function formatSigned(lamports) {
     if (lamports > 0) return "+" + formatSol(lamports);
     if (lamports < 0) return "\u2212" + formatSol(-lamports);
     return formatSol(0);
+  }
+
+  /* a Team Stakes player's projected profit if their team wins now, e.g.
+     "+0.028" (their take less their stake); "" when unknown */
+  function projectedLabel(view, player) {
+    if (!view || !player || typeof player.projected !== "number") return "";
+    return formatSigned(player.projected - view.stake);
   }
 
   function walletHeaders() {
@@ -4615,10 +5065,12 @@
       var mine = inMatch && lobby.wager && !lobby.wager.done ? myWagerLine() : null;
       hud.hidden = !mine;
       if (mine && lobby.wager.mode === "team") {
-        /* pot against pot: nothing moves until the winner is known */
-        setText("hud-balance-amount", formatSol(lobby.wager.stake) + " in");
+        /* Team Stakes: nothing moves until the result; the chip projects
+           this player's profit if their team wins now */
+        var view = lobby.wager.view;
+        setText("hud-balance-amount", projectedLabel(view, mine) || formatSol(lobby.wager.stake) + " in");
         if (hud.dataset.tone !== "even") hud.dataset.tone = "even";
-        setText("hud-balance-note", "team pot " + formatSol(lobby.wager.view.pot) + " · winners take it");
+        setText("hud-balance-note", "if you win · " + formatSolFine(view.perKill) + " a kill · pot " + formatSol(view.pot));
       } else if (mine) {
         setText("hud-balance-amount", formatSigned(mine.net));
         var tone = mine.spent ? "spent" : mine.net > 0 ? "up" : mine.net < 0 ? "down" : "even";
@@ -4680,7 +5132,9 @@
     var base = wasmNumber("platform_web_wager_staging", 0);
     if (typeof commit !== "function" || !base || typeof HEAPU8 === "undefined") return;
     var view = session.active && lobby.wager && !lobby.wager.done ? lobby.wager.view : null;
-    var key = view ? JSON.stringify(view.players.map(function(player) { return [player.name, player.balance]; })) : "";
+    var key = view ? JSON.stringify(view.players.map(function(player) {
+      return [player.name, player.balance, player.projected];
+    })) : "";
     if (lobby.wagerTableKey === key) return;
     lobby.wagerTableKey = key;
     if (!view) {
@@ -4690,13 +5144,14 @@
     var players = view.players.slice(0, WAGER_TABLE_ROWS);
     players.forEach(function(player, index) {
       writeAscii(base, index * 24, player.name, 12);
-      /* a team match: each player's stake in the pot; a bounty match: their
-         running total */
-      writeAscii(base, index * 24 + 12, view.mode === "team" ? formatSol(view.stake) :
+      /* a team match: what each player takes home if their team wins now;
+         a bounty match: their running total */
+      writeAscii(base, index * 24 + 12, view.mode === "team" ? projectedLabel(view, player) || formatSol(view.stake) :
         player.balance <= 0 ? "spent" : formatSigned(player.net), 12);
     });
     /* the pot, under the SOL column (Halo clips each column at the next) */
-    writeAscii(base, WAGER_TABLE_ROWS * 24, formatSol(view.pot), 48);
+    writeAscii(base, WAGER_TABLE_ROWS * 24, view.mode === "team" ?
+      "pot " + formatSol(view.pot) + ", " + formatSolFine(view.perKill) + "/kill" : formatSol(view.pot), 48);
     commit(players.length);
   }
 
@@ -4733,7 +5188,8 @@
       .then(function(result) {
         applyWagerView(result.wager);
         var state = result.wager && result.wager.state;
-        if (state === "settled" || state === "void" || state === "failed") {
+        /* held: an admin decides, hours from now; the card says so */
+        if (state === "settled" || state === "void" || state === "failed" || state === "held") {
           wager.done = true;
           lobby.wagerResult = { label: wager.label, view: result.wager, line: myWagerLine() };
           refreshWallet();
@@ -4774,7 +5230,16 @@
       box.dataset.tone = won > 0 ? "up" : won < 0 ? "down" : "even";
       var teamLine = view.mode === "team" && view.winningTeam !== null ?
         (view.winningTeam === 0 ? "Red" : "Blue") + " team won · " : "";
-      detail.append(result.label + " · " + teamLine + line.kills + " kills, " + line.deaths + " deaths · ");
+      /* a Team Stakes winner: the parts of their take */
+      var parts = view.mode === "team" && won > 0 && typeof line.killShare === "number" ?
+        " · " + formatSol(line.killShare) + " for kills + " + formatSol(line.evenShare) + " team share, stake back" : "";
+      detail.append(result.label + " · " + teamLine + line.kills + " kills, " + line.deaths + " deaths" + parts + " · ");
+    } else if (view.state === "held") {
+      title.textContent = "Under review";
+      box.dataset.tone = "even";
+      var deadline = view.hold && view.hold.deadline ? new Date(view.hold.deadline) : null;
+      detail.append(result.label + ": a whole team dropped out, so the stakes stay locked until an admin decides" +
+        (deadline ? ", by " + deadline.toLocaleString() : "") + ".");
     } else if (view.state === "void") {
       title.textContent = "Stake returned";
       box.dataset.tone = "even";
@@ -4840,9 +5305,16 @@
 
   /* the bounty a kill or death pops, or null outside a wagered match */
   function bountyLamports() {
-    /* a team match's money follows only its result */
-    if (!session.active || !lobby.wager || lobby.wager.done || lobby.wager.mode === "team") return null;
+    if (!session.active || !lobby.wager || lobby.wager.done) return null;
+    /* a team match: what a kill is projected to pay if the team wins */
+    if (lobby.wager.mode === "team") return (lobby.wager.view && lobby.wager.view.perKill) || null;
     return lobby.wager.perKill || null;
+  }
+
+  /* a kill's pop: a Team Stakes kill is small and shows four places */
+  function popLabel(lamports) {
+    return lobby.wager && lobby.wager.mode === "team" ?
+      (lamports < 0 ? "−" : "+") + formatSolFine(Math.abs(lamports)) : formatSigned(lamports);
   }
   var killPops = { last: -1, lastDeath: -1, active: [] };
 
@@ -4910,7 +5382,7 @@
     if (sequence !== killPops.last && container && typeof document.createElement === "function") {
       killPops.last = sequence;
       if (bounty !== null) {
-        var element = makePop("kill-pop", formatSigned(bounty));
+        var element = makePop("kill-pop", popLabel(bounty));
         container.appendChild(element);
         killPops.active.push({ element: element, sequence: sequence, born: now });
       }
@@ -4920,8 +5392,8 @@
     if (deaths !== killPops.lastDeath && container && typeof document.createElement === "function") {
       killPops.lastDeath = deaths;
       var mine = myWagerLine();
-      /* nothing left to lose: no pop */
-      if (bounty !== null && !(mine && mine.balance <= 0)) {
+      /* nothing left to lose: no pop (a Team Stakes death costs nothing) */
+      if (bounty !== null && lobby.wager.mode !== "team" && !(mine && mine.balance <= 0)) {
         var deathElement = makePop("kill-pop death", formatSigned(-bounty));
         container.appendChild(deathElement);
         killPops.active.push({ element: deathElement, death: true, born: now });
@@ -4983,7 +5455,7 @@
     var money = {};
     if (!view) return money;
     view.players.forEach(function(player) {
-      money[player.name] = view.mode === "team" ? formatSol(view.stake) :
+      money[player.name] = view.mode === "team" ? projectedLabel(view, player) || formatSol(view.stake) :
         player.balance <= 0 ? "spent" : formatSigned(player.net);
     });
     return money;
@@ -5011,7 +5483,7 @@
     pingCell.className = "sb-ping";
     if (typeof ping === "number") {
       pingCell.textContent = String(ping);
-      pingCell.dataset.tone = ping < 80 ? "good" : ping < 150 ? "fair" : "poor";
+      pingCell.dataset.tone = pingTone(ping);
     }
     row.append(placeCell, emblemCell, nameCell, tagCell, scoreCell, pingCell);
     return row;
@@ -5095,12 +5567,251 @@
     renderScoreboard(readScoreboard());
   }
 
+  /* ---------- the post-match lobby (port/web/post_match.js)
+
+     After a public match: the carnage report from the game's scoreboard,
+     a vote for the next game, a timer, and Stay or Leave. Who plays next
+     and where the vote goes depends on the match (post_match.js says):
+     "matchmade" queues again at the end with the vote's winner on the
+     ticket; "party" goes through the leader; "hosted" is this browser's
+     own public room, which plays on with the winner as its next game;
+     "guest" is in someone else's room. A match for SOL stakes nothing
+     again unless the player presses Play again. */
+
+  function postMatchKind() {
+    if (session.dedicated || session.spectating || !session.publicLobby) return null;
+    if (partyView() && lobby.queue && lobby.queue.party) return "party";
+    if (session.matchmade) return "matchmade";
+    if (session.role === "host") return session.lobbyDriver ? "hosted" : null;
+    return "guest";
+  }
+
+  /* the game just played, as the room or the ticket knows it */
+  function playedGame() {
+    var found = lobby.queue && lobby.queue.match;
+    var settings = (session.room && session.room.lobby) || session.hostSettings || found || null;
+    var mapIndex = settings ? Number(settings.mapIndex) : 0;
+    var modeIndex = settings ? Number(settings.modeIndex) : 0;
+    return { mapIndex: mapIndex >= 0 && mapIndex <= LAST_MAP_INDEX ? mapIndex : 0,
+      modeIndex: modeIndex >= 0 && modeIndex < 8 ? modeIndex : 0 };
+  }
+
+  function beginPostMatch(kind) {
+    var played = playedGame();
+    var custom = !!(lobby.queue && lobby.queue.playlist === "custom");
+    var playlist = lobby.queue && !custom ? playlistById(lobby.queue.playlist) : null;
+    var offers = global.HaloPostMatch.offers(played, playlist ? { maps: playlist.maps, modes: playlist.modes } : null);
+    var match = lobby.queue && lobby.queue.match;
+    /* a match for SOL: the one just played, or the playlist's buy-in */
+    var wagered = null;
+    if (lobby.wager && match && lobby.wager.matchId === match.id) wagered = { stake: lobby.wager.stake, label: lobby.wager.label };
+    else if (playlist && playlist.wager) wagered = { stake: playlist.wager.stake, label: playlist.label };
+    lobby.postMatch = {
+      kind: kind,
+      since: Date.now(),
+      seconds: kind === "hosted" || kind === "guest" ? PLAYER_HOST_DRIVER.postgameSeconds : POST_MATCH_SECONDS,
+      board: null,
+      played: played,
+      custom: custom,
+      offers: offers,
+      votes: offers.map(function() { return 0; }),
+      myVote: null,
+      votesBy: new Map(),
+      ticketId: lobby.queue ? lobby.queue.id : null,
+      matchId: match ? match.id : null,
+      wagered: wagered,
+      wagerView: null,
+      /* staying is the default, except for SOL: nothing is staked again
+         without a press */
+      stay: !wagered,
+      decided: false,
+      leader: partyLeader(),
+    };
+    telemetry("post_match", "online");
+  }
+
+  function tickPostMatch(state) {
+    if (!global.HaloPostMatch) return;
+    var model = lobby.postMatch;
+    if (!model) {
+      if (!session.active || session.closing) return;
+      var over = session.role === "host" ? hostMatchState() === MATCH_STATE.POSTGAME : state === CLIENT_STATE.POSTGAME;
+      if (!over) return;
+      var kind = postMatchKind();
+      if (!kind) return;
+      beginPostMatch(kind);
+      model = lobby.postMatch;
+    }
+    /* the scores, while the game still shows them */
+    if (session.active) {
+      var board = readScoreboard();
+      if (board && Array.isArray(board.players) && board.players.length) model.board = board;
+    }
+    if (lobby.wager && lobby.wager.view && lobby.wager.matchId === model.matchId) model.wagerView = lobby.wager.view;
+    if (Date.now() - model.since >= model.seconds * 1000) finishPostMatch(model.stay, false);
+  }
+
+  /* the matchmaker's tally, from a poll of the ended ticket or a vote's answer */
+  function applyPostMatchTally(ticket) {
+    var model = lobby.postMatch;
+    if (!model || !ticket || ticket.id !== model.ticketId || !ticket.match || !Array.isArray(ticket.match.votes)) return;
+    model.votes = global.HaloPostMatch.tally(model.offers, ticket.match.votes);
+  }
+
+  /* the host's offers and tally, in a player-hosted room */
+  function applyHostedTally(vote) {
+    var model = lobby.postMatch;
+    if (!model || !Array.isArray(vote.offers) || !Array.isArray(vote.votes)) return;
+    var mine = model.myVote !== null ? model.offers[model.myVote] : null;
+    model.offers = vote.offers;
+    model.votes = vote.votes;
+    model.myVote = mine ? global.HaloPostMatch.offerIndex(model.offers, mine[0], mine[1]) : null;
+    if (model.myVote < 0) model.myVote = null;
+  }
+
+  function recountHostedVotes() {
+    var model = lobby.postMatch;
+    if (!model) return;
+    var counts = model.offers.map(function() { return 0; });
+    model.votesBy.forEach(function(pick) {
+      var index = global.HaloPostMatch.offerIndex(model.offers, pick.mapIndex, pick.modeIndex);
+      if (index >= 0) counts[index]++;
+    });
+    model.votes = counts;
+  }
+
+  function votePostMatch(index) {
+    var model = lobby.postMatch;
+    if (!model || index < 0 || index >= model.offers.length) return;
+    model.myVote = index;
+    var pick = { mapIndex: model.offers[index][0], modeIndex: model.offers[index][1] };
+    if (model.kind === "hosted") {
+      model.votesBy.set("host", pick);
+      recountHostedVotes();
+      return;
+    }
+    if (model.kind === "guest") {
+      try { sendSocket({ v: PROTOCOL_VERSION, type: "vote", mapIndex: pick.mapIndex, modeIndex: pick.modeIndex }); } catch (error) { /* no room link */ }
+      return;
+    }
+    if (!model.ticketId) return;
+    fetchJson("/v1/queue/" + encodeURIComponent(model.ticketId) + "/vote", { method: "POST", body: JSON.stringify(pick) })
+      .then(function(result) { if (lobby.postMatch === model) applyPostMatchTally(result.ticket); })
+      .catch(function() { /* the next poll of the ticket shows the tally */ });
+  }
+
+  function stayPostMatch() {
+    var model = lobby.postMatch;
+    if (!model) return;
+    /* a match for SOL: the vault must be able to stake again */
+    if (model.wagered && WALLET_ENABLED) {
+      var blocker = stakeBlocker(model.wagered.stake);
+      if (blocker) {
+        openLoadUp(blocker);
+        return;
+      }
+    }
+    model.stay = true;
+    model.decided = true;
+  }
+
+  /* The end of the post-match lobby: the timer ran out (stay: whether to
+     play on) or Leave was pressed (leaving). */
+  function finishPostMatch(stay, leaving) {
+    var model = lobby.postMatch;
+    if (!model) return;
+    lobby.postMatch = null;
+    /* (gone now, whichever screen comes next) */
+    renderPostMatch();
+    var won = global.HaloPostMatch.winner(model.offers, model.votes);
+    var pick = won ? { mapIndex: won[0], modeIndex: won[1] } : null;
+    var play = !!stay && !leaving;
+    telemetry(play ? "post_match_stay" : "post_match_leave", "online");
+    if (model.kind === "hosted") {
+      if (!play) {
+        lobby.wantsPlay = false;
+        leave(false).catch(function() {});
+        return;
+      }
+      /* this room plays on: the vote's winner is its next game */
+      if (pick) {
+        try {
+          if (wasmFunction("platform_web_online_set_next_game")(pick.mapIndex, pick.modeIndex)) {
+            try { session.hostSettings = normalizeHostSettings(pick); } catch (error) { /* a label only */ }
+            renewRoom(session.operationGeneration, pick).catch(function() { /* the directory keeps the old lobby until the next renewal */ });
+          }
+        } catch (error) { /* the room keeps its game */ }
+      }
+      return;
+    }
+    if (model.kind === "guest") {
+      if (!play) {
+        lobby.wantsPlay = false;
+        leave(false).catch(function() {});
+      }
+      return;
+    }
+    /* a server match is over: its ticket has ended, and so has the room */
+    lobby.queue = null;
+    lobby.started = false;
+    if (session.active) leave(false).catch(function() {});
+    if (model.kind === "party") {
+      if (leaving) {
+        lobby.wantsPlay = false;
+        leaveParty();
+        return;
+      }
+      if (!play || !model.leader) {
+        lobby.wantsPlay = false;
+        return;
+      }
+      /* the leader plays the party again, with the vote's winner */
+      if (model.custom) {
+        var start = pick ? configureParty(pick) : Promise.resolve();
+        start.then(function() { if (partyView() && partyLeader()) startParty(); });
+        return;
+      }
+      lobby.nextVote = pick;
+      lobby.wantsPlay = true;
+      return;
+    }
+    lobby.nextVote = play ? pick : null;
+    lobby.wantsPlay = play;
+  }
+
+  function renderPostMatch() {
+    if (!global.HaloPostMatch) return;
+    global.HaloPostMatch.render({
+      root: lobbyElement("lobby-post-match"),
+      title: lobbyElement("post-match-title"),
+      timer: lobbyElement("post-match-timer"),
+      board: lobbyElement("post-match-rows"),
+      moneyHead: lobbyElement("post-match-money-head"),
+      vote: lobbyElement("post-match-vote"),
+      stay: lobbyElement("post-match-stay"),
+      leave: lobbyElement("post-match-leave"),
+      note: lobbyElement("post-match-note"),
+    }, lobby.postMatch, Date.now(), {
+      map: function(index) { return selectedLabel(elements.map, index) || "Map " + index; },
+      mode: function(index) { return selectedLabel(elements.mode, index) || "Game " + index; },
+    }, {
+      vote: votePostMatch,
+      stay: stayPostMatch,
+      leave: function() { finishPostMatch(false, true); },
+    });
+  }
+
   function installLobby() {
     var root = lobbyElement("lobby");
     if (!root || lobby.installed) return;
     lobby.installed = true;
     root.addEventListener("keydown", function(event) { event.stopPropagation(); });
     lobbyElement("lobby-play").addEventListener("click", function() {
+      /* the post-match lobby: leaving now */
+      if (lobby.postMatch) {
+        finishPostMatch(false, true);
+        return;
+      }
       var custom = lobbyKind() === "custom";
       var view = partyView();
       if (!session.active) {
@@ -5167,6 +5878,11 @@
       lobbyElement("lobby-spartan-toggle").click();
     });
     lobbyElement("lobby-party-leave").addEventListener("click", function() { leaveParty(); });
+    /* the post-match lobby's own buttons */
+    var postStay = lobbyElement("post-match-stay");
+    if (postStay) postStay.addEventListener("click", function() { stayPostMatch(); });
+    var postLeave = lobbyElement("post-match-leave");
+    if (postLeave) postLeave.addEventListener("click", function() { finishPostMatch(false, true); });
     /* invite: a party to bring friends into (started if there is none) */
     lobbyElement("lobby-invite").addEventListener("click", async function() {
       if (!partyView()) await createParty();
@@ -5238,6 +5954,8 @@
     lobbyElement("lobby-spartan-toggle").addEventListener("click", function() {
       lobbyElement("lobby-name").value = currentProfile().name;
       renderLobbyColors();
+      renderMouseLookSettings();
+      if (global.HaloStats) global.HaloStats.refreshPlayerStats();
       spartanDialog.showModal();
     });
     lobbyElement("spartan-dialog-close").addEventListener("click", closeSpartan);
@@ -5393,6 +6111,18 @@
       setPartyStatus("");
       openPartyDialog();
     });
+    /* the leaderboard and the player's record (stats_panel.js) */
+    if (global.HaloStats) {
+      global.HaloStats.init({
+        fetchJson: fetchJson,
+        playerKey: playerKey,
+        walletAddress: function() { return wallet.address; },
+      });
+      var leaderboardButton = lobbyElement("lobby-leaderboard");
+      if (leaderboardButton) {
+        leaderboardButton.addEventListener("click", function() { global.HaloStats.openLeaderboard(); });
+      }
+    }
     var prompt = lobbyElement("lobby-deploy");
     prompt.addEventListener("click", deploy);
     prompt.addEventListener("keydown", function(event) {
@@ -5437,6 +6167,7 @@
     renderRoster();
     setBusy(false);
     installLobby();
+    installMouseLook();
     session.pendingInvite = takeInviteFromLocation();
     if (session.pendingInvite) {
       showDialog();
@@ -5447,6 +6178,7 @@
   global.HaloOnline = Object.freeze({
     runtimeReady: function() {
       session.runtimeReady = true;
+      applyMouseLookSettings();
       setBusy(false);
       try {
         transport();
@@ -5465,6 +6197,64 @@
     hostDedicated: hostDedicated,
     dedicatedStatus: dedicatedStatus,
     leave: function() { return leave(true); },
+    /* Text chat (chat.js): a line goes to the room when this page is in one,
+       else to the party; and where this page is, for the panel and the
+       overlay. */
+    chat: Object.freeze({
+      send: function(text, scope) {
+        var toRoom = scope === "room" || (scope !== "party" && session.active && session.socket);
+        if (toRoom) {
+          sendSocket({ v: PROTOCOL_VERSION, type: "chat", text: String(text) });
+          return Promise.resolve();
+        }
+        if (lobby.party) {
+          return partyRequest("chat", { text: String(text) }).then(function(result) { applyParty(result.party); });
+        }
+        return Promise.reject(new Error("Join a party or a game to chat."));
+      },
+      context: function() {
+        var inRoom = !!(session.active && session.socket && session.socket.readyState === WebSocket.OPEN);
+        return {
+          room: inRoom,
+          party: !!(lobby.party && lobby.party.view),
+          inGame: inMatch() && document.body.dataset.lobby !== "open",
+          selfName: currentProfile().name,
+          selfPeerId: session.selfPeerId,
+        };
+      },
+    }),
+    /* The developer panel (shell.html, Ctrl+Shift+L): this session and who
+       each transport peer is. Transport peer IDs are signaling peer IDs,
+       except a refreshed browser's, which keeps its connected predecessor's
+       (session.peerAliases). */
+    diagnostics: function() {
+      var peers = [];
+      session.peerIdentifiers.forEach(function(identifier, peerId) {
+        var entry = session.roster.get(peerId) || null;
+        if (!entry) {
+          session.peerAliases.forEach(function(transportPeerId, signalingPeerId) {
+            if (!entry && transportPeerId === peerId) entry = session.roster.get(signalingPeerId) || null;
+          });
+        }
+        peers.push({
+          peerId: peerId,
+          identifier: identifier,
+          name: entry ? (entry.profile ? entry.profile.name : playerFallbackName(entry)) : null,
+          role: entry ? entry.role : null,
+          spectator: !!(entry && entry.spectator),
+          state: session.peerStates.get(peerId) || null,
+        });
+      });
+      return {
+        active: session.active,
+        role: session.role,
+        selfPeerId: session.selfPeerId,
+        publicLobby: session.publicLobby,
+        connectionPath: session.connectionPath,
+        matchState: session.matchState,
+        peers: peers,
+      };
+    },
   });
 
   if (document.readyState === "loading") {

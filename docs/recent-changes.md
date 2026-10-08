@@ -20,6 +20,69 @@ Newest ideas first within each part. Commit hashes are on
   resume, or go elsewhere (it leaves the match first). Halo's own pause
   menu no longer opens under it. (`eeea0e4`)
 
+## The post-match lobby
+
+- **A lobby phase after every public match**, as in Halo 3: the carnage
+  report (place, score, kills, deaths; teams under their totals; in a
+  match for SOL each player's take), a vote for the next game with live
+  counts, a timer (20 s; 12 s in a player-hosted room) and Stay or Leave.
+  *Why:* the old return was a bare rejoin of the queue with nothing to
+  look at and no say in what comes next.
+- **The vote** is kept on the matchmaker's tickets (`POST
+  /v1/queue/:ticket/vote`, shown in every poll of the ended ticket); the
+  players who stay queue again with the winner on their new ticket, and
+  the matchmaker plays the plurality's game among the tickets it groups
+  (the rotation otherwise). A party's leader starts the party again with
+  it. In a player-hosted room the guests' picks go through the room
+  (`vote` message) and the host's `match` message carries the tally; the
+  host sets the winner as its next game.
+- **Nothing is staked again without a press**: a match for SOL ends with
+  "Play again for 0.050 SOL", and the timer running out leaves the player
+  in the lobby.
+- Code: `port/web/post_match.js`, `port/web/online_client.js`
+  (`tickPostMatch`, `finishPostMatch`), `services/signaling/src/vote.ts`,
+  `matchmaker.ts` (`vote`, `votedGame`).
+
+## fomo.family and X
+
+- **A fomo wallet is recognised on its own.** fomo pays the network fee
+  for every trade its users make, from one mainnet wallet. After a wallet
+  signs in, the signaling Worker looks through its newest mainnet
+  transactions for one that wallet paid for, and marks the profile's fomo
+  link verified (`fee_payer`) when it finds one. The answer is kept per
+  wallet: once seen, always seen; not seen, looked at again a day later or
+  on request (`POST /v1/profile/fomo/check`, ten minutes apart). The game
+  itself stays on devnet; only this check reads mainnet, through the
+  `FOMO_RPC_URL` secret, and without it the feature is off. Nothing shows
+  to other players until the owner turns on showing fomo. *Why:* a badge
+  that only verified fomo wallets can wear, with no fomo account linking
+  and nothing from fomo. (`services/signaling/src/fomo.ts`)
+- **Links out on the landing.** A fomo.family link with the deployment's
+  referral code (`FOMO_REFERRAL_CODE`, `ARCH` to start), and an X link
+  that stays hidden until an account is chosen (`X_PROFILE_URL`). The page
+  asks `GET /v1/site` once for both. (`port/web/online_client.js`,
+  `services/signaling/src/site.ts`)
+
+## Ping, before a match
+
+- **Your ping on the landing and in the lobby**, in the scoreboard's colors
+  (green under 80 ms, yellow under 150). Outside a room the page times a
+  few small requests to the signaling Worker (`GET /v1/ping`), which lists
+  where else to probe: one URL per game region (`PING_TARGETS`; the
+  gateway's `GET /ping`, exposed over HTTPS by `fly/fly.toml`). The nearest
+  region shows, the rest in the readout's tooltip. *Why:* a player should
+  know what to expect before they queue, and the probe, by region id, is
+  what region-aware matchmaking will need. In a room, a guest's ping is
+  WebRTC's measure to the host or server.
+- **Pings in player-hosted rooms too.** A browser host now measures each
+  player over WebRTC every two seconds and tells the room, as a dedicated
+  server's gateway does, so the lobby's player list, the friends sidebar
+  and the scoreboard show them in every room. The lobby lists each
+  player's ping next to their name.
+- Code: `port/web/online_client.js` (`refreshPing`, `tickPeerPings`),
+  `services/signaling/src/index.ts` (`pingTargets`),
+  `services/game-server/gateway/main.go` (`statusMux`).
+
 ## Spectating
 
 - **Through the CDN, a few seconds behind** (`618e097`). While anyone
@@ -78,6 +141,13 @@ regular players too (`e837a29`, `eeea0e4`):
   switches weapons (flashlight on T), F melee. Halo's prompts name the keys
   ("Hold E to swap", "Hold TAB for score"), and a controls panel shows for
   10 s the first time you drop in.
+- **Mouse sensitivity and invert Y**, in the Spartan dialog (Customize): a
+  slider (0.1× to 4×) and a switch, saved in the browser and applied the
+  moment they change, even mid-match. *Why:* the game read these from its
+  config once at start-up, so a browser player had no way to set them. The
+  page hands them to the game thread through atomics
+  (`platform_web_set_mouse_look` in `port/web/src/web_online_ui.c`,
+  read by `halo_linux_mouse_look` in `port/linux/src/xinput_sdl.c`).
 
 ## Playlists and servers
 

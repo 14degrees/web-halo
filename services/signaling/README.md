@@ -55,6 +55,9 @@ Non-secret settings live in `wrangler.jsonc`:
 | `MAX_ROOM_CAPACITY` | Hard capacity ceiling; 128 machines |
 | `DEDICATED_ROOM_TTL_SECONDS` | Room lifetime for a dedicated host between renewals; default one day |
 | `PUBLIC_LOBBY_MAP_INDEX`, `PUBLIC_LOBBY_MODE_INDEX` | The lobby quick join opens when no public room exists; default Blood Gulch (9) Slayer (0), in the order of `port/web/src/web_online_ui.h` |
+| `FOMO_FEE_PAYER` | The mainnet wallet fomo.family pays its users' fees from; a wallet it paid for is a fomo wallet (`src/fomo.ts`) |
+| `FOMO_REFERRAL_CODE` | The referral code in the landing's fomo.family link (`https://fomo.family/r/<code>`, `src/site.ts`); default `ARCH` |
+| `X_PROFILE_URL` | The game's X profile, shown on the landing once set; empty (no account chosen) hides the link |
 
 `wrangler types` generates `worker-configuration.d.ts` from this file. The only
 manual environment augmentation is the required room-signing secret and the two
@@ -82,6 +85,21 @@ Bounty playlists (playing for SOL through the escrow program) need two more
 secrets, `ESCROW_AUTHORITY_SECRET_KEY` and `ESCROW_SESSION_SECRET`; without
 them those playlists are off. Refer to [docs/wagers.md](../../docs/wagers.md).
 
+fomo.family detection (`src/fomo.ts`) reads Solana **mainnet**, while the
+game stays on `SOLANA_CLUSTER`, through one more secret: a mainnet RPC URL
+with its key in it (Helius or similar). Without it, detection is off and
+`GET /v1/site` says so (`fomoDetection: false`):
+
+```sh
+npx wrangler secret put FOMO_RPC_URL
+```
+
+A signed-in wallet is looked up once a day at most (a wallet once seen on
+fomo is never looked up again), through at most 51 RPC calls per look-up,
+so a free plan is enough. `wrangler types` folds any secret it finds in
+`.dev.vars` into `worker-configuration.d.ts`; run it (and `npm run check`)
+without that file, or the committed types will not match elsewhere.
+
 The configured rate-limit bindings cap room creation at 20 per minute and
 session creation at 512 per minute for one connecting address in one Cloudflare
 location. They are an abuse backstop, not billing or quota accounting.
@@ -103,6 +121,7 @@ TURN values in an ignored `.dev.vars` file instead:
 ROOM_ID_SECRET=replace-with-at-least-32-random-characters
 TURN_KEY_ID=your-turn-key-id
 TURN_KEY_SECRET=your-turn-api-token
+FOMO_RPC_URL=https://mainnet.helius-rpc.com/?api-key=your-key
 ```
 
 Deploy the signaling service before the static browser build:
@@ -144,6 +163,31 @@ GET /v1/health
 
 ```json
 { "ok": true, "v": 1 }
+```
+
+### Ping
+
+```http
+GET /v1/ping
+```
+
+The page's ping before a match (`port/web/online_client.js`, `refreshPing`):
+the browser times a few of these to this Worker, and the response lists
+where else to probe, one URL per game region (`PING_TARGETS`, a JSON list;
+each is a game server gateway's `GET /ping`, which answers 204 from any
+origin). The page shows the nearest region's round trip on the landing and
+in the lobby, with the scoreboard's colors (under 80 ms green, under 150 ms
+yellow). Region-aware matchmaking can later take the page's measurements
+by these ids.
+
+```json
+{
+  "ok": true,
+  "targets": [
+    { "id": "lax", "label": "Los Angeles", "url": "https://halo-game-lilchocobo.fly.dev/ping" }
+  ],
+  "v": 1
+}
 ```
 
 ### Create a room
@@ -327,6 +371,32 @@ The Worker validates the origin before forwarding the upgrade to the room
 Durable Object. The query credential is deliberately short-lived and
 single-use. Application logs record only the URL path, never its query string.
 
+### Profiles
+
+A player's account: one unique username and one or more wallets, kept by the
+`Profiles` Durable Object (`src/profiles.ts`, routes in `src/profile.ts`).
+The caller is the signed-in wallet (`Authorization: Bearer` from
+`POST /v1/auth/verify`); its profile is the one the wallet is linked to.
+
+| Route | Does |
+| --- | --- |
+| `GET /v1/profile` | the caller's profile, or `{ "profile": null }` |
+| `POST /v1/profile/username` `{ "username" }` | claims the name; a wallet with no profile gets one, linked to it. Renames are capped at three a day and the old name is held for its owner for a week |
+| `PATCH /v1/profile` `{ "showWallets"?, "showFomo"?, "showX"? }` | what other players may see; everything starts private |
+| `POST /v1/profile/wallets/challenge` `{ "wallet" }` | the message the new wallet must sign (profile, wallet, domain, network, nonce, expiry; five minutes) |
+| `POST /v1/profile/wallets` `{ "wallet", "nonce", "signature" }` | links it; a wallet belongs to one profile |
+| `DELETE /v1/profile/wallets/:wallet` | unlinks it; the last wallet stays |
+| `GET /v1/profiles/:username` | another player's view: the name, and only the links the owner shows that are verified (no auth) |
+| `GET /v1/profiles?wallets=a,b,c` | the same for up to 16 wallets of a roster, by wallet (no auth) |
+| `GET /v1/admin/profiles?wallet=\|username=\|id=` | support lookup with the name history and the last events (admin token) |
+
+Usernames are 3 to 11 characters of letters, digits and underscores (so one
+fits Halo's player-name field), unique without regard to case, with a short
+reserved list. A profile's id never changes, and the `usernames` registry
+records every owner a name has had, so names can later move between
+profiles. The fomo and X columns (`handle`, `verified`, `method`) are stored
+and shown here; filling them is later work.
+
 ## WebSocket protocol
 
 Messages are UTF-8 JSON text. Binary frames and text frames above 65,536
@@ -406,6 +476,15 @@ Relayed SDP/ICE messages add the authenticated sender:
 Other server messages are `{ "v":1, "type":"pong", "nonce":"..." }` and
 `{ "v":1, "type":"error", "code":"...", "message":"..." }`.
 
+Every two seconds the host measures each player's round trip over WebRTC
+(a dedicated server's gateway, or a browser host) and the room passes the
+measurements on to the guests by the name each plays under, for the
+scoreboard and the lobby:
+
+```json
+{ "v": 1, "type": "pings", "pings": { "Spartan 117": 42 } }
+```
+
 The room also broadcasts a presentation-only roster to every connected player.
 It is independent of the host/guest WebRTC star topology:
 
@@ -476,9 +555,41 @@ Trickle ICE candidates (send `candidate: null` for end-of-candidates):
 }
 ```
 
+A player's line of text chat goes to everyone in the room (spectators
+included), under the name they play as and, when their wallet has a profile
+(`src/profiles.ts`), their account name. The text is as the room shows it:
+trimmed, single-spaced, and with the words on the profanity list
+(`src/chat.ts`) masked. The room keeps no chat:
+
+```json
+{ "v": 1, "type": "chat", "from": "g_...", "name": "Spartan 117", "username": "Chief", "style": "sage", "text": "gg", "at": 1700000000000 }
+```
+
 The transport must process `welcome.peers` and `peer-joined.peer` first, pass
 each peer's 12-hex `identifier` to `addPeer`, and only then apply SDP or ICE
 signals for that `peerId`.
+
+Only the host sends the players' pings, by signaling peer ID, in whole
+milliseconds (at most 64 entries; the room rejects them from a guest with
+`PINGS_FORBIDDEN`):
+
+```json
+{ "v": 1, "type": "pings", "pings": { "g_...": 42 } }
+```
+
+A line of text chat, at most 200 characters once trimmed (`src/chat.ts`,
+`CHAT_MAX_LENGTH`). A player who has not sent a profile, or a spectator, is
+refused with `CHAT_FORBIDDEN`; more than 5 lines in 10 seconds are dropped
+with `CHAT_RATE_LIMITED` (the socket stays open):
+
+```json
+{ "v": 1, "type": "chat", "text": "gg" }
+```
+
+Parties chat the same way over HTTP: `POST /v1/parties/:code/chat` with the
+member's body and `text`; `join`, `poll` and `chat` take `chatSince`, the
+`seq` of the last line the member saw, and answer with the party's lines
+after it (`party.chat`, the last 50 at most).
 
 ## Lifecycle and security properties
 

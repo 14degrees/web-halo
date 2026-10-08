@@ -11,6 +11,9 @@
     // The game server pool's Fly app, which the matchmaker scales (its
     // FLY_API_TOKEN is a secret; services/game-server/fly/pool.py).
     "FLY_APP_NAME": "halo-game-lilchocobo",
+    // the page's ping to the game before a match: one probe URL per region
+    // (the gateway's GET /ping, exposed over HTTPS in services/game-server/fly/fly.toml)
+    "PING_TARGETS": "[{\"id\":\"lax\",\"label\":\"Los Angeles\",\"url\":\"https://halo-game-lilchocobo.fly.dev/ping\"}]",
     "ALLOWED_ORIGINS": "https://halois.fun,https://halo.lilchocobo2.workers.dev,http://127.0.0.1:8765,http://localhost:8765",
     "ALLOW_NO_ORIGIN": "false",
     "PUBLIC_GAME_URL": "https://halois.fun",
@@ -37,7 +40,15 @@
     // goes and the fee's rate (it may not exceed the program's own setting).
     // Its authority key and session secret are secrets.
     "ESCROW_FEE_VAULT": "8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM",
-    "ESCROW_FEE_BPS": "500"
+    "ESCROW_FEE_BPS": "500",
+    // fomo.family detection (src/fomo.ts): the mainnet wallet fomo pays its
+    // users' fees from. The mainnet RPC URL is the FOMO_RPC_URL secret.
+    "FOMO_FEE_PAYER": "AgmLJBMDCqWynYnQiPCuj9ewsNNsBJXyzoUhD9LJzN51",
+    // The page's links out (src/site.ts): the fomo referral code behind
+    // the landing's fomo.family link, and the game's X profile URL (none
+    // chosen yet: the link stays hidden until this is set).
+    "FOMO_REFERRAL_CODE": "ARCH",
+    "X_PROFILE_URL": ""
   },
   "triggers": {
     "crons": ["*/5 * * * *"]
@@ -81,6 +92,14 @@
       {
         "name": "PARTIES",
         "class_name": "Party"
+      },
+      {
+        "name": "PROFILES",
+        "class_name": "Profiles"
+      },
+      {
+        "name": "STATS",
+        "class_name": "Stats"
       }
     ]
   },
@@ -106,6 +125,16 @@
       "namespace_id": "41003",
       "simple": {
         "limit": 30,
+        "period": 60
+      }
+    },
+    {
+      // username claims and renames (src/profile.ts); the store also caps
+      // renames per profile per day
+      "name": "PROFILE_CLAIM_LIMITER",
+      "namespace_id": "41004",
+      "simple": {
+        "limit": 10,
         "period": 60
       }
     }
@@ -139,6 +168,16 @@
       // the house ledger, replaced by the escrow program's vaults
       "tag": "v7",
       "deleted_classes": ["Bank"]
+    },
+    {
+      // players' profiles: usernames, wallets, fomo and X links
+      "tag": "v8",
+      "new_sqlite_classes": ["Profiles"]
+    },
+    {
+      // players' lasting stats and the leaderboard
+      "tag": "v9",
+      "new_sqlite_classes": ["Stats"]
     }
   ],
   "observability": {

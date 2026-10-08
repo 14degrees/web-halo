@@ -1,6 +1,6 @@
-import type { WagerView } from "./wager";
 import { DurableObject } from "cloudflare:workers";
 
+import { allowChat, censorChatText } from "./chat";
 import {
   hashesMatch,
   randomPeerId,
@@ -9,7 +9,10 @@ import {
 } from "./crypto";
 import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
 import { MATCHMAKER_NAME } from "./matchmaker";
+import { PROFILES_NAME } from "./profiles";
 import { walletPlayerName } from "./solana";
+import type { RoomRoster } from "./stats";
+import type { WagerView } from "./wager";
 
 /* when the room's dedicated host last pinged (lobby.ts, DEDICATED_HOST_LEASE_MS) */
 const HOST_SEEN_KEY = "hostSeenAt";
@@ -73,6 +76,12 @@ interface SocketAttachment {
   matches?: number;
   /* watching the game, not in it */
   spectator?: boolean;
+  /* the account name behind the wallet (src/profiles.ts), shown with chat
+     and the roster when the player has one */
+  username?: string;
+  /* text chat: how often this player has spoken lately (src/chat.ts) */
+  chatCount?: number;
+  chatWindowStartedAt?: number;
 }
 
 interface PreparedSession {
@@ -161,6 +170,9 @@ function isSocketAttachment(value: unknown): value is SocketAttachment {
   }
   const record = value as Record<string, unknown>;
   if (record.profile !== undefined && !parsePlayerProfile(record.profile).ok) {
+    return false;
+  }
+  if (record.username !== undefined && typeof record.username !== "string") {
     return false;
   }
   return (
@@ -709,6 +721,40 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
+    if (message.type === "chat") {
+      /* Everyone in the room hears a player, under the name they play as
+         (and their account name when they have one). A spectator or a
+         player who has not said who they are cannot speak; a flood is
+         dropped with a note, not a disconnect, so a chatty player keeps
+         their game. Nothing is kept. */
+      if (sender.spectator === true || sender.profile === undefined) {
+        this.sendError(socket, "CHAT_FORBIDDEN", "Only players in the room can chat.");
+        return;
+      }
+      const allowed = allowChat(sender, now);
+      try {
+        socket.serializeAttachment(sender);
+      } catch {
+        this.retireSocket(socket, 1011, "Connection state failed.");
+        return;
+      }
+      if (!allowed) {
+        this.sendError(socket, "CHAT_RATE_LIMITED", "You're sending messages too quickly.");
+        return;
+      }
+      this.broadcastAll(jsonMessage({
+        at: now,
+        from: sender.peerId,
+        name: sender.profile.name,
+        style: sender.profile.style,
+        text: censorChatText(message.text),
+        type: "chat",
+        ...(sender.username === undefined ? {} : { username: sender.username }),
+        v: SIGNALING_PROTOCOL_VERSION,
+      }));
+      return;
+    }
+
     if (message.type === "match") {
       if (sender.role !== "host") {
         this.sendError(socket, "MATCH_FORBIDDEN", "Only the host reports the match.");
@@ -720,6 +766,7 @@ export class SignalingRoom extends DurableObject<Env> {
           state: message.state,
           type: "match",
           v: SIGNALING_PROTOCOL_VERSION,
+          ...(message.vote === undefined ? {} : { vote: message.vote }),
         },
         "guest",
       );
@@ -730,6 +777,19 @@ export class SignalingRoom extends DurableObject<Env> {
         this.ctx.storage.kv.put(MATCH_SINCE_KEY, now);
         this.ctx.waitUntil(this.publishToDirectory(now));
       }
+      return;
+    }
+
+    if (message.type === "vote") {
+      /* the post-match vote: a guest's pick, to the host that tallies it */
+      if (sender.role !== "guest") {
+        this.sendError(socket, "VOTE_FORBIDDEN", "Only a guest votes.");
+        return;
+      }
+      this.broadcastToRole(
+        { from: sender.peerId, mapIndex: message.mapIndex, modeIndex: message.modeIndex, type: "vote", v: SIGNALING_PROTOCOL_VERSION },
+        "host",
+      );
       return;
     }
 
@@ -759,8 +819,14 @@ export class SignalingRoom extends DurableObject<Env> {
          can never be pinned on someone else. */
       sender.profile = sender.wallet === undefined ? message.profile :
         { ...message.profile, name: walletPlayerName(sender.wallet) };
+      if (sender.role === "guest" && !sender.spectator) {
+        this.rememberSeat(sender.identifier, sender.profile.name, sender.wallet ?? null);
+      }
       if (sender.matches === undefined && sender.role === "guest") {
         this.ctx.waitUntil(this.lookUpRank(sender.peerId, sender.identifier));
+      }
+      if (sender.username === undefined && sender.wallet !== undefined) {
+        this.ctx.waitUntil(this.lookUpUsername(sender.peerId, sender.wallet));
       }
       try {
         socket.serializeAttachment(sender);
@@ -974,6 +1040,27 @@ export class SignalingRoom extends DurableObject<Env> {
     this.broadcastRoster();
   }
 
+  /* A wallet's account name (src/profiles.ts): the roster and chat show it
+     beside the in-game name once it is known. */
+  private async lookUpUsername(peerId: string, wallet: string): Promise<void> {
+    let username: string | undefined;
+    try {
+      const profiles = await this.env.PROFILES.getByName(PROFILES_NAME).publicProfilesForWallets([wallet]);
+      username = profiles[wallet]?.username;
+    } catch {
+      return;
+    }
+    const connection = this.connectionForPeer(peerId);
+    if (!connection || username === undefined || connection.attachment.wallet !== wallet) return;
+    connection.attachment.username = username;
+    try {
+      connection.socket.serializeAttachment(connection.attachment);
+    } catch {
+      /* the socket is closing */
+    }
+    this.broadcastRoster();
+  }
+
   private broadcastRoster(): void {
     const connections = this.connections();
     const encoded = jsonMessage({
@@ -983,6 +1070,7 @@ export class SignalingRoom extends DurableObject<Env> {
         role: attachment.role,
         matches: attachment.matches ?? null,
         ...(attachment.spectator ? { spectator: true } : {}),
+        ...(attachment.username === undefined ? {} : { username: attachment.username }),
       })),
       type: "roster",
       v: SIGNALING_PROTOCOL_VERSION,
@@ -1140,6 +1228,57 @@ export class SignalingRoom extends DurableObject<Env> {
     }
   }
 
+  /* ---------- who played, for the match's stats (src/stats.ts) */
+
+  /* The room keeps each player's seat (their machine, the name they play
+     under, their wallet) and the kills the dedicated host reported, so a
+     finished match's result, which names players, can be put to the
+     players' lasting records after they have gone. */
+  private seatTables(): void {
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS match_seats (identifier TEXT PRIMARY KEY, name TEXT NOT NULL, wallet TEXT);
+      CREATE TABLE IF NOT EXISTS match_kills (
+        name TEXT PRIMARY KEY, kills INTEGER NOT NULL DEFAULT 0, deaths INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  }
+
+  private rememberSeat(identifier: string, name: string, wallet: string | null): void {
+    this.seatTables();
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO match_seats (identifier, name, wallet) VALUES (?, ?, ?)", identifier, name, wallet,
+    );
+  }
+
+  /* an enemy kill, as the server reports them: a kill for one, a death
+     for the other */
+  private countKill(killerName: string, victimName: string): void {
+    this.seatTables();
+    if (killerName !== victimName) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO match_kills (name, kills) VALUES (?, 1)
+         ON CONFLICT(name) DO UPDATE SET kills = kills + 1`, killerName,
+      );
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO match_kills (name, deaths) VALUES (?, 1)
+       ON CONFLICT(name) DO UPDATE SET deaths = deaths + 1`, victimName,
+    );
+  }
+
+  /* Every seat the room has had, and every name's kills and deaths. */
+  async matchRoster(): Promise<RoomRoster> {
+    this.seatTables();
+    return {
+      seats: this.ctx.storage.sql.exec<{ identifier: string; name: string; wallet: string | null }>(
+        "SELECT identifier, name, wallet FROM match_seats ORDER BY identifier",
+      ).toArray(),
+      kills: this.ctx.storage.sql.exec<{ name: string; kills: number; deaths: number }>(
+        "SELECT name, kills, deaths FROM match_kills ORDER BY name",
+      ).toArray(),
+    };
+  }
+
   /* A pending session's wallet, until its socket opens. */
   private walletTable(): void {
     this.ctx.storage.sql.exec(
@@ -1180,6 +1319,7 @@ export class SignalingRoom extends DurableObject<Env> {
       this.sendError(socket, "KILL_FORBIDDEN", "Only a dedicated host reports kills.");
       return;
     }
+    this.countKill(killerName, victimName);
     const wagerMatch = this.ctx.storage.kv.get(WAGER_KEY) as string | undefined;
     if (wagerMatch !== undefined) {
       const result = await this.env.WAGERS.getByName(wagerMatch).kill(killerName, victimName);

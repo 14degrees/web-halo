@@ -21,6 +21,7 @@ import {
 } from "./escrow";
 import { alert } from "./alerts";
 import { MATCHMAKER_NAME } from "./matchmaker";
+import { reportWagerNet } from "./stats";
 import { SolanaRpc, SolanaRpcError, base58Encode, keypairFromSecret, type Keypair, walletPlayerName } from "./solana";
 
 /* A wagered match's money: one Durable Object per match (named by the
@@ -34,10 +35,17 @@ import { SolanaRpc, SolanaRpcError, base58Encode, keypairFromSecret, type Keypai
    is spent plays on for nothing. At the end each player is paid their
    balance, less the fee on what they won.
 
-   Team rules: pot against pot. The team Halo scores the winner (the
-   dedicated server's result at the end) splits every stake among its
-   players who did not quit; the losers' stakes are gone. A tie, or no
-   result, is void.
+   Team rules (Team Stakes; stakesOutcome below): players are scoring
+   groups, a team game's teams or each player alone in a free-for-all.
+   Everyone who stayed in a top-scoring group wins. Each winner gets their
+   stake back; every other stake (the losers', and any quitter's) is
+   forfeited and, less the fee, is the prize. A share of the prize (the
+   team share) is split evenly among the winners; the rest (the kill pool)
+   pays each winner's kills at kill pool / kill target. Kill money nobody
+   earned is split evenly too. A whole group that dropped out while another
+   stayed puts the match on hold for an admin: the stakes stay locked until
+   a decision, or forfeit by themselves at the hold's deadline. A tie among
+   everyone who stayed, or no result, is void.
 
    A void (the server lost, or the match never went live) returns every
    stake.
@@ -56,6 +64,20 @@ export interface WagerPlayer {
 
 export type WagerMode = "bounty" | "team";
 
+/* How a Team Stakes match pays (the "team" mode), from the playlist or,
+   later, a custom game's settings; stored with the match when it forms. */
+export interface StakesConfig {
+  /* lamports per player */
+  stake: number;
+  /* the variant's score to win: one group's kill limit, at least 1 */
+  killTarget: number;
+  /* the part of the prize split evenly among the winners, 0..10000 */
+  teamShareBps: number;
+  /* scoring groups to expect, for the projection during the match: 2 for a
+     two-team game, 0 for a free-for-all (every player their own group) */
+  groups: number;
+}
+
 /* A dedicated server's result for a match as it ended
    (services/game-server/gateway, matchResult). */
 export interface MatchResult {
@@ -64,7 +86,48 @@ export interface MatchResult {
   players: Array<{ name: string; team: number; score: number; quit: boolean }>;
 }
 
-export type WagerState = "locking" | "locked" | "failed" | "settling" | "voiding" | "settled" | "void";
+/* "held": the stakes stay locked, waiting for an admin or the hold's
+   deadline (a whole group dropped out). */
+export type WagerState = "locking" | "locked" | "failed" | "held" | "settling" | "voiding" | "settled" | "void";
+
+/* A Team Stakes settlement: what each player is paid, in join order. */
+export interface StakesSettlement {
+  payouts: number[];
+  fee: number;
+  /* the top-scoring groups whose stayers won (a team index, or a player's
+     index in a free-for-all) */
+  winningGroups: number[];
+  /* what one kill paid */
+  perKill: number;
+  killShares: number[];
+  evenShares: number[];
+}
+
+export type StakesOutcome =
+  | { kind: "void"; reason: string }
+  | { kind: "hold"; reason: string; dropped: number[]; proposed: StakesSettlement }
+  | ({ kind: "settle" } & StakesSettlement);
+
+export interface WagerHoldEntry {
+  at: number;
+  by: string;
+  action: "held" | "extended" | "decided" | "expired";
+  detail: unknown;
+}
+
+export interface WagerHold {
+  reason: string;
+  /* the groups with nobody left */
+  dropped: number[];
+  since: number;
+  /* when the hold forfeits by itself (the alarm), ms */
+  deadline: number;
+  /* the latest deadline an extension may set: an hour before the players
+     can reclaim their stakes themselves; null until the chain has been read */
+  limit: number | null;
+  history: WagerHoldEntry[];
+  decision: { at: number; by: string; action: "forfeit" | "void"; note: string } | null;
+}
 
 interface WagerRecord {
   matchId: string;
@@ -74,12 +137,21 @@ interface WagerRecord {
   perKill: number;
   /* absent on wagers from before team matches: bounty */
   mode?: WagerMode;
+  /* a team match's rules; absent on records from before (see stakesConfigOf) */
+  config?: StakesConfig;
   feeBps: number;
   state: WagerState;
-  /* an end that arrived while the stakes were still locking */
-  ending: "settle" | "void" | null;
-  /* a team match's payouts, decided from the server's result at the end */
+  /* an end that arrived while the stakes were still locking, and the hold
+     it asks for */
+  ending: "settle" | "void" | "hold" | null;
+  pendingHold?: { reason: string; dropped: number[] } | null;
+  /* a team match's payouts, decided from the server's result at the end
+     (records from before this field's settlement) */
   teamPayouts?: number[] | null;
+  settlement?: StakesSettlement | null;
+  /* the server's result, as received, for the audit trail */
+  result?: MatchResult | null;
+  hold?: WagerHold | null;
   /* the winning team (0 red, 1 blue), for the lobby */
   winningTeam?: number | null;
   players: WagerPlayer[];
@@ -99,13 +171,40 @@ export interface WagerView {
   mode: WagerMode;
   winningTeam: number | null;
   stake: number;
+  /* a bounty's per kill; a team match's projected value of one kill */
   perKill: number;
   feeBps: number;
   pot: number;
-  players: Array<WagerPlayer & { net: number; payout: number | null; spent: boolean }>;
+  /* a team match: its rules, the projected even share of a winner, and the
+     hold if it is held */
+  config: StakesConfig | null;
+  floor: number | null;
+  hold: { reason: string; dropped: number[]; since: number; deadline: number; limit: number | null } | null;
+  players: Array<WagerPlayer & {
+    net: number;
+    payout: number | null;
+    spent: boolean;
+    /* a team match: what this player takes home if their group wins now */
+    projected: number | null;
+    /* a settled team match: the parts of a winner's payout */
+    killShare: number | null;
+    evenShare: number | null;
+  }>;
   signatures: WagerRecord["signatures"];
   cluster: string;
   error: string | null;
+}
+
+/* The full record, for an admin. */
+export interface WagerAdminView {
+  view: WagerView;
+  config: StakesConfig | null;
+  hold: WagerHold | null;
+  result: MatchResult | null;
+  settlement: StakesSettlement | null;
+  payouts: number[] | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface WagerStart {
@@ -113,6 +212,8 @@ export interface WagerStart {
   stake: number;
   perKill: number;
   mode?: WagerMode;
+  /* a team match's rules */
+  stakes?: StakesConfig | null;
   wallets: string[];
 }
 
@@ -120,6 +221,15 @@ const RECORD_KEY = "wager";
 /* tries at a transaction the network refuses before giving up on it */
 const LOCK_ATTEMPTS = 3;
 const SETTLE_ATTEMPTS = 12;
+/* a hold forfeits by itself after this long, unless extended */
+export const HOLD_MS = 12 * 60 * 60_000;
+/* a hold always ends this long before the players can reclaim their stakes
+   themselves (the program's reclaim delay), or the settle would fail */
+export const HOLD_MARGIN_MS = 60 * 60_000;
+export const DEFAULT_TEAM_SHARE_BPS = 2_500;
+/* the kill target a record from before the stakes configuration played by:
+   the dedicated Team Slayer variant's score to win */
+const LEGACY_KILL_TARGET = 50;
 
 /* ---------- the rules, kept pure for the tests */
 
@@ -141,39 +251,145 @@ export function bountyPayouts(stake: number, balances: number[], feeBps: number)
   return { payouts, fee };
 }
 
-/* A team match's payouts, in the order of `names` (the players as they
-   joined): the winning team's players who did not quit split the whole pot,
-   each less the fee on what they won; everyone else gets nothing. Null when
-   it must be void: no team result, a tie, or no winner left. A player
-   missing from the result counts as having quit. */
-export function teamPayouts(
-  stake: number,
-  names: string[],
+/* A stakes configuration a match may run under, or why not. */
+export function stakesConfigProblem(config: StakesConfig): string | null {
+  if (!Number.isSafeInteger(config.stake) || config.stake <= 0) return "the stake must be a positive number of lamports";
+  if (!Number.isSafeInteger(config.killTarget) || config.killTarget < 1) return "the kill target must be at least 1";
+  if (!Number.isSafeInteger(config.teamShareBps) || config.teamShareBps < 0 || config.teamShareBps > 10_000) {
+    return "the team share must be 0 to 10000 basis points";
+  }
+  if (!Number.isSafeInteger(config.groups) || config.groups < 0) return "the groups must be 0 (free-for-all) or more";
+  return null;
+}
+
+/* A Team Stakes match's outcome from the server's result, every amount in
+   whole lamports (the arithmetic is BigInt: no lamport is ever rounded
+   away). `players` are the match's players as they joined, with the kills
+   the Worker counted for each (enemy kills: the server never reports
+   suicides or betrayals).
+
+   Groups: a team game's teams, by the result's team index; a free-for-all's
+   players, each their own. A player missing from the result, or flagged
+   quit, did not stay.
+
+   - Every group gone: void. Some gone while others stayed: hold, with the
+     settlement below (the gone groups as losers) as what a forfeit pays.
+   - The winners are everyone who stayed in a top-scoring group among the
+     groups that stayed; equal top scores all win. Everyone a winner: void.
+   - L = pot − stake × winners is forfeited; F = L × feeBps / 10000 is the
+     fee; D = L − F the prize; T = D × teamShareBps / 10000 the team share
+     pool; Kp = D − T the kill pool.
+   - A kill is worth Kp / max(killTarget, the winners' kills): exactly
+     Kp / killTarget unless the winners made more kills than the target
+     (betrayals cost Halo's score, not the kill count), when the pool is
+     shared pro rata so it never overpays. Winner i's kill share is
+     Kp × kills_i / that, floored.
+   - E = D − the kill shares (the team share, kill money nobody earned, and
+     rounding dust) is split evenly; the odd lamports go one each to the
+     winners with the most kills, join order breaking ties.
+   - A winner is paid stake + kill share + even share; everyone else 0. The
+     payouts and the fee add up to the pot exactly; the fee is within the
+     program's cap because L ≤ pot. */
+export function stakesOutcome(
+  config: StakesConfig,
+  players: Array<{ name: string; kills: number }>,
   result: MatchResult | null,
   feeBps: number,
-): { payouts: number[]; fee: number; winningTeam: number } | null {
-  if (!result || !result.teams) return null;
-  const [red, blue] = result.teamScores;
-  if (red === blue) return null;
-  const winningTeam = red > blue ? 0 : 1;
+): StakesOutcome {
+  if (!result) return { kind: "void", reason: "no result" };
   const byName = new Map(result.players.map((player) => [player.name, player]));
-  const winners = names.map((name) => {
-    const player = byName.get(name);
-    return player !== undefined && player.team === winningTeam && !player.quit;
-  });
-  const count = winners.filter(Boolean).length;
-  if (count === 0) return null;
-  const pot = stake * names.length;
-  /* an even share (the odd lamports go to the fee), less the fee on its
-     winnings */
-  const share = Math.floor(pot / count);
-  const payouts = winners.map((winner) => {
-    if (!winner) return 0;
-    const won = share - stake;
-    return won > 0 ? share - Math.floor((won * feeBps) / 10_000) : share;
-  });
-  const fee = pot - payouts.reduce((sum, payout) => sum + payout, 0);
-  return { payouts, fee, winningTeam };
+  const rows = players.map((player) => byName.get(player.name));
+  const groupOf = (index: number): number => {
+    const row = rows[index];
+    if (!row) return -1;
+    return result.teams ? row.team : index;
+  };
+  const stayed = (index: number): boolean => {
+    const row = rows[index];
+    return row !== undefined && !row.quit && groupOf(index) >= 0;
+  };
+  const scoreOf = (group: number): number => {
+    if (result.teams) return result.teamScores[group] ?? 0;
+    return rows[group]?.score ?? 0;
+  };
+  const groups = [...new Set(players.map((_, index) => groupOf(index)).filter((group) => group >= 0))];
+  const stayers = (group: number) => players.filter((_, index) => groupOf(index) === group && stayed(index)).length;
+  const alive = groups.filter((group) => stayers(group) > 0);
+  const dropped = groups.filter((group) => stayers(group) === 0);
+  if (alive.length === 0) return { kind: "void", reason: "nobody stayed" };
+  const top = Math.max(...alive.map(scoreOf));
+  const winningGroups = alive.filter((group) => scoreOf(group) === top);
+  const winner = players.map((_, index) => winningGroups.includes(groupOf(index)) && stayed(index));
+  const w = BigInt(winner.filter(Boolean).length);
+  const S = BigInt(config.stake);
+  const P = S * BigInt(players.length);
+  const L = P - S * w;
+  if (L === 0n) return { kind: "void", reason: "everyone who stayed tied" };
+  const F = (L * BigInt(feeBps)) / 10_000n;
+  const D = L - F;
+  const T = (D * BigInt(config.teamShareBps)) / 10_000n;
+  const Kp = D - T;
+  const K = BigInt(config.killTarget);
+  const killsW = players.reduce((sum, player, index) => sum + (winner[index] ? BigInt(Math.max(0, player.kills)) : 0n), 0n);
+  const denom = killsW > K ? killsW : K;
+  const killShares = players.map((player, index) => (winner[index] ? (Kp * BigInt(Math.max(0, player.kills))) / denom : 0n));
+  const E = D - killShares.reduce((sum, share) => sum + share, 0n);
+  const even = E / w;
+  let dust = E - even * w;
+  const evenShares = players.map((_, index) => (winner[index] ? even : 0n));
+  const order = players.map((_, index) => index).filter((index) => winner[index])
+    .sort((a, b) => players[b]!.kills - players[a]!.kills || a - b);
+  for (const index of order) {
+    if (dust === 0n) break;
+    evenShares[index] = evenShares[index]! + 1n;
+    dust -= 1n;
+  }
+  const settlement: StakesSettlement = {
+    payouts: players.map((_, index) => Number(winner[index] ? S + killShares[index]! + evenShares[index]! : 0n)),
+    fee: Number(F),
+    winningGroups,
+    perKill: Number(Kp / denom),
+    killShares: killShares.map(Number),
+    evenShares: evenShares.map(Number),
+  };
+  if (dropped.length > 0) {
+    return { kind: "hold", reason: `group ${dropped.join(", ")} dropped out`, dropped, proposed: settlement };
+  }
+  return { kind: "settle", ...settlement };
+}
+
+/* What a Team Stakes match looks like before its result: the value of one
+   kill and a winner's even share, as if the groups were equal (the Worker
+   learns the real groups only from the result). */
+export function stakesProjection(
+  config: StakesConfig,
+  playerCount: number,
+  feeBps: number,
+): { perKill: number; floor: number; prize: number; winners: number } {
+  const winners = config.groups > 0 ? Math.max(1, Math.floor(playerCount / config.groups)) : 1;
+  const S = BigInt(config.stake);
+  const L = S * BigInt(Math.max(0, playerCount - winners));
+  const D = L - (L * BigInt(feeBps)) / 10_000n;
+  const T = (D * BigInt(config.teamShareBps)) / 10_000n;
+  return {
+    perKill: Number((D - T) / BigInt(config.killTarget)),
+    floor: Number(T / BigInt(winners)),
+    prize: Number(D),
+    winners,
+  };
+}
+
+/* A player's projected take if their group wins now: their stake, the even
+   share, and their kills' worth, never more than the whole prize. */
+export function stakesProjected(config: StakesConfig, playerCount: number, feeBps: number, kills: number): number {
+  const projection = stakesProjection(config, playerCount, feeBps);
+  return config.stake + Math.min(projection.prize, projection.floor + Math.max(0, kills) * projection.perKill);
+}
+
+/* The rules a record plays by: its own, or the ones a record from before
+   the stakes configuration played by. */
+function stakesConfigOf(record: WagerRecord): StakesConfig {
+  return record.config ?? { stake: record.stake, killTarget: LEGACY_KILL_TARGET, teamShareBps: DEFAULT_TEAM_SHARE_BPS, groups: 2 };
 }
 
 /* ---------- configuration */
@@ -253,12 +469,20 @@ export class Wager extends DurableObject<Env> {
     if (this.read()) return;
     const setup = await escrowSetup(this.env_);
     const now = Date.now();
+    const mode = input.mode ?? "bounty";
+    let config: StakesConfig | undefined;
+    if (mode === "team") {
+      config = input.stakes ?? { stake: input.stake, killTarget: LEGACY_KILL_TARGET, teamShareBps: DEFAULT_TEAM_SHARE_BPS, groups: 2 };
+      const problem = stakesConfigProblem(config);
+      if (problem !== null || config.stake !== input.stake) throw new Error(`bad stakes configuration: ${problem ?? "the stake differs"}`);
+    }
     this.write({
       matchId: input.matchId,
       escrowId: hex(await escrowMatchId(input.matchId)),
       stake: input.stake,
       perKill: input.perKill,
-      mode: input.mode ?? "bounty",
+      mode,
+      ...(config ? { config } : {}),
       feeBps: setup?.feeBps ?? 500,
       state: "locking",
       ending: null,
@@ -295,25 +519,34 @@ export class Wager extends DurableObject<Env> {
   }
 
   /* The match is over: finished pays it out (a team match by the server's
-     result), anything else voids it. */
+     result, or holds it when a whole group dropped out), anything else
+     voids it. */
   async end(finished: boolean, result: MatchResult | null = null): Promise<void> {
     const record = this.read();
     if (!record) return;
-    let outcome: "settle" | "void";
+    let outcome: "settle" | "void" | "hold";
+    let hold: { reason: string; dropped: number[] } | null = null;
     if (record.mode === "team") {
-      const team = finished ?
-        teamPayouts(record.stake, record.players.map((player) => player.name), result, record.feeBps) : null;
-      record.teamPayouts = team?.payouts ?? null;
-      record.winningTeam = team?.winningTeam ?? null;
-      outcome = team ? "settle" : "void";
+      const stakes = finished ? stakesOutcome(stakesConfigOf(record), record.players, result, record.feeBps) :
+        { kind: "void" as const, reason: "not finished" };
+      const settlement = stakes.kind === "settle" ? stakes : stakes.kind === "hold" ? stakes.proposed : null;
+      record.result = result;
+      record.settlement = settlement;
+      record.winningTeam = settlement?.winningGroups[0] ?? null;
+      outcome = stakes.kind;
+      if (stakes.kind === "hold") hold = { reason: stakes.reason, dropped: stakes.dropped };
     } else {
       outcome = finished && record.players.some((player) => player.balance !== record.stake) ? "settle" : "void";
     }
     if (record.state === "locking") {
       record.ending = outcome;
+      record.pendingHold = hold;
     } else if (record.state === "locked") {
-      record.state = outcome === "settle" ? "settling" : "voiding";
-      record.attempts = 0;
+      if (hold) this.beginHold(record, hold);
+      else {
+        record.state = outcome === "settle" ? "settling" : "voiding";
+        record.attempts = 0;
+      }
     } else {
       return;
     }
@@ -321,34 +554,120 @@ export class Wager extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now());
   }
 
+  /* The match waits for an admin: the alarm (now) reads the chain for the
+     hold's ceiling and tells the log, then fires again at the deadline. */
+  private beginHold(record: WagerRecord, hold: { reason: string; dropped: number[] }): void {
+    const now = Date.now();
+    record.state = "held";
+    record.attempts = 0;
+    record.hold = {
+      reason: hold.reason,
+      dropped: hold.dropped,
+      since: now,
+      deadline: now + HOLD_MS,
+      limit: null,
+      history: [{ at: now, by: "match", action: "held", detail: {
+        reason: hold.reason, dropped: hold.dropped, result: record.result ?? null,
+        proposed: record.settlement ?? null,
+      } }],
+      decision: null,
+    };
+  }
+
   async snapshot(): Promise<WagerView | null> {
     const record = this.read();
     return record ? this.view(record) : null;
   }
 
+  /* ---------- a held match, for an admin */
+
+  async adminView(): Promise<WagerAdminView | null> {
+    const record = this.read();
+    if (!record) return null;
+    return {
+      view: this.view(record),
+      config: record.mode === "team" ? stakesConfigOf(record) : null,
+      hold: record.hold ?? null,
+      result: record.result ?? null,
+      settlement: record.settlement ?? null,
+      payouts: record.payouts,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+  }
+
+  /* An admin ends a hold: forfeit pays the settlement proposed when the
+     match was held; void returns every stake. Null unless the match is
+     held. */
+  async decide(action: "forfeit" | "void", by: string, note: string): Promise<WagerView | null> {
+    const record = this.read();
+    if (!record || record.state !== "held" || !record.hold) return null;
+    const now = Date.now();
+    record.hold.decision = { at: now, by, action, note };
+    record.hold.history.push({ at: now, by, action: "decided", detail: { action, note } });
+    record.state = action === "forfeit" ? "settling" : "voiding";
+    record.attempts = 0;
+    record.error = null;
+    this.write(record);
+    await this.report(record, "hold_decided", { action, by, note });
+    await this.ctx.storage.setAlarm(now);
+    return this.view(record);
+  }
+
+  /* An admin gives a hold longer, up to its ceiling. Null unless held. */
+  async extendHold(hours: number, by: string, note: string): Promise<{ deadline: number; limit: number | null; clamped: boolean } | null> {
+    const record = this.read();
+    if (!record || record.state !== "held" || !record.hold) return null;
+    const now = Date.now();
+    const wanted = Math.max(record.hold.deadline, now) + hours * 60 * 60_000;
+    const clamped = record.hold.limit !== null && wanted > record.hold.limit;
+    record.hold.deadline = clamped ? record.hold.limit! : wanted;
+    record.hold.history.push({ at: now, by, action: "extended", detail: { hours, note, deadline: record.hold.deadline, clamped } });
+    this.write(record);
+    await this.report(record, "hold_extended", { by, note, deadline: record.hold.deadline, limit: record.hold.limit, clamped });
+    await this.ctx.storage.setAlarm(record.hold.deadline);
+    return { deadline: record.hold.deadline, limit: record.hold.limit, clamped };
+  }
+
   /* The payouts a settle pays: the team result's, or the bounty balances'. */
   private payoutsFor(record: WagerRecord): number[] {
-    if (record.mode === "team") return record.teamPayouts ?? record.players.map(() => record.stake);
+    if (record.mode === "team") {
+      return record.settlement?.payouts ?? record.teamPayouts ?? record.players.map(() => record.stake);
+    }
     return bountyPayouts(record.stake, record.players.map((player) => player.balance), record.feeBps).payouts;
   }
 
   private view(record: WagerRecord): WagerView {
     const payouts = record.payouts ?? (record.state === "settling" || record.state === "settled" ?
       this.payoutsFor(record) : null);
+    const team = record.mode === "team";
+    const config = team ? stakesConfigOf(record) : null;
+    const projection = config ? stakesProjection(config, record.players.length, record.feeBps) : null;
+    const settled = record.state === "settling" || record.state === "settled" ? record.settlement ?? null : null;
+    const live = record.state === "locking" || record.state === "locked";
     return {
       matchId: record.matchId,
       state: record.state,
       mode: record.mode ?? "bounty",
       winningTeam: record.winningTeam ?? null,
       stake: record.stake,
-      perKill: record.perKill,
+      perKill: settled ? settled.perKill : projection ? projection.perKill : record.perKill,
       feeBps: record.feeBps,
       pot: record.stake * record.players.length,
+      config,
+      floor: projection ? projection.floor : null,
+      hold: record.hold && record.state === "held" ? {
+        reason: record.hold.reason, dropped: record.hold.dropped, since: record.hold.since,
+        deadline: record.hold.deadline, limit: record.hold.limit,
+      } : null,
       players: record.players.map((player, index) => ({
         ...player,
         net: player.balance - record.stake,
         payout: record.state === "void" || record.state === "voiding" ? record.stake : payouts?.[index] ?? null,
-        spent: player.balance === 0,
+        spent: !team && player.balance === 0,
+        projected: config && live ? stakesProjected(config, record.players.length, record.feeBps, player.kills) : null,
+        killShare: settled?.killShares[index] ?? null,
+        evenShare: settled?.evenShares[index] ?? null,
       })),
       signatures: record.signatures,
       cluster: this.env_.SOLANA_CLUSTER ?? "devnet",
@@ -392,8 +711,12 @@ export class Wager extends DurableObject<Env> {
     if (record.state === "locking") {
       const onChain = decodeMatch((await rpc.accountData(address)) ?? new Uint8Array());
       if (onChain && onChain.players.length === owners.length) {
-        record.state = record.ending === "settle" ? "settling" : record.ending === "void" ? "voiding" : "locked";
-        record.attempts = 0;
+        if (record.ending === "hold") {
+          this.beginHold(record, record.pendingHold ?? { reason: "a group dropped out", dropped: [] });
+        } else {
+          record.state = record.ending === "settle" ? "settling" : record.ending === "void" ? "voiding" : "locked";
+          record.attempts = 0;
+        }
         record.error = null;
         this.write(record);
         await this.env.MATCHMAKER.getByName(MATCHMAKER_NAME).escrowLocked(record.matchId, true, null);
@@ -426,6 +749,38 @@ export class Wager extends DurableObject<Env> {
       return 0;
     }
 
+    if (record.state === "held" && record.hold) {
+      const hold = record.hold;
+      const now = Date.now();
+      if (hold.limit === null) {
+        /* the ceiling: the players can reclaim their stakes themselves once
+           the program's reclaim delay has passed, and a settle after that
+           fails; an hour's margin before it */
+        const onChain = decodeMatch((await rpc.accountData(address)) ?? new Uint8Array());
+        if (onChain) {
+          hold.limit = Math.max(now, (onChain.createdAt + onChain.reclaimDelay) * 1000 - HOLD_MARGIN_MS);
+          if (hold.deadline > hold.limit) hold.deadline = hold.limit;
+        }
+        this.write(record);
+        await this.report(record, "held", {
+          reason: hold.reason, dropped: hold.dropped, deadline: hold.deadline, limit: hold.limit,
+        });
+        await alert(this.env_, `hold:${record.matchId}`,
+          `match ${record.matchId}: ${hold.reason}; its stakes are held for an admin until ` +
+          `${new Date(hold.deadline).toISOString()} (GET /v1/admin/wagers/held; POST .../${record.matchId}/decide or /hold)`);
+      }
+      if (now < hold.deadline) return hold.deadline - now;
+      /* the deadline: the forfeit proposed when the match was held */
+      hold.decision = { at: now, by: "deadline", action: "forfeit", note: "the hold expired" };
+      hold.history.push({ at: now, by: "deadline", action: "expired", detail: { deadline: hold.deadline } });
+      record.state = "settling";
+      record.attempts = 0;
+      record.error = null;
+      this.write(record);
+      await this.report(record, "hold_expired", { deadline: hold.deadline });
+      return 0;
+    }
+
     if (record.state === "settling" || record.state === "voiding") {
       const data = await rpc.accountData(address);
       const onChain = data ? decodeMatch(data) : null;
@@ -437,6 +792,8 @@ export class Wager extends DurableObject<Env> {
         record.error = null;
         this.write(record);
         await this.report(record, record.state);
+        /* what each player won or lost goes to their record (src/stats.ts) */
+        if (record.state === "settled") this.ctx.waitUntil(reportWagerNet(this.env, record));
         return record.closed ? null : 0;
       }
       let instruction: Instruction;
@@ -532,11 +889,12 @@ export class Wager extends DurableObject<Env> {
       `its stakes stay locked until it is retried or the players reclaim them`);
   }
 
-  /* The matchmaker's log (the dashboard) hears how each wagered match ends. */
-  private async report(record: WagerRecord, outcome: string): Promise<void> {
+  /* The matchmaker's log (the dashboard) hears how each wagered match ends,
+     and when one is held. */
+  private async report(record: WagerRecord, outcome: string, detail: Record<string, unknown> = {}): Promise<void> {
     try {
       await this.env.MATCHMAKER.getByName(MATCHMAKER_NAME).wagerReport(record.matchId, outcome, {
-        error: record.error, signatures: record.signatures, payouts: record.payouts,
+        error: record.error, signatures: record.signatures, payouts: record.payouts, ...detail,
       });
     } catch {
       /* the log is best effort */

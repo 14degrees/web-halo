@@ -48,8 +48,13 @@ import { requireHumanVerification } from "./turnstile";
 import { checkSettlementWallet } from "./alerts";
 import { handleBroadcastRequest } from "./broadcast";
 import { handlePartyRequest } from "./parties";
+import { fomoCheckAfterSignIn } from "./fomo";
+import { adminProfileLookup, handleProfileRequest } from "./profile";
+import { siteInfo } from "./site";
+import { handleStatsRequest } from "./stats";
 import { handleEscrowRequest } from "./vault";
 import { type MatchResult, stakeProblem } from "./wager";
+import { handleVoteRequest, parseVote } from "./vote";
 import { handleWalletRequest, walletForToken } from "./wallet";
 
 export { LobbyDirectory } from "./lobby";
@@ -57,6 +62,8 @@ export { Matchmaker } from "./matchmaker";
 export { SignalingRoom } from "./room";
 export { Wager } from "./wager";
 export { Party } from "./party";
+export { Profiles } from "./profiles";
+export { Stats } from "./stats";
 export type {
   ClientMessage,
   CreateRoomResponse,
@@ -80,6 +87,9 @@ const SESSION_ROUTE = /^\/v1\/rooms\/([^/]+)\/sessions$/u;
 const RENEW_ROUTE = /^\/v1\/rooms\/([^/]+)\/renew$/u;
 const WEBSOCKET_ROUTE = /^\/v1\/rooms\/([^/]+)\/ws$/u;
 const ADMIN_BAN_ROUTE = /^\/v1\/admin\/bans\/([0-9a-f]{32})$/u;
+/* a wagered match held for an admin (src/wager.ts): read it, decide it,
+   or give it longer */
+const ADMIN_WAGER_ROUTE = /^\/v1\/admin\/wagers\/([A-Za-z0-9_-]{8,64})(?:\/(decide|hold))?$/u;
 const QUEUE_TICKET_ROUTE = /^\/v1\/queue\/([A-Za-z0-9_-]{16,64})$/u;
 /* A dedicated server's match result (services/game-server/gateway,
    matchResult), as far as it is well formed; null otherwise. */
@@ -254,10 +264,18 @@ async function handleAdminRequest(
   if (!url.pathname.startsWith("/v1/admin/")) {
     return null;
   }
+  /* the dashboard's preflight (the bearer header makes every call one) */
+  if (request.method === "OPTIONS") {
+    return corsPreflight();
+  }
   if (!(await requestIsAuthorizedAdmin(request, env))) {
     return jsonResponse({ error: { code: "UNAUTHORIZED", message: "Unauthorized." } }, 401, {
       "WWW-Authenticate": "Bearer",
     });
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/admin/profiles") {
+    return jsonResponse(await adminProfileLookup(env, url));
   }
 
   if (request.method === "GET" && url.pathname === "/v1/admin/bans") {
@@ -319,6 +337,45 @@ async function handleAdminRequest(
     recordTurnEvent(env, "unbanned", match[1]);
     return new Response(null, { status: 204 });
   }
+
+  /* Wagered matches held for an admin: a whole team dropped out, so the
+     stakes wait, locked, for a decision (or the hold's deadline). */
+  if (request.method === "GET" && url.pathname === "/v1/admin/wagers/held") {
+    return jsonResponse({ held: await env.MATCHMAKER.getByName(MATCHMAKER_NAME).heldWagers() });
+  }
+  const wager = ADMIN_WAGER_ROUTE.exec(url.pathname);
+  if (wager?.[1]) {
+    const stub = env.WAGERS.getByName(wager[1]);
+    const by = `admin@${request.headers.get("CF-Connecting-IP") ?? "unknown"}`;
+    if (request.method === "GET" && wager[2] === undefined) {
+      const record = await stub.adminView();
+      if (record === null) return jsonResponse({ error: { code: "NOT_FOUND", message: "No wager for that match." } }, 404);
+      return jsonResponse(record);
+    }
+    if (request.method === "POST" && wager[2] === "decide") {
+      const body = await readJsonBody(request);
+      const action = typeof body === "object" && body !== null ? (body as Record<string, unknown>).action : undefined;
+      const note = typeof body === "object" && body !== null ? (body as Record<string, unknown>).note : undefined;
+      if ((action !== "forfeit" && action !== "void") || typeof note !== "string" || note.trim().length === 0 || note.length > 500) {
+        return jsonResponse({ error: { code: "VALIDATION_FAILED", message: "action must be forfeit or void, with a note." } }, 400);
+      }
+      const view = await stub.decide(action, by, note.trim());
+      if (view === null) return jsonResponse({ error: { code: "NOT_HELD", message: "That wager is not held." } }, 409);
+      return jsonResponse({ wager: view });
+    }
+    if (request.method === "POST" && wager[2] === "hold") {
+      const body = await readJsonBody(request);
+      const hours = typeof body === "object" && body !== null ? (body as Record<string, unknown>).hours : undefined;
+      const note = typeof body === "object" && body !== null ? (body as Record<string, unknown>).note : undefined;
+      if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0 || hours > 24 * 7 ||
+          typeof note !== "string" || note.trim().length === 0 || note.length > 500) {
+        return jsonResponse({ error: { code: "VALIDATION_FAILED", message: "hours must be a number up to 168, with a note." } }, 400);
+      }
+      const extended = await stub.extendHold(hours, by, note.trim());
+      if (extended === null) return jsonResponse({ error: { code: "NOT_HELD", message: "That wager is not held." } }, 409);
+      return jsonResponse(extended);
+    }
+  }
   return jsonResponse({ error: { code: "NOT_FOUND", message: "Admin route not found." } }, 404);
 }
 
@@ -362,6 +419,60 @@ function allowedOrigin(request: Request, env: RuntimeEnv): string | null {
     throw new HttpError(403, "ORIGIN_FORBIDDEN", "Origin is not allowed.");
   }
   return normalized;
+}
+
+/* Where the page probes its ping to the game: one target per region, from
+   PING_TARGETS (a JSON list of {id, label, url}; the gateway answers GET
+   /ping, services/game-server/gateway/main.go). A broken setting lists
+   nothing rather than failing the page. Region-aware matchmaking can later
+   take the page's measurements by these ids. */
+export interface PingTarget {
+  id: string;
+  label: string;
+  url: string;
+}
+
+const PING_TARGET_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/u;
+
+export function pingTargets(setting: string | undefined): PingTarget[] {
+  if (!setting) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(setting);
+  } catch {
+    console.warn(JSON.stringify({ message: "PING_TARGETS is not valid JSON" }));
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const targets: PingTarget[] = [];
+  for (const entry of parsed.slice(0, 16)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { id, label, url } = entry as Record<string, unknown>;
+    if (typeof id !== "string" || !PING_TARGET_ID_PATTERN.test(id)) continue;
+    if (typeof label !== "string" || label.length < 1 || label.length > 40) continue;
+    if (typeof url !== "string") continue;
+    let probe: URL;
+    try {
+      probe = new URL(url);
+    } catch {
+      continue;
+    }
+    if (probe.protocol !== "https:" && probe.protocol !== "http:") continue;
+    if (targets.some((target) => target.id === id)) continue;
+    targets.push({ id, label, url: probe.href });
+  }
+  return targets;
+}
+
+function corsPreflight(): Response {
+  return new Response(null, {
+    headers: {
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Methods": "GET, PATCH, POST, DELETE, OPTIONS",
+      "Access-Control-Max-Age": "86400",
+    },
+    status: 204,
+  });
 }
 
 function withCors(response: Response, origin: string | null): Response {
@@ -958,6 +1069,8 @@ async function enqueue(request: Request, env: RuntimeEnv, origin: string | null)
     now: Date.now(),
     playlist,
     wallet: wallet ?? null,
+    /* the pick from the last match's vote, carried to the next */
+    vote: parseVote(body.vote),
   });
   return withCors(jsonResponse({ ticket, v: SIGNALING_PROTOCOL_VERSION }, 201), origin);
 }
@@ -1020,6 +1133,18 @@ async function handleMatchmaking(
     return spectateMatch(request, env, origin);
   }
 
+  if (request.method === "GET" && url.pathname === "/v1/site") {
+    /* The page's links out and which optional features this deployment
+       has on (src/site.ts); nothing per player, nothing to compute. */
+    return withCors(jsonResponse({ ...siteInfo(env), v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
+  if (request.method === "GET" && url.pathname === "/v1/ping") {
+    /* The page's ping before a match (port/web/online_client.js,
+       refreshPing): a round trip to this Worker, and where else to probe,
+       one URL per game region. Nothing to compute, so it is not rate
+       limited beyond the page's own pace. */
+    return withCors(jsonResponse({ ok: true, targets: pingTargets(env.PING_TARGETS), v: SIGNALING_PROTOCOL_VERSION }), origin);
+  }
   if (request.method === "GET" && url.pathname === "/v1/playlists") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
     const playlists = await matchmaker(env).playlists(now);
@@ -1150,27 +1275,21 @@ async function closeRoom(
   return withCors(new Response(null, { status: 204 }), origin);
 }
 
-async function route(request: Request, env: RuntimeEnv): Promise<Response> {
+async function route(request: Request, env: RuntimeEnv, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/v1/health") {
     return jsonResponse({ ok: true, v: SIGNALING_PROTOCOL_VERSION });
   }
   const adminResponse = await handleAdminRequest(request, env, url);
   if (adminResponse !== null) {
-    return adminResponse;
+    /* the dashboard (servers.html, on the page's origin) calls the admin
+       routes from the browser; curl sends no Origin and needs no CORS */
+    return withCors(adminResponse, request.headers.get("Origin") === null ? null : allowedOrigin(request, env));
   }
 
   const origin = allowedOrigin(request, env);
   if (request.method === "OPTIONS") {
-    const response = new Response(null, {
-      headers: {
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-        "Access-Control-Max-Age": "86400",
-      },
-      status: 204,
-    });
-    return withCors(response, origin);
+    return withCors(corsPreflight(), origin);
   }
   if (request.method === "POST" && url.pathname === "/v1/rooms") {
     await requireRateLimit(env.ROOM_CREATE_LIMITER, request, "room-create");
@@ -1199,13 +1318,37 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
 
   const walletResponse = await handleWalletRequest(request, env, url, () => readJsonBody(request));
   if (walletResponse !== null) {
+    if (url.pathname === "/v1/auth/verify" && typeof walletResponse.wallet === "string") {
+      /* a signed-in wallet gets looked for on fomo, after the answer */
+      ctx.waitUntil(fomoCheckAfterSignIn(env, walletResponse.wallet));
+    }
     return withCors(jsonResponse(walletResponse), origin);
+  }
+
+  if (url.pathname.startsWith("/v1/profile")) {
+    if (request.method === "POST" && url.pathname === "/v1/profile/username") {
+      await requireRateLimit(env.PROFILE_CLAIM_LIMITER, request, "profile-claim");
+    } else {
+      await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "profile");
+    }
+    const profileResponse = await handleProfileRequest(request, env, url, () => readJsonBody(request));
+    if (profileResponse !== null) return withCors(jsonResponse(profileResponse), origin);
+  }
+
+  /* the leaderboard and players' records (src/stats.ts) */
+  if (url.pathname === "/v1/leaderboard" || url.pathname.startsWith("/v1/players/")) {
+    await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "stats");
+    const statsResponse = await handleStatsRequest(request, env, url);
+    if (statsResponse !== null) return withCors(jsonResponse(statsResponse), origin);
   }
 
   const matchmakingResponse = await handleMatchmaking(request, env, origin, url);
   if (matchmakingResponse !== null) {
     return matchmakingResponse;
   }
+  /* the post-match vote (src/vote.ts) */
+  const voteResponse = await handleVoteRequest(request, env, url, () => readJsonBody(request));
+  if (voteResponse !== null) return withCors(jsonResponse(voteResponse), origin);
 
   if (request.method === "GET" && url.pathname === "/v1/servers") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
@@ -1267,12 +1410,12 @@ async function route(request: Request, env: RuntimeEnv): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: RuntimeEnv): Promise<Response> {
+  async fetch(request: Request, env: RuntimeEnv, ctx: ExecutionContext): Promise<Response> {
     const startedAt = Date.now();
     const requestId = crypto.randomUUID();
     const path = new URL(request.url).pathname;
     try {
-      const response = await route(request, env);
+      const response = await route(request, env, ctx);
       console.log(
         JSON.stringify({
           durationMs: Date.now() - startedAt,
