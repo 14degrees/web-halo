@@ -131,6 +131,13 @@ Point the page at your signaling Worker: the build reads it from the
 `halo-signaling-url` meta tag in `port/web/shell.html`. Change
 `https://halo-signaling.lilchocobo2.workers.dev` there to `<signaling>`.
 
+In `services/web/wrangler.jsonc`, change `routes` (our custom domain,
+`halois.fun`) to a domain on your Cloudflare account, or delete it to stay
+on `workers.dev`, and set `vars.TWITTER_SITE` to your X handle (or `""`).
+Whatever origin players use must be in the signaling Worker's
+`ALLOWED_ORIGINS`. The site also plays inside posts on X:
+`docs/x-embed.md`.
+
 ```sh
 # the game, built to build/web (first time: python3 configure.py, see README.md)
 EMSDK_PYTHON=$(brew --prefix python@3.12)/bin/python3.12 ninja web
@@ -248,7 +255,8 @@ Useful before touching anything live (we test netcode this way):
 
 ## Where things live in this deployment
 
-For reference, ours: site `https://halo.lilchocobo2.workers.dev`,
+For reference, ours: site `https://halois.fun` (and still
+`https://halo.lilchocobo2.workers.dev`),
 signaling `https://halo-signaling.lilchocobo2.workers.dev`, Fly app
 `halo-game-lilchocobo` in `lax` (IPv4 37.16.2.146), machines `public-0`
 and `pool-0..2`, R2 bucket `halo-broadcasts`, escrow program

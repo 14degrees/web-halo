@@ -8,7 +8,18 @@
     "directory": "../../build/cloudflare-web",
     "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
-    "not_found_handling": "none"
+    "not_found_handling": "none",
+    // the game page carries the X Player Card tags (src/embed.js)
+    "run_worker_first": ["/", "/embed", "/embed/"]
+  },
+  "routes": [
+    { "pattern": "halois.fun", "custom_domain": true }
+  ],
+  "vars": {
+    // the card's attribution; leave empty for none
+    "TWITTER_SITE": "@onchainqt",
+    // origins allowed to frame /embed besides X (space-separated), for testing
+    "EMBED_FRAME_ANCESTORS": ""
   },
   "analytics_engine_datasets": [
     {

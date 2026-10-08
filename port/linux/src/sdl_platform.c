@@ -521,6 +521,24 @@ EMSCRIPTEN_KEEPALIVE double platform_web_profile_callback_maximum(void)
 {
 	return web_frame_meter.callback_maximum;
 }
+
+/* In the X player card the page may not capture the mouse (its iframe has
+no allow-pointer-lock), so the page aims instead (shell.html, embedAim): it
+passes the mouse's motion here, and its own turning while the pointer rests
+at an edge. Meanwhile SDL's motion, absolute without the capture, is ignored. */
+static BOOL web_page_aim;
+
+EMSCRIPTEN_KEEPALIVE void platform_web_page_aim(int active, float dx, float dy)
+{
+	pthread_mutex_lock(&input_lock);
+	web_page_aim = active != 0;
+	if (web_page_aim && !input_state.ui_pointer && !input_state.mouse_released)
+	{
+		input_state.mouse_dx += dx;
+		input_state.mouse_dy += dy;
+	}
+	pthread_mutex_unlock(&input_lock);
+}
 #endif
 
 void platform_video_swap(void)
@@ -808,6 +826,10 @@ void platform_pump_events(void)
 				ui_pointer.moved = TRUE;
 				break;
 			}
+#endif
+		#ifdef HALO_WEB
+			if (web_page_aim)
+				break;
 #endif
 			input_state.mouse_dx += event.motion.xrel;
 			input_state.mouse_dy += event.motion.yrel;

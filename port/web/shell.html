@@ -2110,6 +2110,50 @@
     #game-frame footer > :not(.game-controls) { display: none !important; }
     #game-frame footer .control-button { background: rgba(0, 0, 0, .55); }
     body:has(canvas:focus) #game-frame footer { opacity: 0; }
+
+    /* ---------- inside an X post: the Worker's /embed marks <body data-embed>
+       (services/web/src/embed.js). The landing keeps Click to play; the other
+       ways to play and the Spartan stay in the full game, a new tab away. */
+    body[data-embed] .landing-modes, body[data-embed] .landing-spartan { display: none !important; }
+    body[data-embed] .landing-leave { top: clamp(.6rem, 3vh, 2rem); left: clamp(.6rem, 4vw, 3rem); padding: .35rem .8rem; font-size: clamp(.9rem, 1.5vw, 1.15rem); }
+    .landing-full {
+      position: absolute; top: clamp(.6rem, 3vh, 2rem); right: clamp(.6rem, 4vw, 3rem); z-index: 2;
+      padding: .35rem .8rem; border: 2px solid #5fd0ff; background: rgba(6, 10, 26, .72); color: #f2f5fa;
+      font-size: clamp(.9rem, 1.5vw, 1.15rem); font-weight: 500; text-decoration: none;
+    }
+    .landing-full:hover, .landing-full:focus-visible { background: rgba(95, 208, 255, .2); outline: none; }
+    .landing-full[hidden], #full-game[hidden] { display: none; }
+    #full-game { text-decoration: none; }
+    /* the page aims (embedAim): the pointer stays visible, and the edges
+       that turn the view light up while they do */
+    body[data-embed-aim], body[data-embed-aim] canvas { cursor: crosshair !important; }
+    #embed-edges { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+    #embed-edges[hidden] { display: none; }
+    #embed-edges i { position: absolute; top: 0; bottom: 0; width: 16%; }
+    #embed-edges i[data-edge="left"] { left: 0; opacity: var(--left, 0); background: linear-gradient(90deg, rgba(95, 208, 255, .2), transparent); }
+    #embed-edges i[data-edge="right"] { right: 0; opacity: var(--right, 0); background: linear-gradient(270deg, rgba(95, 208, 255, .2), transparent); }
+    #embed-aim-hint {
+      position: fixed; left: 50%; top: .6rem; z-index: 7; translate: -50% 0; width: max-content; max-width: calc(100% - 1.2rem);
+      padding: .3rem .7rem; background: rgba(0, 0, 0, .72); color: #e9f3ee; font-size: .72rem; line-height: 1.3;
+      text-align: center; pointer-events: none; transition: opacity .6s ease;
+    }
+    #embed-aim-hint[hidden] { display: none; }
+    #embed-aim-hint[data-fading] { opacity: 0; }
+    /* a browser that cannot isolate the frame (no Document-Isolation-Policy)
+       cannot run the game's threads in it: the game opens in a new tab */
+    #embed-fallback {
+      position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: .7rem;
+      padding: 1rem; text-align: center; color: #eef2f8; background: radial-gradient(ellipse at 50% 40%, #0b1a3a, #02040a 70%);
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif;
+    }
+    #embed-fallback[hidden] { display: none; }
+    #embed-fallback strong { font-size: clamp(2rem, 9vw, 3.4rem); font-weight: 500; letter-spacing: .32em; margin-right: -.32em; text-transform: uppercase; text-shadow: 0 0 2rem rgba(80, 170, 255, .45); }
+    #embed-fallback a {
+      padding: .55rem 1.2rem; border: 2px solid #ffb069; background: rgba(6, 10, 26, .72); color: #fff;
+      font-size: clamp(1.05rem, 3.6vw, 1.4rem); font-weight: 500; text-decoration: none;
+    }
+    #embed-fallback a:hover, #embed-fallback a:focus-visible { background: rgba(255, 176, 105, .25); outline: none; }
+    #embed-fallback p { margin: 0; max-width: 26rem; color: #9fb4d6; font-size: clamp(.8rem, 2.6vw, .95rem); }
   </style>
 </head>
 <body>
@@ -2140,6 +2184,10 @@
           <button id="fullscreen" class="control-button icon-only" type="button" aria-label="Enter fullscreen" title="Fullscreen">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M8 21H3v-5m13 5h5v-5"></path></svg>
           </button>
+          <a id="full-game" class="control-button" href="/" target="_blank" rel="noopener" title="Open Halo in a new tab, where the mouse can be captured" hidden>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 4h6v6m0-6-9 9"></path><path d="M19 14v6H4V5h6"></path></svg>
+            <span>Full game</span>
+          </a>
         </div>
         <span class="site-credit">Made by <a href="https://mitchellhynes.com/" target="_blank" rel="noopener noreferrer">Mitchell Hynes</a>. <button id="about-open" type="button">Learn more</button> / <a href="https://ko-fi.com/mitchellhynes" target="_blank" rel="noopener noreferrer">Buy me a coffee</a></span>
         <span id="footer-hint" class="hint">Click the game or Focus game to capture the mouse</span>
@@ -2229,9 +2277,17 @@
       <p class="diagnostics-shortcut">⌘/Ctrl + Shift + L</p>
     </section>
   </main>
+  <div id="embed-edges" aria-hidden="true" hidden><i data-edge="left"></i><i data-edge="right"></i></div>
+  <p id="embed-aim-hint" role="status" hidden>Move the mouse to aim · rest it near an edge to keep turning · Esc for the menu</p>
+  <section id="embed-fallback" aria-label="Halo" hidden>
+    <strong>Halo</strong>
+    <a href="/" target="_blank" rel="noopener">Play in a new tab ↗</a>
+    <p>This browser can’t run Halo inside a post. Chrome or Edge on a computer can.</p>
+  </section>
   <section id="landing" aria-label="Halo" hidden>
     <video class="lobby-film landing-film" src="assets/ui/h3/multiplayervid.mp4" autoplay loop muted playsinline aria-hidden="true"></video>
     <button id="landing-leave" class="landing-leave" type="button" hidden>Leave game</button>
+    <a id="landing-full" class="landing-full" href="/" target="_blank" rel="noopener" hidden>Full game ↗</a>
     <div class="landing-brand">
       <strong>Halo</strong>
       <span>Combat Evolved · Online</span>
@@ -2680,6 +2736,108 @@
     const aboutDialog = document.getElementById("about-dialog");
     const aboutCloseButton = document.getElementById("about-close");
     const onlineDialog = document.getElementById("online-dialog");
+
+    /* ---------- inside an X post. The Worker serves /embed with
+       <body data-embed> (services/web/src/embed.js). X's card iframe has no
+       allow-pointer-lock, so the mouse cannot be captured there and the page
+       aims instead: moving the mouse over the game turns the view, and resting
+       the pointer near an edge keeps turning. A click takes the mouse and Esc
+       or leaving the frame gives it back, as with a capture
+       (online_client.js counts HaloEmbedAim.engaged as captured). */
+    const embedded = Boolean(document.body.dataset.embed);
+    /* no Document-Isolation-Policy here: no threads, so the game opens in a new tab */
+    const embedFallback = embedded && !self.crossOriginIsolated;
+    const EMBED_EDGE = .16;      // the turning band, a fraction of the frame
+    const EMBED_TURN_X = 1400;   // its fastest turn, in pixels of mouse motion a second
+    const EMBED_TURN_Y = 520;
+    const embedEdges = document.getElementById("embed-edges");
+    const embedHint = document.getElementById("embed-aim-hint");
+    const embedAim = window.HaloEmbedAim = {
+      engaged: false,
+      pointer: null,
+      frame: 0,
+      last: 0,
+      hinted: false,
+      engage() {
+        if (!embedded || embedFallback || document.pointerLockElement === canvas) return false;
+        if (!this.engaged) {
+          this.engaged = true;
+          this.last = 0;
+          document.body.dataset.embedAim = "true";
+          embedEdges.hidden = false;
+          sendEmbedAim(0, 0);
+          this.frame = requestAnimationFrame(turnAtEdges);
+          showEmbedHint();
+        }
+        return true;
+      },
+      release() {
+        if (!this.engaged) return;
+        this.engaged = false;
+        delete document.body.dataset.embedAim;
+        embedEdges.hidden = true;
+        cancelAnimationFrame(this.frame);
+        sendEmbedAim(0, 0);
+        updatePointerLockUi();
+      },
+    };
+
+    function sendEmbedAim(dx, dy) {
+      if (typeof Module === "object" && typeof Module._platform_web_page_aim === "function") {
+        Module._platform_web_page_aim(embedAim.engaged ? 1 : 0, dx, dy);
+      }
+    }
+
+    /* -1 at the start edge to 1 at the end edge, 0 outside the bands */
+    function edgeDepth(at, size) {
+      const band = size * EMBED_EDGE;
+      if (at < band) return -Math.min(1, 1 - at / band);
+      if (at > size - band) return Math.min(1, 1 - (size - at) / band);
+      return 0;
+    }
+
+    function turnAtEdges(now) {
+      if (!embedAim.engaged) return;
+      const seconds = embedAim.last ? Math.min(.05, (now - embedAim.last) / 1000) : 0;
+      embedAim.last = now;
+      const pointer = embedAim.pointer;
+      const x = pointer ? edgeDepth(pointer.x, window.innerWidth) : 0;
+      const y = pointer ? edgeDepth(pointer.y, window.innerHeight) : 0;
+      /* squared, for fine aim near the band's inner side */
+      if ((x || y) && seconds) {
+        sendEmbedAim(x * Math.abs(x) * EMBED_TURN_X * seconds, y * Math.abs(y) * EMBED_TURN_Y * seconds);
+      }
+      embedEdges.style.setProperty("--left", String(Math.max(0, -x)));
+      embedEdges.style.setProperty("--right", String(Math.max(0, x)));
+      embedAim.frame = requestAnimationFrame(turnAtEdges);
+    }
+
+    function showEmbedHint() {
+      if (embedAim.hinted) return;
+      embedAim.hinted = true;
+      embedHint.hidden = false;
+      window.setTimeout(() => { embedHint.dataset.fading = "true"; }, 5200);
+      window.setTimeout(() => { embedHint.hidden = true; }, 6000);
+    }
+
+    if (embedded) {
+      document.getElementById("landing-full").hidden = false;
+      document.getElementById("full-game").hidden = false;
+      document.getElementById("embed-fallback").hidden = !embedFallback;
+      document.addEventListener("pointermove", event => {
+        if (event.pointerType !== "mouse") return;
+        embedAim.pointer = { x: event.clientX, y: event.clientY };
+        if (embedAim.engaged && document.pointerLockElement !== canvas) {
+          sendEmbedAim(event.movementX, event.movementY);
+        }
+      }, true);
+      document.documentElement.addEventListener("mouseleave", () => { embedAim.pointer = null; });
+      window.addEventListener("blur", () => embedAim.release());
+      /* a real capture, should an embedder allow one, does the aiming itself */
+      document.addEventListener("pointerlockchange", () => {
+        if (document.pointerLockElement === canvas) embedAim.release();
+      });
+    }
     /* Sound is on unless the player muted it (remembered); the browser
        starts it on the first click or key, since pages may not play audio
        before one. */
@@ -3339,10 +3497,11 @@
       if (locked) pointerLockPending = false;
       window.clearTimeout(pointerLockTimer);
       focusButton.dataset.state = locked ? "locked" : (pointerLockPending ? "pending" : "unlocked");
-      focusButton.setAttribute("aria-pressed", String(locked));
+      focusButton.setAttribute("aria-pressed", String(locked || embedAim.engaged));
       focusButton.setAttribute("aria-busy", String(pointerLockPending));
       focusButton.disabled = pointerLockPending;
-      focusLabel.textContent = locked ? "Mouse captured" : (pointerLockPending ? "Capturing…" : "Focus game");
+      focusLabel.textContent = locked ? "Mouse captured" : embedAim.engaged ? "Mouse aiming"
+        : (pointerLockPending ? "Capturing…" : "Focus game");
       footerHint.textContent = message || (controllerSummary
         ? (locked
           ? `${controllerSummary} · mouse captured`
@@ -3394,6 +3553,10 @@
 
     function captureGameInput() {
       focusCanvas();
+      if (embedAim.engage()) {
+        updatePointerLockUi();
+        return;
+      }
       if (document.pointerLockElement === canvas) {
         updatePointerLockUi();
         return;
@@ -3687,6 +3850,7 @@
       window.addEventListener(type, (event) => {
         /* watching: the page takes the keys (online_client.js) */
         if (document.body.dataset.spectate === "true") return;
+        if (event.type === "keydown" && event.key === "Escape") embedAim.release();
         /* Esc frees the mouse and opens the page's menu (online_client.js),
            never Halo's own Start menu under it */
         if (document.body.dataset.lobby === "open" || event.key === "Escape") event.stopImmediatePropagation();
@@ -3776,6 +3940,7 @@
     }
 
     window.addEventListener("error", event => {
+      if (embedFallback) return;
       const message = event.message || "see the browser console";
       const source = event.error && event.error.stack ? event.error.stack : event.filename;
       if (isPointerLockFailure(message)) {
@@ -3792,6 +3957,7 @@
       setStatus(`Could not start: ${message}`);
     });
     window.addEventListener("unhandledrejection", event => {
+      if (embedFallback) return;
       const message = event.reason && event.reason.message ? event.reason.message : String(event.reason);
       const source = event.reason && event.reason.stack ? event.reason.stack : "";
       if (isPointerLockFailure(message)) {
