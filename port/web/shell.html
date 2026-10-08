@@ -2280,8 +2280,10 @@
 
     /* ---------- inside an X post: the Worker's /embed marks <body data-embed>
        (services/web/src/embed.js). The landing keeps Click to play; the other
-       ways to play and the Spartan stay in the full game, a new tab away. */
-    body[data-embed] .landing-modes, body[data-embed] .landing-spartan { display: none !important; }
+       ways to play, the Spartan and the links out (a referral is sponsored
+       content to X's card rules) stay in the full game, a new tab away. */
+    body[data-embed] .landing-modes, body[data-embed] .landing-spartan,
+    body[data-embed] .landing-links { display: none !important; }
     body[data-embed] .landing-leave { top: clamp(.6rem, 3vh, 2rem); left: clamp(.6rem, 4vw, 3rem); padding: .35rem .8rem; font-size: clamp(.9rem, 1.5vw, 1.15rem); }
     .landing-full {
       position: absolute; top: clamp(.6rem, 3vh, 2rem); right: clamp(.6rem, 4vw, 3rem); z-index: 2;

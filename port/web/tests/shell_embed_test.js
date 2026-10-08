@@ -26,8 +26,8 @@ assert.match(shell, /<section id="embed-fallback"[^>]*hidden>[\s\S]*?<a href="\/
   'the fallback opens the full game in a new tab');
 assert.match(shell, /<a id="landing-full" class="landing-full" href="\/" target="_blank" rel="noopener" hidden>/);
 assert.match(shell, /<div class="game-controls"[\s\S]*?<a id="full-game"[^>]*target="_blank"[^>]*hidden>/);
-assert.match(shell, /body\[data-embed\] \.landing-modes, body\[data-embed\] \.landing-spartan \{ display: none !important; \}/,
-  'the landing fits the card: Click to play only');
+assert.match(shell, /body\[data-embed\] \.landing-modes, body\[data-embed\] \.landing-spartan,\s*body\[data-embed\] \.landing-links \{ display: none !important; \}/,
+  'the landing fits the card: Click to play only, and no referral links in a card');
 assert.match(shell, /const embedAim = window\.HaloEmbedAim = \{/);
 assert.match(shell, /Module\._platform_web_page_aim\(embedAim\.engaged \? 1 : 0, dx, dy\)/);
 assert.match(shell, /function captureGameInput\(\) \{\s*focusCanvas\(\);\s*if \(embedAim\.engage\(\)\) \{/,
