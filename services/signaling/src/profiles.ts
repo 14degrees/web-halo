@@ -20,7 +20,13 @@ import { randomToken } from "./crypto";
 
    fomo: the Worker checks each wallet against mainnet (src/fomo.ts) and
    records the answer here, per wallet, in `fomo_checks`; a profile with a
-   detected wallet is verified with method "fee_payer".
+   detected wallet is verified with method "fee_payer". A transfer from a
+   fomo wallet to the player (src/fomo_handle.ts) verifies it with method
+   "transfer". That proves the player controls a fomo wallet, not which
+   fomo handle is theirs: nothing public ties a handle to a wallet. So a
+   claimed handle (src/fomo_handle.ts) stays unverified until an admin
+   confirms it against the profile's proven fomo wallet; a verified handle
+   is unique across profiles.
 
    X: a profile proves an X account with a tweet carrying a one-time code
    (src/x.ts). The code lives here, in `x_challenges`, one per profile; the
@@ -127,7 +133,21 @@ export interface ProfileView {
   createdAt: number;
   updatedAt: number;
   wallets: Array<{ wallet: string; linkedAt: number }>;
-  fomo: { handle: string | null; wallet: string | null; verified: boolean; verifiedAt: number | null; method: FomoMethod | null } | null;
+  fomo: {
+    /* the claimed handle, as typed */
+    handle: string | null;
+    /* whether fomo knows the handle (its profile card): null when not checked */
+    handleSeen: boolean | null;
+    handleClaimedAt: number | null;
+    /* an admin confirmed the handle belongs to the proven fomo wallet */
+    handleVerified: boolean;
+    handleVerifiedAt: number | null;
+    /* the proven fomo wallet */
+    wallet: string | null;
+    verified: boolean;
+    verifiedAt: number | null;
+    method: FomoMethod | null;
+  } | null;
   x: { handle: string | null; verified: boolean; verifiedAt: number | null; proofUrl: string | null } | null;
   /* the chain check's answer for each linked wallet it has looked at */
   fomoChecks: FomoCheckView[];
@@ -152,9 +172,24 @@ export type ProfileError =
   | "USERNAME_RATE_LIMITED"
   | "WALLET_ALREADY_LINKED"
   | "WALLET_NOT_LINKED"
-  | "PROFILE_LAST_WALLET";
+  | "PROFILE_LAST_WALLET"
+  | "FOMO_HANDLE_TAKEN"
+  | "FOMO_HANDLE_MISSING"
+  | "FOMO_HANDLE_CHANGED"
+  | "FOMO_WALLET_UNPROVEN";
 
 export type ProfileResult = { profile: ProfileView } | { error: ProfileError };
+
+/* a claimed handle waiting for an admin (GET /v1/admin/profiles/fomo-handles) */
+export interface PendingFomoHandle {
+  profileId: string;
+  username: string;
+  handle: string;
+  handleSeen: boolean | null;
+  claimedAt: number | null;
+  wallet: string;
+  method: FomoMethod | null;
+}
 
 export type XChallengeResult =
   | { profileId: string; code: string; expiresAt: number }
@@ -173,6 +208,11 @@ interface ProfileRow extends Record<string, SqlStorageValue> {
   username: string;
   username_key: string;
   fomo_handle: string | null;
+  fomo_handle_key: string | null;
+  fomo_handle_seen: number | null;
+  fomo_handle_claimed_at: number | null;
+  fomo_handle_verified_at: number | null;
+  fomo_handle_wallet: string | null;
   fomo_wallet: string | null;
   fomo_verified_at: number | null;
   fomo_method: string | null;
@@ -319,6 +359,24 @@ export class Profiles extends DurableObject<Env> {
       CREATE UNIQUE INDEX IF NOT EXISTS profiles_x_handle_key ON profiles(lower(x_handle)) WHERE x_handle IS NOT NULL;
       CREATE INDEX IF NOT EXISTS events_kind ON events(kind, at);
     `);
+    /* the fomo handle claim (src/fomo_handle.ts), added after the table */
+    const columns = new Set(this.ctx.storage.sql
+      .exec<{ name: string }>("PRAGMA table_info(profiles)").toArray().map(({ name }) => name));
+    for (const [column, type] of [
+      ["fomo_handle_key", "TEXT"],
+      ["fomo_handle_seen", "INTEGER"],
+      ["fomo_handle_claimed_at", "INTEGER"],
+      ["fomo_handle_verified_at", "INTEGER"],
+      /* the proven fomo wallet the admin confirmed the handle against */
+      ["fomo_handle_wallet", "TEXT"],
+    ] as const) {
+      if (!columns.has(column)) this.ctx.storage.sql.exec(`ALTER TABLE profiles ADD COLUMN ${column} ${type}`);
+    }
+    this.ctx.storage.sql.exec(`
+      CREATE INDEX IF NOT EXISTS profiles_fomo_handle ON profiles(fomo_handle_key);
+      CREATE UNIQUE INDEX IF NOT EXISTS profiles_fomo_handle_verified ON profiles(fomo_handle_key)
+        WHERE fomo_handle_verified_at IS NOT NULL;
+    `);
   }
 
   /* ---------- the event log */
@@ -375,6 +433,10 @@ export class Profiles extends DurableObject<Env> {
       wallets: this.walletsOf(row.id).map(({ wallet, linked_at }) => ({ wallet, linkedAt: linked_at })),
       fomo: row.fomo_handle === null && row.fomo_wallet === null ? null : {
         handle: row.fomo_handle,
+        handleSeen: row.fomo_handle_seen === null ? null : row.fomo_handle_seen === 1,
+        handleClaimedAt: row.fomo_handle_claimed_at,
+        handleVerified: row.fomo_handle_verified_at !== null,
+        handleVerifiedAt: row.fomo_handle_verified_at,
         wallet: row.fomo_wallet,
         verified: row.fomo_verified_at !== null,
         verifiedAt: row.fomo_verified_at,
@@ -395,8 +457,10 @@ export class Profiles extends DurableObject<Env> {
   private publicView(row: ProfileRow): PublicProfileView {
     const out: PublicProfileView = { id: row.id, username: row.username };
     if (row.show_wallets === 1) out.wallets = this.walletsOf(row.id).map(({ wallet }) => wallet);
+    /* the handle only once an admin confirmed it; a claim alone is the
+       owner's business */
     if (row.show_fomo === 1 && row.fomo_verified_at !== null) {
-      out.fomo = { handle: row.fomo_handle, wallet: row.fomo_wallet };
+      out.fomo = { handle: row.fomo_handle_verified_at === null ? null : row.fomo_handle, wallet: row.fomo_wallet };
     }
     if (row.show_x === 1 && row.x_verified_at !== null && row.x_handle !== null) out.x = { handle: row.x_handle };
     return out;
@@ -592,6 +656,7 @@ export class Profiles extends DurableObject<Env> {
         now, profileId,
       );
       this.log(now, "fomo_unverified", profileId, by, { wallet: current });
+      this.dropStaleHandleVerification(profileId, by, now);
       return;
     }
     this.ctx.storage.sql.exec(
@@ -599,6 +664,161 @@ export class Profiles extends DurableObject<Env> {
       next.wallet, now, now, profileId,
     );
     this.log(now, "fomo_verified", profileId, by, { wallet: next.wallet, method: "fee_payer", signature: next.signature });
+    this.dropStaleHandleVerification(profileId, by, now);
+  }
+
+  /* A handle was confirmed against one fomo wallet; once the profile's
+     proven fomo wallet is another one, or none, the confirmation goes. */
+  private dropStaleHandleVerification(profileId: string, by: string | null, now: number): void {
+    const row = this.profileRow(profileId);
+    if (row === null || row.fomo_handle_verified_at === null) return;
+    if (row.fomo_verified_at !== null && row.fomo_wallet === row.fomo_handle_wallet) return;
+    this.ctx.storage.sql.exec(
+      "UPDATE profiles SET fomo_handle_verified_at = NULL, fomo_handle_wallet = NULL, updated_at = ? WHERE id = ?",
+      now, profileId,
+    );
+    this.log(now, "fomo_handle_unverified", profileId, by, { handle: row.fomo_handle, wallet: row.fomo_handle_wallet });
+  }
+
+  /* ---------- the fomo handle (src/fomo_handle.ts) */
+
+  /* Claim a fomo handle for the caller's profile. The claim is private and
+     unverified; claiming the handle it already has (in another case) keeps
+     its verification. A handle verified on another profile can't be
+     claimed. `seen` is what fomo's profile card said (null: not checked). */
+  claimFomoHandle(ownerWallet: string, handle: string, key: string, seen: boolean | null, now: number): ProfileResult {
+    return this.ctx.storage.transactionSync(() => {
+      const id = this.profileIdForWallet(ownerWallet);
+      if (id === null) return { error: "PROFILE_NOT_FOUND" };
+      const holder = this.ctx.storage.sql.exec<{ id: string }>(
+        "SELECT id FROM profiles WHERE fomo_handle_key = ? AND fomo_handle_verified_at IS NOT NULL", key,
+      ).toArray()[0];
+      if (holder !== undefined && holder.id !== id) return { error: "FOMO_HANDLE_TAKEN" };
+      const row = this.profileRow(id)!;
+      const seenValue = seen === null ? null : seen ? 1 : 0;
+      if (row.fomo_handle_key === key) {
+        this.ctx.storage.sql.exec(
+          "UPDATE profiles SET fomo_handle = ?, fomo_handle_seen = ?, updated_at = ? WHERE id = ?", handle, seenValue, now, id,
+        );
+      } else {
+        this.ctx.storage.sql.exec(
+          `UPDATE profiles SET fomo_handle = ?, fomo_handle_key = ?, fomo_handle_seen = ?, fomo_handle_claimed_at = ?,
+             fomo_handle_verified_at = NULL, fomo_handle_wallet = NULL, updated_at = ? WHERE id = ?`,
+          handle, key, seenValue, now, now, id,
+        );
+      }
+      this.log(now, "fomo_handle_claimed", id, ownerWallet, { handle, seen, previous: row.fomo_handle });
+      return { profile: this.view(this.profileRow(id)!, now) };
+    });
+  }
+
+  /* Drop the caller's fomo handle, verified or not. */
+  releaseFomoHandle(ownerWallet: string, now: number): ProfileResult {
+    return this.ctx.storage.transactionSync(() => {
+      const id = this.profileIdForWallet(ownerWallet);
+      if (id === null) return { error: "PROFILE_NOT_FOUND" };
+      const row = this.profileRow(id)!;
+      if (row.fomo_handle === null) return { profile: this.view(row, now) };
+      this.ctx.storage.sql.exec(
+        `UPDATE profiles SET fomo_handle = NULL, fomo_handle_key = NULL, fomo_handle_seen = NULL, fomo_handle_claimed_at = NULL,
+           fomo_handle_verified_at = NULL, fomo_handle_wallet = NULL, updated_at = ? WHERE id = ?`,
+        now, id,
+      );
+      this.log(now, "fomo_handle_released", id, ownerWallet, {
+        handle: row.fomo_handle, verified: row.fomo_handle_verified_at !== null,
+      });
+      return { profile: this.view(this.profileRow(id)!, now) };
+    });
+  }
+
+  /* A transfer from a fomo wallet to the caller (src/fomo_handle.ts)
+     proved the caller controls that fomo wallet: it becomes the profile's
+     proven fomo wallet, whatever proved one before. */
+  recordFomoTransfer(ownerWallet: string, fomoWallet: string, signature: string, now: number): ProfileResult {
+    return this.ctx.storage.transactionSync(() => {
+      const id = this.profileIdForWallet(ownerWallet);
+      if (id === null) return { error: "PROFILE_NOT_FOUND" };
+      this.ctx.storage.sql.exec(
+        "UPDATE profiles SET fomo_wallet = ?, fomo_verified_at = ?, fomo_method = 'transfer', updated_at = ? WHERE id = ?",
+        fomoWallet, now, now, id,
+      );
+      this.log(now, "fomo_verified", id, ownerWallet, { wallet: fomoWallet, method: "transfer", signature });
+      this.dropStaleHandleVerification(id, ownerWallet, now);
+      return { profile: this.view(this.profileRow(id)!, now) };
+    });
+  }
+
+  /* An admin confirms (or takes back) a profile's claimed handle, having
+     checked it belongs to the profile's proven fomo wallet. `handleKey`
+     is the handle the admin looked at: a claim changed since is refused.
+     Confirming clears every other profile's claim of the same handle. */
+  adminVerifyFomoHandle(
+    profileId: string,
+    handleKey: string,
+    verified: boolean,
+    by: string,
+    note: string | null,
+    now: number,
+  ): ProfileResult {
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.profileRow(profileId);
+      if (row === null) return { error: "PROFILE_NOT_FOUND" };
+      if (row.fomo_handle_key === null) return { error: "FOMO_HANDLE_MISSING" };
+      if (row.fomo_handle_key !== handleKey) return { error: "FOMO_HANDLE_CHANGED" };
+      if (!verified) {
+        if (row.fomo_handle_verified_at !== null) {
+          this.ctx.storage.sql.exec(
+            "UPDATE profiles SET fomo_handle_verified_at = NULL, fomo_handle_wallet = NULL, updated_at = ? WHERE id = ?",
+            now, profileId,
+          );
+        }
+        this.log(now, "fomo_handle_rejected", profileId, null, { handle: row.fomo_handle, by, note });
+        return { profile: this.view(this.profileRow(profileId)!, now) };
+      }
+      if (row.fomo_verified_at === null || row.fomo_wallet === null) return { error: "FOMO_WALLET_UNPROVEN" };
+      const holder = this.ctx.storage.sql.exec<{ id: string }>(
+        "SELECT id FROM profiles WHERE fomo_handle_key = ? AND fomo_handle_verified_at IS NOT NULL AND id != ?",
+        handleKey, profileId,
+      ).toArray()[0];
+      if (holder !== undefined) return { error: "FOMO_HANDLE_TAKEN" };
+      const displaced = this.ctx.storage.sql.exec<{ id: string }>(
+        "SELECT id FROM profiles WHERE fomo_handle_key = ? AND id != ?", handleKey, profileId,
+      ).toArray();
+      for (const other of displaced) {
+        this.ctx.storage.sql.exec(
+          `UPDATE profiles SET fomo_handle = NULL, fomo_handle_key = NULL, fomo_handle_seen = NULL, fomo_handle_claimed_at = NULL,
+             updated_at = ? WHERE id = ?`,
+          now, other.id,
+        );
+        this.log(now, "fomo_handle_displaced", other.id, null, { handle: row.fomo_handle, by: profileId });
+      }
+      this.ctx.storage.sql.exec(
+        "UPDATE profiles SET fomo_handle_verified_at = ?, fomo_handle_wallet = ?, updated_at = ? WHERE id = ?",
+        now, row.fomo_wallet, now, profileId,
+      );
+      this.log(now, "fomo_handle_verified", profileId, null, {
+        handle: row.fomo_handle, wallet: row.fomo_wallet, method: row.fomo_method, by, note,
+      });
+      return { profile: this.view(this.profileRow(profileId)!, now) };
+    });
+  }
+
+  /* Claimed handles an admin can confirm: the profile has a proven fomo
+     wallet and the handle isn't verified yet. Oldest claim first. */
+  pendingFomoHandles(limit: number): PendingFomoHandle[] {
+    return this.ctx.storage.sql.exec<ProfileRow>(
+      `SELECT * FROM profiles WHERE fomo_handle IS NOT NULL AND fomo_handle_verified_at IS NULL
+         AND fomo_verified_at IS NOT NULL ORDER BY fomo_handle_claimed_at LIMIT ?`,
+      limit,
+    ).toArray().map((row) => ({
+      profileId: row.id,
+      username: row.username,
+      handle: row.fomo_handle!,
+      handleSeen: row.fomo_handle_seen === null ? null : row.fomo_handle_seen === 1,
+      claimedAt: row.fomo_handle_claimed_at,
+      wallet: row.fomo_wallet!,
+      method: row.fomo_method as FomoMethod | null,
+    }));
   }
 
   /* ---------- X (src/x.ts) */

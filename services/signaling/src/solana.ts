@@ -188,6 +188,16 @@ export interface SignatureInfo {
   blockTime?: number | null;
 }
 
+/* A token account's balance before or after a transaction: the account by
+   its index in the transaction, the token, the account's owner and the
+   amount in the token's smallest unit, as text. */
+export interface TokenBalance {
+  accountIndex: number;
+  mint: string;
+  owner?: string;
+  uiTokenAmount: { amount: string; decimals: number };
+}
+
 /* A transaction from getTransaction with the json encoding: the static
    account keys and the header that says which of them sign and which are
    writable; addresses a versioned transaction loads from lookup tables are
@@ -200,6 +210,8 @@ export interface TransactionJson {
     fee?: number;
     preBalances?: number[];
     postBalances?: number[];
+    preTokenBalances?: TokenBalance[] | null;
+    postTokenBalances?: TokenBalance[] | null;
     loadedAddresses?: { writable?: string[]; readonly?: string[] } | null;
   } | null;
   transaction: {

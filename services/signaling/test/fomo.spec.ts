@@ -343,7 +343,8 @@ describe("fomo detection in the Worker", () => {
     const claimed = await call("POST", "/v1/profile/username", { username: freshName() }, auth);
     expect(claimed.status).toBe(200);
     expect(claimed.body.profile.fomo).toEqual({
-      handle: null, wallet: wallet.address, verified: true, verifiedAt: expect.any(Number), method: "fee_payer",
+      handle: null, handleSeen: null, handleClaimedAt: null, handleVerified: false, handleVerifiedAt: null,
+      wallet: wallet.address, verified: true, verifiedAt: expect.any(Number), method: "fee_payer",
     });
     expect(claimed.body.profile.fomoChecks).toEqual([
       { wallet: wallet.address, checkedAt: check.checkedAt, detected: true, signature: check.signature },
