@@ -9,6 +9,7 @@ import {
   type ProfileVisibility,
 } from "./profiles";
 import { handleFomoRequest } from "./fomo";
+import { handleFomoHandleRequest, normaliseFomoHandle } from "./fomo_handle";
 import { handleXRequest } from "./x";
 import { base58Decode, parseWallet, verifyWalletSignature } from "./solana";
 import { requireWallet } from "./wallet";
@@ -27,13 +28,21 @@ import { requireWallet } from "./wallet";
      DELETE /v1/profile/wallets/:wallet     unlink it (the last one stays)
      POST   /v1/profile/fomo/check          look for the wallets on fomo now
                                             (src/fomo.ts)
+     PUT    /v1/profile/fomo/handle         { handle }: claim a fomo handle
+     DELETE /v1/profile/fomo/handle         drop it
+     POST   /v1/profile/fomo/transfer       the transfer that proves a fomo
+                                            wallet; then .../transfer/check
+                                            (src/fomo_handle.ts)
      POST   /v1/profile/x/challenge         link X with a tweet (src/x.ts)
      POST   /v1/profile/x/verify
      DELETE /v1/profile/x
      GET    /v1/profiles/:username          another player's view (no auth)
      GET    /v1/profiles?wallets=a,b,c      the same for a roster's wallets
                                             (no auth, at most 16)
-     GET    /v1/admin/profiles?wallet=|username=|id=   support lookup */
+     GET    /v1/admin/profiles?wallet=|username=|id=   support lookup
+     GET    /v1/admin/profiles/fomo-handles  claimed handles waiting for an admin
+     POST   /v1/admin/profiles/fomo-handle   { profileId, handle, verified, note? }:
+                                            confirm (or take back) a handle */
 
 const LINK_CHALLENGE_TTL_SECONDS = 300;
 const ROSTER_LOOKUP_MAXIMUM = 16;
@@ -51,7 +60,7 @@ function profiles(env: RuntimeEnv) {
   return env.PROFILES.getByName(PROFILES_NAME);
 }
 
-function answer(result: ProfileResult): { profile: ProfileView } {
+export function answer(result: ProfileResult): { profile: ProfileView } {
   if ("profile" in result) return result;
   switch (result.error) {
     case "PROFILE_NOT_FOUND":
@@ -66,6 +75,14 @@ function answer(result: ProfileResult): { profile: ProfileView } {
       throw new HttpError(404, "WALLET_NOT_LINKED", "That wallet isn't linked to your profile.");
     case "PROFILE_LAST_WALLET":
       throw new HttpError(409, "PROFILE_LAST_WALLET", "A profile keeps at least one wallet.");
+    case "FOMO_HANDLE_TAKEN":
+      throw new HttpError(409, "FOMO_HANDLE_TAKEN", "That fomo handle is verified on another profile.");
+    case "FOMO_HANDLE_MISSING":
+      throw new HttpError(404, "FOMO_HANDLE_MISSING", "That profile has no fomo handle.");
+    case "FOMO_HANDLE_CHANGED":
+      throw new HttpError(409, "FOMO_HANDLE_CHANGED", "That profile's fomo handle has changed. Look again.");
+    case "FOMO_WALLET_UNPROVEN":
+      throw new HttpError(409, "FOMO_WALLET_UNPROVEN", "That profile has no proven fomo wallet yet.");
   }
 }
 
@@ -239,6 +256,8 @@ export async function handleProfileRequest(
 
   const fomoResponse = await handleFomoRequest(request, env, path, now);
   if (fomoResponse !== null) return fomoResponse;
+  const fomoHandleResponse = await handleFomoHandleRequest(request, env, path, now, readBody);
+  if (fomoHandleResponse !== null) return fomoHandleResponse;
 
   const xResponse = await handleXRequest(request, env, path, now, readBody);
   if (xResponse !== null) return xResponse;
@@ -271,4 +290,27 @@ export async function adminProfileLookup(env: RuntimeEnv, url: URL): Promise<Rec
     profile: lookup.profile,
     usernames: lookup.usernames,
   };
+}
+
+const PENDING_FOMO_HANDLES_SHOWN = 100;
+
+/* GET /v1/admin/profiles/fomo-handles: claimed handles on profiles with a
+   proven fomo wallet, not yet confirmed. */
+export async function adminPendingFomoHandles(env: RuntimeEnv): Promise<Record<string, unknown>> {
+  return { pending: await profiles(env).pendingFomoHandles(PENDING_FOMO_HANDLES_SHOWN) };
+}
+
+/* POST /v1/admin/profiles/fomo-handle { profileId, handle, verified, note? }:
+   the admin checked (e.g. on fomo's profile page, by the masked address it
+   shows) that the handle belongs to the profile's proven fomo wallet, or
+   found it doesn't. `by` names the admin in the event log. */
+export async function adminVerifyFomoHandle(env: RuntimeEnv, body: unknown, by: string): Promise<Record<string, unknown>> {
+  const input = record(body);
+  const handle = normaliseFomoHandle(input.handle);
+  if (typeof input.profileId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/u.test(input.profileId) || "message" in handle ||
+      typeof input.verified !== "boolean" || (input.note !== undefined && typeof input.note !== "string")) {
+    throw new HttpError(400, "VALIDATION_FAILED", "profileId, handle and verified (true or false) are required.");
+  }
+  const note = typeof input.note === "string" ? input.note.slice(0, 500) : null;
+  return answer(await profiles(env).adminVerifyFomoHandle(input.profileId, handle.key, input.verified, by, note, Date.now()));
 }

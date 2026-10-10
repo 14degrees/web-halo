@@ -389,13 +389,27 @@ The caller is the signed-in wallet (`Authorization: Bearer` from
 | `GET /v1/profiles/:username` | another player's view: the name, and only the links the owner shows that are verified (no auth) |
 | `GET /v1/profiles?wallets=a,b,c` | the same for up to 16 wallets of a roster, by wallet (no auth) |
 | `GET /v1/admin/profiles?wallet=\|username=\|id=` | support lookup with the name history and the last events (admin token) |
+| `PUT /v1/profile/fomo/handle` `{ "handle" }` | claims a fomo.family handle (`@name` or a pasted profile link works); stored unverified and private. fomo's public profile card is asked once whether the handle exists (cached a day, capped per hour; `FOMO_HANDLE_CHECK=off` stops it): unknown is refused, unanswered is kept. Ten claims an hour per wallet |
+| `DELETE /v1/profile/fomo/handle` | drops it |
+| `POST /v1/profile/fomo/transfer` | the transfer that proves a fomo wallet: a random USDC amount (0.10 to 0.99) to send from fomo to the signed-in wallet, valid 30 minutes |
+| `POST /v1/profile/fomo/transfer/check` | looks for it (once a minute): a transfer of exactly that amount, its fee paid by fomo's fee payer; the sender becomes the profile's fomo wallet (`method: "transfer"`) |
+| `GET /v1/admin/profiles/fomo-handles` | claimed handles on profiles with a proven fomo wallet, waiting for an admin (admin token) |
+| `POST /v1/admin/profiles/fomo-handle` `{ "profileId", "handle", "verified", "note"? }` | an admin confirms (or takes back) a handle after checking it belongs to the proven fomo wallet, e.g. by the masked address fomo shows on the handle's page (admin token) |
 
 Usernames are 3 to 11 characters of letters, digits and underscores (so one
 fits Halo's player-name field), unique without regard to case, with a short
 reserved list. A profile's id never changes, and the `usernames` registry
 records every owner a name has had, so names can later move between
-profiles. The fomo and X columns (`handle`, `verified`, `method`) are stored
-and shown here; filling them is later work.
+profiles.
+
+fomo (`src/fomo.ts`, `src/fomo_handle.ts`): a profile's fomo *wallet* is
+proven automatically (a linked wallet fomo paid fees for, `fee_payer`) or by
+the transfer above (`transfer`). Nothing public ties a fomo *handle* to a
+wallet, so a claimed handle is verified only when an admin confirms it
+against the proven wallet; the confirmation goes when the proven wallet
+changes. A verified handle is unique: confirming it clears other profiles'
+claims of it, and nobody else can claim it. Other players see the handle
+only once verified, and only with `showFomo` on.
 
 ## WebSocket protocol
 

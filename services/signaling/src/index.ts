@@ -49,7 +49,7 @@ import { checkSettlementWallet } from "./alerts";
 import { handleBroadcastRequest } from "./broadcast";
 import { handlePartyRequest } from "./parties";
 import { fomoCheckAfterSignIn } from "./fomo";
-import { adminProfileLookup, handleProfileRequest } from "./profile";
+import { adminPendingFomoHandles, adminProfileLookup, adminVerifyFomoHandle, handleProfileRequest } from "./profile";
 import { siteInfo } from "./site";
 import { handleStatsRequest } from "./stats";
 import { handleEscrowRequest } from "./vault";
@@ -276,6 +276,13 @@ async function handleAdminRequest(
 
   if (request.method === "GET" && url.pathname === "/v1/admin/profiles") {
     return jsonResponse(await adminProfileLookup(env, url));
+  }
+  if (request.method === "GET" && url.pathname === "/v1/admin/profiles/fomo-handles") {
+    return jsonResponse(await adminPendingFomoHandles(env));
+  }
+  if (request.method === "POST" && url.pathname === "/v1/admin/profiles/fomo-handle") {
+    const by = `admin@${request.headers.get("CF-Connecting-IP") ?? "unknown"}`;
+    return jsonResponse(await adminVerifyFomoHandle(env, await readJsonBody(request), by));
   }
 
   if (request.method === "GET" && url.pathname === "/v1/admin/bans") {

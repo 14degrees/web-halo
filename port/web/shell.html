@@ -1095,7 +1095,6 @@
     }
     #lobby-deploy[hidden] { display: none; }
     #lobby-deploy small { display: block; margin-top: .6rem; font-size: .9rem; letter-spacing: .05em; color: #9fd4ff; text-transform: none; }
-    body[data-lobby="open"] #loading { display: none; }
     /* The wallet: top right of the lobby, and a modal before an unwagered Play. */
     #lobby-wallet { position: absolute; top: clamp(.9rem, 3vh, 1.6rem); right: clamp(.9rem, 3vw, 2rem); z-index: 2; display: grid; justify-items: end; gap: .4rem; max-width: min(22rem, 90vw); }
     #lobby-wallet-out[hidden], #lobby-wallet-in[hidden], #lobby-wallet-menu[hidden], #lobby-wallet-chip[hidden] { display: none; }
@@ -1263,6 +1262,59 @@
     }
     #key-tips dd { margin: 0; color: #c9d3e6; }
     @media (max-width: 700px) { #key-tips { display: none; } }
+    /* ---------- controls (controls.js): the bindings dialog and the tips */
+    .spartan-settings .spartan-controls {
+      align-self: flex-start; margin-top: .4rem; padding: .4rem .9rem; border: 1px solid rgba(128, 148, 180, .5);
+      background: rgba(0, 0, 0, .3); color: #e1e8f2; font: inherit; font-size: 1rem; cursor: pointer;
+    }
+    #controls-dialog {
+      position: fixed; inset: 0; margin: auto; width: min(34rem, calc(100vw - 2rem)); height: fit-content;
+      max-height: calc(100vh - 2rem); min-height: 0; padding: 0; overflow: hidden; border: 1px solid rgba(128, 148, 180, .45);
+      background: linear-gradient(160deg, #0c1a30, #050b16); color: #e1e8f2;
+      font-family: "Conduit ITC", "Arial Narrow", "Avenir Next Condensed", "Segoe UI", sans-serif;
+      box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, .7);
+    }
+    #controls-dialog::before, #controls-dialog::after { display: none; }
+    #controls-dialog::backdrop { background: rgba(0, 4, 12, .72); backdrop-filter: blur(4px); }
+    .controls-card { position: relative; display: flex; flex-direction: column; gap: .5rem; max-height: calc(100vh - 2rem); padding: 1.4rem 1.4rem 1.2rem; }
+    .controls-card h2 { margin: 0; font-weight: 400; font-size: 1.6rem; text-transform: uppercase; color: #fff; }
+    .controls-help { margin: 0; color: #8094b4; font-size: .95rem; }
+    .controls-list { overflow-y: auto; min-height: 0; padding-right: .3rem; }
+    .controls-list h3 { margin: .7rem 0 .25rem; color: #8094b4; font-weight: 400; font-size: .85rem; letter-spacing: .08em; text-transform: uppercase; }
+    .controls-row { display: grid; grid-template-columns: 1fr 7.5rem 7.5rem; gap: .4rem; align-items: center; padding: .12rem 0; }
+    .controls-fixed { grid-template-columns: 1fr 15.4rem; color: #8094b4; }
+    .controls-action { font-size: 1.05rem; }
+    .controls-slot { display: flex; min-width: 0; }
+    .controls-key {
+      flex: 1; min-width: 0; padding: .3rem .4rem; border: 1px solid rgba(128, 148, 180, .5); background: #040a16;
+      color: #fff; font: inherit; font-size: .95rem; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    button.controls-key { cursor: pointer; }
+    .controls-fixed .controls-key { border-style: dashed; color: #8094b4; background: transparent; }
+    .controls-key[data-listening="true"] { border-color: #5fd0ff; color: #5fd0ff; animation: h3-pulse 1.4s infinite; }
+    .controls-clear { width: 1.6rem; padding: 0; border: 1px solid rgba(128, 148, 180, .5); border-left: 0; background: #040a16; color: #8094b4; cursor: pointer; }
+    .controls-note { margin: 0; color: #ffd65a; font-size: .95rem; }
+    .controls-note[hidden] { display: none; }
+    .controls-tips-switch { display: flex; align-items: center; gap: .6rem; color: #c9d3e6; cursor: pointer; }
+    .controls-tips-switch input { width: 1.1rem; height: 1.1rem; margin: 0; accent-color: #5fd0ff; }
+    .controls-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .3rem; }
+    .controls-actions button {
+      padding: .45rem 1rem; border: 1px solid rgba(128, 148, 180, .5); background: rgba(0, 0, 0, .3);
+      color: #e1e8f2; font: inherit; font-size: 1rem; text-transform: uppercase; cursor: pointer;
+    }
+    .controls-actions #controls-done { margin-left: auto; border: 0; background: #54362e; color: #e4e4e4; }
+    #match-tip {
+      position: fixed; z-index: 7; left: 50%; top: 18%; transform: translateX(-50%);
+      display: flex; align-items: center; gap: .7rem; max-width: min(36rem, calc(100vw - 2rem));
+      padding: .5rem .6rem .5rem .9rem; background: rgba(6, 10, 26, .7); border-left: 3px solid #5fd0ff;
+      font-family: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif; color: #e9eef6;
+      font-size: clamp(.95rem, 1.35vw, 1.15rem); transition: opacity .8s ease;
+    }
+    #match-tip[hidden] { display: none; }
+    #match-tip[data-fading] { opacity: 0; }
+    .match-tip-kicker { color: #5fd0ff; font-size: .8em; letter-spacing: .1em; text-transform: uppercase; }
+    #match-tip-close { padding: 0 .3rem; border: 0; background: transparent; color: #8094b4; font-size: .9em; cursor: pointer; }
+    body[data-lobby="open"] #match-tip { display: none; }
     /* ---------- text chat (chat.js): the lobby's panel under the roster,
        and the overlay over the game at the bottom left. A line is its
        speaker's name in their armour colour and the text. */
@@ -2188,8 +2240,117 @@
     #focus[data-state="pending"] { cursor: progress; color: #8bc9ec; }
     #footer-hint { color: #68869b; }
 
+    /* ---------- one look from loading to playing: the landing's (Halo 3's
+       menus) for the loading panel, the landing's boot bar, the lobby's
+       match progress, the map's load and the campaign's download
+       (loading_ux.js draws the .halo-meter ones) */
+    :root {
+      --h3-ink: #eef2f8;
+      --h3-muted: #9fb4d6;
+      --h3-dim: #8094b4;
+      --h3-accent: #ffb069;
+      --h3-surface: rgba(6, 10, 26, .78);
+      --h3-surface-strong: rgba(4, 7, 18, .92);
+      --h3-edge: rgba(128, 148, 180, .45);
+      --h3-track: rgba(128, 148, 180, .2);
+      --h3-fill: linear-gradient(90deg, #a5582a, var(--h3-accent));
+      --h3-font: "Conduit ITC", "Barlow Semi Condensed", "Arial Narrow", sans-serif;
+      --h3-fade: .45s;
+      --h3-ease: cubic-bezier(.2, .7, .2, 1);
+    }
+    @keyframes h3-fade-in { from { opacity: 0; } }
+    @keyframes h3-sweep { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+    /* the loading panel, in the landing's colours and type, with the
+       landing's vignette over the ring */
+    #loading {
+      transition: opacity var(--h3-fade) var(--h3-ease), visibility 0s linear 0s;
+      background:
+        radial-gradient(ellipse at 50% 55%, transparent 30%, rgba(0, 0, 0, .55) 100%),
+        linear-gradient(0deg, rgba(0, 0, 0, .65), transparent 35%),
+        linear-gradient(180deg, rgba(2, 4, 10, .55), rgba(2, 4, 10, .7)),
+        url("assets/ui/shell/halo-ce-ring-menu.jpg") center / cover no-repeat,
+        #02040a;
+      font-family: var(--h3-font);
+    }
+    /* the landing fades in over it; it goes once the landing is in, so the
+       two never both show half-faded */
+    body[data-lobby="open"] #loading {
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0s linear var(--h3-fade), visibility 0s linear var(--h3-fade);
+    }
+    .loading-panel, .halo-meter, #campaign-loading {
+      border: 2px solid var(--h3-edge);
+      background: var(--h3-surface-strong);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .4), 0 .8rem 2.5rem rgba(0, 0, 0, .5);
+      color: var(--h3-ink);
+      font-family: var(--h3-font);
+    }
+    .loading-panel { clip-path: none; }
+    .loading-subtitle { color: var(--h3-muted); letter-spacing: .3em; font-weight: 500; }
+    #loading-label { color: var(--h3-ink); font-size: .9rem; letter-spacing: .02em; }
+    .loading-orbit { border-color: var(--h3-edge); box-shadow: none; }
+    .loading-orbit::before { border-top-color: var(--h3-accent); border-right-color: rgba(255, 176, 105, .45); filter: none; }
+    .loading-orbit::after { background: var(--h3-ink); box-shadow: 0 0 .6rem rgba(255, 176, 105, .6); }
+    #loading progress, .halo-meter-bar, #campaign-loading progress {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: .26rem; margin: 0; border: 0; border-radius: 0;
+      background: var(--h3-track); accent-color: var(--h3-accent);
+    }
+    #loading progress::-webkit-progress-bar, .halo-meter-bar::-webkit-progress-bar,
+    #campaign-loading progress::-webkit-progress-bar { background: var(--h3-track); }
+    #loading progress::-webkit-progress-value, .halo-meter-bar::-webkit-progress-value,
+    #campaign-loading progress::-webkit-progress-value { background: var(--h3-fill); box-shadow: none; transition: width .3s ease; }
+    #loading progress::-moz-progress-bar, .halo-meter-bar::-moz-progress-bar,
+    #campaign-loading progress::-moz-progress-bar { background: var(--h3-fill); }
+    /* a bar with no figure yet: a light running along it */
+    .halo-meter-bar:indeterminate {
+      background: linear-gradient(90deg, transparent, var(--h3-accent), transparent) no-repeat, var(--h3-track);
+      background-size: 40% 100%, 100% 100%;
+      animation: h3-sweep 1.6s linear infinite;
+    }
+    .halo-meter-bar:indeterminate::-webkit-progress-bar { background: transparent; }
+    .halo-meter-bar:indeterminate::-moz-progress-bar { background: transparent; }
+    #campaign-loading-percent { color: var(--h3-muted); }
+    /* the meter (loading_ux.js): its words and figure, the bar, a line under */
+    .halo-meter { display: grid; gap: .4rem; padding: .7rem .9rem .75rem; pointer-events: none; }
+    .halo-meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; min-width: 0; }
+    .halo-meter-label { min-width: 0; overflow: hidden; font-size: 1.05rem; letter-spacing: .02em; text-overflow: ellipsis; white-space: nowrap; }
+    .halo-meter-value { flex: none; color: var(--h3-muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
+    .halo-meter-detail { margin: 0; color: var(--h3-dim); font-size: .9rem; line-height: 1.3; }
+    /* the steps from a found match to playing */
+    .halo-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .3rem; margin: 0 0 .15rem; padding: 0; list-style: none; }
+    .halo-steps li {
+      padding-top: .35rem; border-top: 2px solid var(--h3-track); color: var(--h3-dim);
+      font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .halo-steps li[data-state="done"] { border-top-color: rgba(255, 176, 105, .55); color: var(--h3-muted); }
+    .halo-steps li[data-state="current"] { border-top-color: var(--h3-accent); color: var(--h3-ink); }
+    #lobby-progress { width: 100%; margin-top: .2rem; animation: h3-fade-in var(--h3-fade) var(--h3-ease) backwards; }
+    /* the landing's boot: under Loading Halo, the loading panel's own words */
+    #landing-boot {
+      position: absolute; left: 50%; top: calc(50% + clamp(5.6rem, 13vh, 8rem)); z-index: 1;
+      width: min(22rem, calc(100% - 2rem)); translate: -50% 0;
+    }
+    #landing-boot:not([hidden]) + .landing-status { top: calc(50% + clamp(5.6rem, 13vh, 8rem) + 4.4rem); }
+    /* a map loading in a game, over the game (and its Match found) */
+    #map-loading {
+      position: fixed; left: 50%; bottom: clamp(1rem, 9vh, 4.5rem); z-index: 33;
+      width: min(24rem, calc(100% - 2rem)); translate: -50% 0;
+      animation: h3-fade-in var(--h3-fade) var(--h3-ease) backwards;
+    }
+    /* the landing and the lobby come in rather than cut in */
+    #landing:not([hidden]), #lobby:not([hidden]):not(.fading) { animation: h3-fade-in var(--h3-fade) var(--h3-ease) backwards; }
+
     @media (prefers-reduced-motion: reduce) {
       .loading-orbit::before { animation-duration: 2.5s; }
+      #loading, body[data-lobby="open"] #loading, #lobby, #landing, .landing-film { transition: none; }
+      #landing:not([hidden]), #lobby:not([hidden]):not(.fading), #lobby-progress, #map-loading { animation: none; }
+      .halo-meter-bar:indeterminate { animation: none; background-position: 50% 0, 0 0; }
+      .halo-meter-bar::-webkit-progress-value, #loading progress::-webkit-progress-value { transition: none; }
+      .landing-play, #lobby-players li.slot.searching, #spartan-dialog-done { animation: none; }
+      #lobby-play[data-mode="play"], #lobby-play:hover:not(:disabled), #lobby-play:focus-visible,
+      .lobby-menu-item:hover, .lobby-menu-item:focus-visible, .h3-action:hover, .h3-action:focus-visible { animation: none; }
     }
     @media (max-width: 860px) {
       #game-frame {
@@ -2336,27 +2497,27 @@
              alt="Black original Xbox Duke controller">
       </figure>
       <dl class="duke-bindings">
-        <div class="duke-binding" aria-label="A button - Space">
+        <div class="duke-binding" aria-label="A button - Space" data-controls="jump" data-controls-name="A button">
           <dt>A</dt>
           <dd>- Space</dd>
         </div>
-        <div class="duke-binding" aria-label="B button - F">
+        <div class="duke-binding" aria-label="B button - F" data-controls="melee" data-controls-name="B button">
           <dt>B</dt>
           <dd>- F</dd>
         </div>
-        <div class="duke-binding" aria-label="X button - E or R"><dt>X</dt><dd>- E / R</dd></div>
-        <div class="duke-binding" aria-label="Y button - Q or mouse wheel"><dt>Y</dt><dd>- Q / Wheel</dd></div>
-        <div class="duke-binding" aria-label="White button - T"><dt>White</dt><dd>- T</dd></div>
-        <div class="duke-binding" aria-label="Black button - X"><dt>Black</dt><dd>- X</dd></div>
-        <div class="duke-binding" aria-label="Left trigger - G or right mouse button"><dt>LT</dt><dd>- G / RMB</dd></div>
-        <div class="duke-binding" aria-label="Right trigger - left mouse button"><dt>RT</dt><dd>- LMB</dd></div>
-        <div class="duke-binding" aria-label="Move - W A S D"><dt>Move</dt><dd>- WASD</dd></div>
+        <div class="duke-binding" aria-label="X button - E or R" data-controls="action" data-controls-name="X button"><dt>X</dt><dd>- E / R</dd></div>
+        <div class="duke-binding" aria-label="Y button - Q or mouse wheel" data-controls="switchWeapon" data-controls-name="Y button"><dt>Y</dt><dd>- Q / Wheel</dd></div>
+        <div class="duke-binding" aria-label="White button - T" data-controls="flashlight" data-controls-name="White button"><dt>White</dt><dd>- T</dd></div>
+        <div class="duke-binding" aria-label="Black button - X" data-controls="switchGrenade" data-controls-name="Black button"><dt>Black</dt><dd>- X</dd></div>
+        <div class="duke-binding" aria-label="Left trigger - G or right mouse button" data-controls="grenade" data-controls-name="Left trigger"><dt>LT</dt><dd>- G / RMB</dd></div>
+        <div class="duke-binding" aria-label="Right trigger - left mouse button" data-controls="fire" data-controls-name="Right trigger"><dt>RT</dt><dd>- LMB</dd></div>
+        <div class="duke-binding" aria-label="Move - W A S D" data-controls="moveForward moveLeft moveBack moveRight" data-controls-name="Move"><dt>Move</dt><dd>- WASD</dd></div>
         <div class="duke-binding" aria-label="Aim - mouse"><dt>Aim</dt><dd>- Mouse</dd></div>
-        <div class="duke-binding" aria-label="Left stick click - C"><dt>L3</dt><dd>- C</dd></div>
-        <div class="duke-binding" aria-label="Right stick click - Z or middle mouse button"><dt>R3</dt><dd>- Z / MMB</dd></div>
-        <div class="duke-binding" aria-label="Directional pad - arrow keys"><dt>D-pad</dt><dd>- Arrows</dd></div>
+        <div class="duke-binding" aria-label="Left stick click - C" data-controls="crouch" data-controls-name="Left stick click"><dt>L3</dt><dd>- C</dd></div>
+        <div class="duke-binding" aria-label="Right stick click - Z or middle mouse button" data-controls="zoom" data-controls-name="Right stick click"><dt>R3</dt><dd>- Z / MMB</dd></div>
+        <div class="duke-binding" aria-label="Directional pad - arrow keys" data-controls="dpadUp dpadDown dpadLeft dpadRight" data-controls-name="Directional pad"><dt>D-pad</dt><dd>- Arrows</dd></div>
         <div class="duke-binding" aria-label="Start - Escape"><dt>Start</dt><dd>- Esc</dd></div>
-        <div class="duke-binding" aria-label="Back - Tab or F1"><dt>Back</dt><dd>- Tab / F1</dd></div>
+        <div class="duke-binding" aria-label="Back - Tab or F1" data-controls="scores F1" data-controls-name="Back"><dt>Back</dt><dd>- Tab / F1</dd></div>
       </dl>
     </aside>
     <aside id="player-sidebar" aria-label="Online multiplayer" data-online-active="false">
@@ -2455,6 +2616,7 @@
     <button id="landing-play" class="landing-play" type="button">
       <span id="landing-play-text">Click to play</span>
     </button>
+    <div id="landing-boot" class="halo-meter" role="status" aria-live="polite" hidden></div>
     <p id="landing-status" class="landing-status" role="status" aria-live="polite"></p>
     <div class="landing-bar">
       <div class="landing-now">
@@ -2507,6 +2669,7 @@
       <div class="lobby-state">
         <p id="lobby-countdown" aria-live="off" hidden><span>Match starts in</span><strong id="lobby-countdown-seconds">10</strong></p>
         <p id="lobby-status" role="status" aria-live="polite">Loading Halo…</p>
+        <div id="lobby-progress" class="halo-meter" role="status" aria-live="polite" hidden></div>
         <div id="lobby-live" hidden>
           <p class="lobby-live-title">Live for SOL</p>
           <ul id="lobby-live-list"></ul>
@@ -2722,12 +2885,29 @@
         <label for="lobby-mouse-sensitivity">Mouse sensitivity <small id="lobby-mouse-sensitivity-value">1.00×</small></label>
         <input id="lobby-mouse-sensitivity" type="range" min="0.1" max="4" step="0.05" value="1" aria-describedby="lobby-mouse-sensitivity-value">
         <label class="spartan-switch" for="lobby-invert-y"><input id="lobby-invert-y" type="checkbox"> Invert mouse Y <small>forward looks down</small></label>
+        <button id="spartan-controls" class="spartan-controls" type="button">Controls &amp; key bindings</button>
         <section id="spartan-stats" class="spartan-stats" aria-label="Your record">
           <h3>Your record <span id="spartan-stats-identity"></span></h3>
           <dl id="spartan-stats-grid" class="stats-grid"></dl>
           <p id="spartan-stats-status" class="stats-note" role="status" aria-live="polite"></p>
         </section>
         <button id="spartan-dialog-done" type="button">Done</button>
+      </div>
+    </div>
+  </dialog>
+  <!-- the key bindings (controls.js), from the Spartan dialog -->
+  <dialog id="controls-dialog" aria-labelledby="controls-dialog-title">
+    <div class="controls-card">
+      <button id="controls-close" class="spartan-close" type="button" aria-label="Close">✕</button>
+      <h2 id="controls-dialog-title">Controls</h2>
+      <p class="controls-help">Click a key to change it, then press a key, click a mouse button or turn the wheel. Esc cancels. Kept in this browser.</p>
+      <div id="controls-list" class="controls-list"></div>
+      <p id="controls-note" class="controls-note" role="status" aria-live="polite" hidden></p>
+      <label class="spartan-switch controls-tips-switch" for="controls-tips"><input id="controls-tips" type="checkbox" checked> Show tips in matches</label>
+      <div class="controls-actions">
+        <button id="controls-reset" type="button">Reset to defaults</button>
+        <button id="controls-tips-again" type="button">Show tips again</button>
+        <button id="controls-done" type="button">Done</button>
       </div>
     </div>
   </dialog>
@@ -2761,21 +2941,27 @@
   </div>
   <aside id="key-tips" aria-label="Controls" hidden>
     <dl>
-      <div><dt>WASD</dt><dd>Move</dd></div>
-      <div><dt>Click</dt><dd>Fire</dd></div>
-      <div><dt>Right click</dt><dd>Throw grenade</dd></div>
-      <div><dt>Space</dt><dd>Jump</dd></div>
-      <div><dt>F</dt><dd>Melee</dd></div>
-      <div><dt>E</dt><dd>Reload · hold to pick up</dd></div>
-      <div><dt>Q</dt><dd>Switch weapon</dd></div>
-      <div><dt>X</dt><dd>Switch grenades</dd></div>
-      <div><dt>C</dt><dd>Crouch</dd></div>
-      <div><dt>Z</dt><dd>Zoom</dd></div>
-      <div><dt>T</dt><dd>Flashlight</dd></div>
-      <div><dt>Tab</dt><dd>Scores</dd></div>
+      <div data-controls="moveForward moveLeft moveBack moveRight"><dt>WASD</dt><dd>Move</dd></div>
+      <div data-controls="fire"><dt>Click</dt><dd>Fire</dd></div>
+      <div data-controls="grenade" data-controls-prefer="mouse"><dt>Right click</dt><dd>Throw grenade</dd></div>
+      <div data-controls="jump"><dt>Space</dt><dd>Jump</dd></div>
+      <div data-controls="melee"><dt>F</dt><dd>Melee</dd></div>
+      <div data-controls="action"><dt>E</dt><dd>Reload · hold to pick up</dd></div>
+      <div data-controls="switchWeapon"><dt>Q</dt><dd>Switch weapon</dd></div>
+      <div data-controls="switchGrenade"><dt>X</dt><dd>Switch grenades</dd></div>
+      <div data-controls="crouch"><dt>C</dt><dd>Crouch</dd></div>
+      <div data-controls="zoom"><dt>Z</dt><dd>Zoom</dd></div>
+      <div data-controls="flashlight"><dt>T</dt><dd>Flashlight</dd></div>
+      <div data-controls="scores"><dt>Tab</dt><dd>Scores</dd></div>
       <div><dt>Y</dt><dd>Chat</dd></div>
       <div><dt>Esc</dt><dd>Menu</dd></div>
     </dl>
+  </aside>
+  <!-- a tip over the game in a player's first matches (controls.js) -->
+  <aside id="match-tip" aria-label="Tip" aria-live="polite" hidden>
+    <span class="match-tip-kicker">Tip</span>
+    <span id="match-tip-text"></span>
+    <button id="match-tip-close" type="button" aria-label="Dismiss tip">✕</button>
   </aside>
   <!-- text chat over the game: the last lines, and the composer Y opens (chat.js) -->
   <section id="chat-overlay" aria-label="Chat" data-composing="false" hidden>
@@ -2789,6 +2975,7 @@
     <div id="scoreboard-rows"></div>
   </section>
   <div id="hud-balance" hidden>◎ <span id="hud-balance-amount">0.000</span> SOL <small id="hud-balance-note"></small></div>
+  <div id="map-loading" class="halo-meter" role="status" aria-live="polite" hidden></div>
   <div id="lobby-deploy" role="button" tabindex="0" hidden>Match found<small>Click to play · Esc to release the mouse</small></div>
   <button id="lobby-leave-game" type="button" hidden>Leave game</button>
   <dialog id="about-dialog" aria-labelledby="about-title">
@@ -4368,6 +4555,9 @@
         applyMute();
         if (window.HaloOnline) {
           window.HaloOnline.runtimeReady();
+        }
+        if (window.HaloControls) {
+          window.HaloControls.runtimeReady();
         }
         updatePerformance();
         window.setInterval(updatePerformance, 1000);

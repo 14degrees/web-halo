@@ -336,10 +336,12 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         f"--pre-js {WEB_DIR}/fetch_path_normalization.js",
         # before the client, which looks for HaloStats when the lobby opens
         f"--pre-js {WEB_DIR}/stats_panel.js",
+        f"--pre-js {WEB_DIR}/loading_ux.js",
         f"--pre-js {WEB_DIR}/stakes.js",
         f"--pre-js {WEB_DIR}/post_match.js",
         f"--pre-js {WEB_DIR}/online_client.js",
         f"--pre-js {WEB_DIR}/chat.js",
+        f"--pre-js {WEB_DIR}/controls.js",
     ]
     n.build(
         outputs=output,
@@ -351,10 +353,12 @@ def generate_web_build(n: Writer, sln: Any) -> None:
             WEB_SDL_PORT,
             WEB_DIR / "fetch_path_normalization.js",
             WEB_DIR / "stats_panel.js",
+            WEB_DIR / "loading_ux.js",
             WEB_DIR / "stakes.js",
             WEB_DIR / "post_match.js",
             WEB_DIR / "online_client.js",
             WEB_DIR / "chat.js",
+            WEB_DIR / "controls.js",
             WEB_DIR / "library_web_transport.js",
         ],
         variables={

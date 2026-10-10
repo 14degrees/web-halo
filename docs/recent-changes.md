@@ -45,6 +45,15 @@ Newest ideas first within each part. Commit hashes are on
 
 ## fomo.family and X
 
+- **Claim your fomo handle.** A player can put their fomo.family handle
+  on their profile (`PUT /v1/profile/fomo/handle`); fomo's public profile
+  card says whether the handle exists. The claim stays private until it is
+  verified, and that takes two things: a proven fomo wallet (detected, or a
+  small USDC transfer from fomo to the player's own wallet, which fomo pays
+  the fee for) and an admin confirming the handle belongs to that wallet.
+  A verified handle is unique. *Why:* nothing public ties a fomo handle to
+  a wallet, so anything less would let a player wear someone else's name.
+  (`services/signaling/src/fomo_handle.ts`)
 - **A fomo wallet is recognised on its own.** fomo pays the network fee
   for every trade its users make, from one mainnet wallet. After a wallet
   signs in, the signaling Worker looks through its newest mainnet
