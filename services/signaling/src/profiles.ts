@@ -20,9 +20,15 @@ import { randomToken } from "./crypto";
 
    fomo: the Worker checks each wallet against mainnet (src/fomo.ts) and
    records the answer here, per wallet, in `fomo_checks`; a profile with a
-   detected wallet is verified with method "fee_payer". The X columns are
-   filled by later work (the X tweet proof); this object only stores and
-   shows them. Every link is private until its owner turns on showing it.
+   detected wallet is verified with method "fee_payer".
+
+   X: a profile proves an X account with a tweet carrying a one-time code
+   (src/x.ts). The code lives here, in `x_challenges`, one per profile; the
+   proof consumes it. An X handle belongs to at most one profile: a fresh
+   proof from the same X account moves it. Attempts are counted in the
+   event log, which is also what rate-limits them.
+
+   Every link is private until its owner turns on showing it.
    Other players see a profile's links only when they are both shown and
    verified. */
 
@@ -50,6 +56,15 @@ const EVENTS_SHOWN = 50;
 /* a wallet not seen on fomo is looked at again after this long; a wallet
    once detected stays detected */
 export const FOMO_RECHECK_MS = DAY_MS;
+/* how long an X code stays good */
+export const X_CHALLENGE_TTL_MS = 15 * 60_000;
+/* codes a profile may ask for in an hour */
+export const X_CHALLENGES_PER_HOUR = 10;
+/* tweet checks a profile may ask for per window, and all profiles together
+   per minute, so the Worker never leans on X's embed endpoint */
+export const X_VERIFY_ATTEMPTS = 5;
+export const X_VERIFY_WINDOW_MS = 10 * 60_000;
+export const X_VERIFY_GLOBAL_PER_MINUTE = 120;
 
 export type UsernameProblem = "USERNAME_INVALID" | "USERNAME_RESERVED";
 
@@ -113,7 +128,7 @@ export interface ProfileView {
   updatedAt: number;
   wallets: Array<{ wallet: string; linkedAt: number }>;
   fomo: { handle: string | null; wallet: string | null; verified: boolean; verifiedAt: number | null; method: FomoMethod | null } | null;
-  x: { handle: string | null; verified: boolean; verifiedAt: number | null } | null;
+  x: { handle: string | null; verified: boolean; verifiedAt: number | null; proofUrl: string | null } | null;
   /* the chain check's answer for each linked wallet it has looked at */
   fomoChecks: FomoCheckView[];
   show: ProfileVisibility;
@@ -140,6 +155,18 @@ export type ProfileError =
   | "PROFILE_LAST_WALLET";
 
 export type ProfileResult = { profile: ProfileView } | { error: ProfileError };
+
+export type XChallengeResult =
+  | { profileId: string; code: string; expiresAt: number }
+  | { error: "PROFILE_NOT_FOUND" | "X_CHALLENGE_RATE_LIMITED" };
+
+export type XAttemptResult =
+  | { profileId: string; code: string }
+  | { error: "PROFILE_NOT_FOUND" | "X_CHALLENGE_EXPIRED" | "X_VERIFY_RATE_LIMITED" | "X_VERIFY_BUSY" };
+
+export type XLinkResult =
+  | { profile: ProfileView; movedFrom: string | null }
+  | { error: "PROFILE_NOT_FOUND" | "X_CHALLENGE_EXPIRED" };
 
 interface ProfileRow extends Record<string, SqlStorageValue> {
   id: string;
@@ -171,6 +198,14 @@ interface FomoCheckRow extends Record<string, SqlStorageValue> {
   detected: number;
   signature: string | null;
   scanned: number;
+}
+
+interface XChallengeRow extends Record<string, SqlStorageValue> {
+  profile_id: string;
+  code: string;
+  wallet: string;
+  created_at: number;
+  expires_at: number;
 }
 
 interface UsernameRow extends Record<string, SqlStorageValue> {
@@ -264,6 +299,14 @@ export class Profiles extends DurableObject<Env> {
         signature TEXT,
         scanned INTEGER NOT NULL DEFAULT 0
       );
+      /* the X code each profile is waiting to see in a tweet (src/x.ts) */
+      CREATE TABLE IF NOT EXISTS x_challenges (
+        profile_id TEXT PRIMARY KEY,
+        code TEXT NOT NULL,
+        wallet TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS usernames_profile ON usernames(profile_id);
       CREATE INDEX IF NOT EXISTS username_history_key ON username_history(username_key, at);
       CREATE INDEX IF NOT EXISTS username_history_to ON username_history(to_profile_id, at);
@@ -272,6 +315,9 @@ export class Profiles extends DurableObject<Env> {
       CREATE INDEX IF NOT EXISTS events_wallet ON events(wallet, id);
       CREATE INDEX IF NOT EXISTS profiles_fomo_wallet ON profiles(fomo_wallet);
       CREATE INDEX IF NOT EXISTS profiles_x_handle ON profiles(x_handle);
+      /* X handles compare without case, and one belongs to one profile */
+      CREATE UNIQUE INDEX IF NOT EXISTS profiles_x_handle_key ON profiles(lower(x_handle)) WHERE x_handle IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS events_kind ON events(kind, at);
     `);
   }
 
@@ -338,6 +384,7 @@ export class Profiles extends DurableObject<Env> {
         handle: row.x_handle,
         verified: row.x_verified_at !== null,
         verifiedAt: row.x_verified_at,
+        proofUrl: row.x_proof_url,
       },
       fomoChecks: this.fomoCheckRows(this.walletsOf(row.id).map(({ wallet }) => wallet)).map((check) => this.fomoCheckView(check)),
       show: { wallets: row.show_wallets === 1, fomo: row.show_fomo === 1, x: row.show_x === 1 },
@@ -552,6 +599,118 @@ export class Profiles extends DurableObject<Env> {
       next.wallet, now, now, profileId,
     );
     this.log(now, "fomo_verified", profileId, by, { wallet: next.wallet, method: "fee_payer", signature: next.signature });
+  }
+
+  /* ---------- X (src/x.ts) */
+
+  private eventsSince(kind: string, profileId: string | null, since: number): number {
+    const query = profileId === null ?
+      this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at > ?", kind, since) :
+      this.ctx.storage.sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM events WHERE profile_id = ? AND kind = ? AND at > ?", profileId, kind, since,
+      );
+    return Number(query.toArray()[0]?.n ?? 0);
+  }
+
+  private xChallengeRow(profileId: string): XChallengeRow | null {
+    return this.ctx.storage.sql
+      .exec<XChallengeRow>("SELECT * FROM x_challenges WHERE profile_id = ?", profileId).toArray()[0] ?? null;
+  }
+
+  /* Give the caller's profile a new X code; it replaces any earlier one. */
+  startXChallenge(wallet: string, code: string, now: number): XChallengeResult {
+    return this.ctx.storage.transactionSync(() => {
+      const id = this.profileIdForWallet(wallet);
+      if (id === null) return { error: "PROFILE_NOT_FOUND" };
+      if (this.eventsSince("x_challenge", id, now - 60 * 60_000) >= X_CHALLENGES_PER_HOUR) {
+        return { error: "X_CHALLENGE_RATE_LIMITED" };
+      }
+      const expiresAt = now + X_CHALLENGE_TTL_MS;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO x_challenges (profile_id, code, wallet, created_at, expires_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(profile_id) DO UPDATE SET code = excluded.code, wallet = excluded.wallet,
+           created_at = excluded.created_at, expires_at = excluded.expires_at`,
+        id, code, wallet, now, expiresAt,
+      );
+      this.log(now, "x_challenge", id, wallet);
+      return { profileId: id, code, expiresAt };
+    });
+  }
+
+  /* Count a tweet check against the limits and hand back the code it must
+     find. The code stays until a proof uses it or it expires. */
+  beginXVerify(wallet: string, tweetUrl: string, now: number): XAttemptResult {
+    return this.ctx.storage.transactionSync(() => {
+      const id = this.profileIdForWallet(wallet);
+      if (id === null) return { error: "PROFILE_NOT_FOUND" };
+      const challenge = this.xChallengeRow(id);
+      if (challenge === null || challenge.expires_at <= now) return { error: "X_CHALLENGE_EXPIRED" };
+      if (this.eventsSince("x_attempt", id, now - X_VERIFY_WINDOW_MS) >= X_VERIFY_ATTEMPTS) {
+        return { error: "X_VERIFY_RATE_LIMITED" };
+      }
+      if (this.eventsSince("x_attempt", null, now - 60_000) >= X_VERIFY_GLOBAL_PER_MINUTE) {
+        return { error: "X_VERIFY_BUSY" };
+      }
+      this.log(now, "x_attempt", id, wallet, { url: tweetUrl });
+      return { profileId: id, code: challenge.code };
+    });
+  }
+
+  /* Note why a tweet check failed, for support. */
+  recordXFailure(wallet: string, profileId: string, reason: string, now: number): void {
+    this.log(now, "x_failed", profileId, wallet, { reason });
+  }
+
+  /* The tweet checked out: use up the code and give the profile the handle,
+     taking it from any profile that had it. Fails when the code was used or
+     replaced meanwhile, or the caller's profile changed. */
+  linkX(wallet: string, input: { profileId: string; code: string; handle: string; proofUrl: string }, now: number): XLinkResult {
+    return this.ctx.storage.transactionSync(() => {
+      const id = this.profileIdForWallet(wallet);
+      if (id === null) return { error: "PROFILE_NOT_FOUND" };
+      const challenge = this.xChallengeRow(id);
+      if (id !== input.profileId || challenge === null || challenge.code !== input.code || challenge.expires_at <= now) {
+        return { error: "X_CHALLENGE_EXPIRED" };
+      }
+      this.ctx.storage.sql.exec("DELETE FROM x_challenges WHERE profile_id = ?", id);
+      const holder = this.ctx.storage.sql.exec<ProfileRow>(
+        "SELECT * FROM profiles WHERE lower(x_handle) = lower(?) AND id != ?", input.handle, id,
+      ).toArray()[0] ?? null;
+      if (holder !== null) {
+        this.ctx.storage.sql.exec(
+          "UPDATE profiles SET x_handle = NULL, x_verified_at = NULL, x_proof_url = NULL, updated_at = ? WHERE id = ?",
+          now, holder.id,
+        );
+        this.log(now, "x_moved", holder.id, null, { handle: holder.x_handle, to: id });
+      }
+      const before = this.profileRow(id)!;
+      this.ctx.storage.sql.exec(
+        "UPDATE profiles SET x_handle = ?, x_verified_at = ?, x_proof_url = ?, updated_at = ? WHERE id = ?",
+        input.handle, now, input.proofUrl, now, id,
+      );
+      this.log(now, "x_verified", id, wallet, {
+        handle: input.handle, proofUrl: input.proofUrl, previous: before.x_handle, from: holder?.id ?? null,
+      });
+      return { profile: this.view(this.profileRow(id)!, now), movedFrom: holder?.id ?? null };
+    });
+  }
+
+  /* Drop the caller's X link, and any code it was waiting on. */
+  unlinkX(wallet: string, now: number): ProfileResult {
+    return this.ctx.storage.transactionSync(() => {
+      const id = this.profileIdForWallet(wallet);
+      if (id === null) return { error: "PROFILE_NOT_FOUND" };
+      const row = this.profileRow(id)!;
+      this.ctx.storage.sql.exec("DELETE FROM x_challenges WHERE profile_id = ?", id);
+      if (row.x_handle !== null) {
+        this.ctx.storage.sql.exec(
+          "UPDATE profiles SET x_handle = NULL, x_verified_at = NULL, x_proof_url = NULL, updated_at = ? WHERE id = ?",
+          now, id,
+        );
+        this.log(now, "x_unlinked", id, wallet, { handle: row.x_handle });
+      }
+      return { profile: this.view(this.profileRow(id)!, now) };
+    });
   }
 
   /* ---------- visibility */

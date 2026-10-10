@@ -9,6 +9,7 @@ import {
   type ProfileVisibility,
 } from "./profiles";
 import { handleFomoRequest } from "./fomo";
+import { handleXRequest } from "./x";
 import { base58Decode, parseWallet, verifyWalletSignature } from "./solana";
 import { requireWallet } from "./wallet";
 
@@ -26,6 +27,9 @@ import { requireWallet } from "./wallet";
      DELETE /v1/profile/wallets/:wallet     unlink it (the last one stays)
      POST   /v1/profile/fomo/check          look for the wallets on fomo now
                                             (src/fomo.ts)
+     POST   /v1/profile/x/challenge         link X with a tweet (src/x.ts)
+     POST   /v1/profile/x/verify
+     DELETE /v1/profile/x
      GET    /v1/profiles/:username          another player's view (no auth)
      GET    /v1/profiles?wallets=a,b,c      the same for a roster's wallets
                                             (no auth, at most 16)
@@ -235,6 +239,9 @@ export async function handleProfileRequest(
 
   const fomoResponse = await handleFomoRequest(request, env, path, now);
   if (fomoResponse !== null) return fomoResponse;
+
+  const xResponse = await handleXRequest(request, env, path, now, readBody);
+  if (xResponse !== null) return xResponse;
 
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
 }
