@@ -183,6 +183,9 @@ export interface TicketView {
   };
   /* this ticket's pick for the next game, if made */
   vote: GameVote | null;
+  /* queued with enough players for a match, but no server is free: the
+     autoscaler is starting one (the page shows it, with an estimate) */
+  serverStarting?: true;
 }
 
 export interface EnqueueInput {
@@ -562,6 +565,14 @@ export class Matchmaker extends DurableObject<Env> {
       vote: ticket.vote_map !== null && ticket.vote_mode !== null ?
         { mapIndex: ticket.vote_map, modeIndex: ticket.vote_mode } : null,
     };
+    const rules = PLAYLISTS[ticket.playlist as Playlist] as (typeof PLAYLISTS)[Playlist] | undefined;
+    if (ticket.state === "queued" && rules && queued >= rules.minimum) {
+      const idle = this.ctx.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM servers WHERE build_id = ? AND state = 'idle' AND seen_at > ?",
+        ticket.build_id, now - SERVER_TIMEOUT_MS,
+      ).one().count;
+      if (idle === 0) view.serverStarting = true;
+    }
     const match = ticket.match_id ? this.match(ticket.match_id) : null;
     if (match) {
       const wager = playlistWager(match.playlist as Playlist);
