@@ -876,6 +876,8 @@
       peerId: value.peerId, role: value.role, profile: profile,
       matches: typeof value.matches === "number" && value.matches >= 0 ? value.matches : null,
       spectator: value.spectator === true,
+      /* the wallet's claimed username, which the room looked up */
+      username: typeof value.username === "string" && /^[A-Za-z0-9_]{3,11}$/.test(value.username) ? value.username : null,
     };
   }
 
@@ -1198,6 +1200,9 @@
       var requestError = new Error(message || "The private-room service rejected the request.");
       requestError.haloCode = result && result.error && result.error.code;
       requestError.haloStatus = response.status;
+      /* the Worker's own words, which the page's defaults above may replace */
+      requestError.haloServerMessage = result && result.error && typeof result.error.message === "string" ?
+        result.error.message : null;
       throw requestError;
     }
     return result;
@@ -3167,7 +3172,7 @@
       setText("landing-now-detail", "");
     }
     var profile = currentProfile();
-    setText("landing-name", profile.name);
+    setText("landing-name", ownUsername() || profile.name);
     var art = lobbyElement("landing-spartan-art");
     if (art && art.dataset.style !== profile.style) {
       art.dataset.style = profile.style;
@@ -4040,8 +4045,8 @@
     }
     var signature = players.map(function(player) {
       return player.peerId + (player.leader ? "*" : "") + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
-        player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches);
-    }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "");
+        player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches) + "/" + (player.username || "");
+    }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "") + "#" + (ownUsername() || "");
     if (list.dataset.signature === signature) {
       updateRowPings("lobby");
       return;
@@ -4072,7 +4077,10 @@
         textHash(profile.name) % EMBLEM_COUNT));
       var name = document.createElement("span");
       name.className = "name";
-      name.textContent = profile.name;
+      /* a claimed username where there is one, the in-game name beside it */
+      var username = player.username || (self ? ownUsername() : null);
+      name.textContent = username || profile.name;
+      if (username && username !== profile.name) name.title = username + " (playing as " + profile.name + ")";
       var role = document.createElement("span");
       role.className = "role";
       role.textContent = player.peerId === session.selfPeerId ? "You" : (player.role === "host" ? "Host" : "");
@@ -4822,6 +4830,10 @@
       image.dataset.style = profile.style;
     }
     lobbyElement("spartan-showcase-name").textContent = name || " ";
+    var username = ownUsername();
+    var usernameNote = lobbyElement("spartan-profile-username");
+    var usernameText = username ? "@" + username : wallet.token ? "claim a username" : "";
+    if (usernameNote && usernameNote.textContent !== usernameText) usernameNote.textContent = usernameText;
     var holder = lobbyElement("spartan-showcase-emblem");
     var emblem = validEmblem(profile.emblem) ? profile.emblem : chosenEmblem();
     if (holder.dataset.emblem !== String(emblem)) {
@@ -5039,6 +5051,7 @@
         saveWallet();
       }
     }
+    if (wallet.token && global.HaloProfile) global.HaloProfile.refresh();
   }
 
   async function signInWithWallet() {
@@ -5072,6 +5085,7 @@
       saveWallet();
       await refreshWallet();
       setWalletStatus("Signed in as " + wallet.name + ".");
+      if (global.HaloProfile) global.HaloProfile.refresh();
     } catch (error) {
       setWalletStatus((error && error.message) || "Wallet sign-in failed.", "error");
     } finally {
@@ -5088,6 +5102,38 @@
     wallet.playSession = null;
     saveWallet();
     setWalletStatus("Signed out.");
+    if (global.HaloProfile) global.HaloProfile.reset();
+  }
+
+  /* ---------- the profile (profile_panel.js) */
+
+  /* the signed-in wallet's claimed username, or null */
+  function ownUsername() {
+    return wallet.token && global.HaloProfile ? global.HaloProfile.username() : null;
+  }
+
+  /* Another wallet to link to the profile: whichever account the wallet app
+     shares now that isn't linked yet (the player switches to it first). */
+  async function pickLinkWallet(linked) {
+    var provider = wallet.provider || preferredWallet();
+    if (!provider) throw new Error("No Solana wallet found. Install Phantom (or another Solana wallet), then reload.");
+    var result = await provider.features["standard:connect"].connect();
+    var accounts = (result && result.accounts) || provider.accounts || [];
+    var account = accounts.find(function(candidate) { return linked.indexOf(candidate.address) < 0; });
+    if (!account) {
+      throw new Error("Your wallet app is on a wallet that's already linked. Switch it to the wallet you want to add, then press Link again.");
+    }
+    wallet.provider = provider;
+    return { address: account.address, account: account };
+  }
+
+  async function signLinkMessage(account, text) {
+    var signed = await wallet.provider.features["solana:signMessage"].signMessage({
+      account: account,
+      message: new TextEncoder().encode(text),
+    });
+    var output = Array.isArray(signed) ? signed[0] : signed;
+    return base58(output.signature);
   }
 
   /* ---------- the vault (services/escrow; services/signaling/src/vault.ts)
@@ -5255,8 +5301,8 @@
       var element = lobbyElement(id);
       if (element && element.textContent !== text) element.textContent = text;
     };
-    setText("lobby-wallet-name", wallet.name || "");
-    setText("lobby-wallet-chip-name", wallet.name || "");
+    setText("lobby-wallet-name", ownUsername() || wallet.name || "");
+    setText("lobby-wallet-chip-name", ownUsername() || wallet.name || "");
     setText("lobby-wallet-chip-balance", wallet.vault ? formatSol(wallet.vault.free) : "0.000");
     var vault = wallet.vault;
     setText("lobby-wallet-balance", (vault ? formatSol(vault.free) : "0.000") + " SOL");
@@ -6377,10 +6423,36 @@
         fetchJson: fetchJson,
         playerKey: playerKey,
         walletAddress: function() { return wallet.address; },
+        username: ownUsername,
       });
       var leaderboardButton = lobbyElement("lobby-leaderboard");
       if (leaderboardButton) {
         leaderboardButton.addEventListener("click", function() { global.HaloStats.openLeaderboard(); });
+      }
+    }
+    /* the profile and linked accounts (profile_panel.js), from the Spartan
+       dialog and the wallet panel */
+    if (global.HaloProfile) {
+      global.HaloProfile.init({
+        fetchJson: fetchJson,
+        walletToken: function() { return WALLET_ENABLED ? wallet.token : null; },
+        walletAddress: function() { return wallet.address; },
+        signIn: signInWithWallet,
+        pickWallet: pickLinkWallet,
+        signMessage: signLinkMessage,
+        onUsernameChange: function() {
+          renderSpartanShowcase();
+          renderWallet(false);
+          if (global.HaloStats) global.HaloStats.refreshPlayerStats();
+        },
+      });
+      var profileButton = lobbyElement("lobby-wallet-profile");
+      if (profileButton) {
+        profileButton.addEventListener("click", function() {
+          lobby.walletOpen = false;
+          renderWallet(false);
+          global.HaloProfile.open();
+        });
       }
     }
     var prompt = lobbyElement("lobby-deploy");

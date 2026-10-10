@@ -62,12 +62,18 @@
     return (typeof player.kd === "number" ? player.kd : player.kills / Math.max(player.deaths, 1)).toFixed(2);
   }
 
-  function identityBadge(identity) {
+  function identityBadge(identity, username) {
     var badge = make("span", "stats-identity", IDENTITY_LABELS[identity] || identity);
     badge.dataset.identity = identity;
     badge.title = identity === "guest" ? "A browser that never signed in" :
-      identity === "wallet" ? "A signed-in wallet" : "A claimed username";
+      identity === "wallet" ? "A signed-in wallet" : "A claimed username" + (username ? ": " + username : "");
     return badge;
+  }
+
+  /* the signed-in player's claimed username (profile_panel.js), or null */
+  function ownUsername() {
+    var name = context && typeof context.username === "function" ? context.username() : null;
+    return typeof name === "string" && name ? name : null;
   }
 
   function failureText(error, nothing) {
@@ -178,8 +184,12 @@
     var grid = byId("spartan-stats-grid");
     var note = byId("spartan-stats-status");
     var player = me.player;
+    /* a claimed username is the record's identity from now on, even before
+       its first match folds the older wallet or guest record into it */
+    var username = ownUsername();
+    var shownIdentity = username ? "username" : player ? player.identity : null;
     if (identity) {
-      identity.replaceChildren.apply(identity, player ? [identityBadge(player.identity)] : []);
+      identity.replaceChildren.apply(identity, shownIdentity ? [identityBadge(shownIdentity, username)] : []);
     }
     if (grid) {
       var cells = player ? [
@@ -201,7 +211,10 @@
     if (me.loading) setText(note, "Loading your record…");
     else if (me.missing) setText(note, "No matchmade games on record yet. Only dedicated-server matches count; custom games don't.");
     else if (me.error) setText(note, me.error);
-    else if (player) setText(note, "Verified from dedicated-server matches. " + (IDENTITY_NOTES[player.identity] || ""));
+    else if (player) {
+      var folding = username && player.identity !== "username" ? " It folds into " + username + "'s record with your next matchmade game." : "";
+      setText(note, "Verified from dedicated-server matches. " + (IDENTITY_NOTES[shownIdentity] || "") + folding);
+    }
   }
 
   /* who to ask after: the signed-in wallet, else this browser's key */

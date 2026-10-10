@@ -175,7 +175,8 @@ The game can play system link games on a local network and on the internet:
   take players mid-match; `services/game-server`, open mode). It also has
   matchmaking on dedicated servers, including
   playlists played for SOL on Solana devnet
-  ([docs/wagers.md](docs/wagers.md)), and parties: friends join by a code
+  ([docs/wagers.md](docs/wagers.md)), usernames with linked wallets, fomo
+  and X ([docs/profiles.md](docs/profiles.md)), and parties: friends join by a code
   or link, then search together or play a custom game on a server of their
   own (`services/signaling/src/party.ts`).
 - The default netcode is new. Each machine moves its own player at once,
