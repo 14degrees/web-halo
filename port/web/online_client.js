@@ -2646,7 +2646,9 @@
       else lobby.wantsPlay = false;
       return;
     }
-    var queue = { id: null, state: "joining", queued: 0, playlist: selectedPlaylist().id, polledAt: 0 };
+    var wager = selectedWager(selectedPlaylist());
+    var queue = { id: null, state: "joining", queued: 0, playlist: selectedPlaylist().id, polledAt: 0,
+      stake: wager ? wager.stake : null };
     lobby.queue = queue;
     try {
       var request = {
@@ -2656,6 +2658,8 @@
         playlist: queue.playlist,
         playerKey: playerKey(),
       };
+      /* a playlist for SOL: the tier picked; only players at it match */
+      if (wager) request.stake = wager.stake;
       if (WALLET_ENABLED && wallet.token) request.walletToken = wallet.token;
       /* the last match's vote: the matchmaker plays the plurality's game */
       if (lobby.nextVote) request.vote = lobby.nextVote;
@@ -2763,6 +2767,180 @@
     return playlistById(lobby.playlist) || playlistById(DEFAULT_PLAYLIST) || playlists()[0];
   }
 
+  /* ---------- stakes (stakes.js): a playlist for SOL's tier, and a party's
+     custom game for SOL */
+
+  var STAKES_STORAGE_KEY = "halo-stakes";
+
+  /* what the stakes can be set to (GET /v1/playlists' stakes) */
+  function stakeOptions() {
+    return lobby.stakeOptions || { tiers: [10000000, 50000000, 100000000], killTarget: { minimum: 5, maximum: 100 }, feeBps: 500 };
+  }
+
+  function playlistTiers(playlist) {
+    if (!playlist || !playlist.wager) return [];
+    return playlist.tiers && playlist.tiers.length ? playlist.tiers : [playlist.wager];
+  }
+
+  function storedStakes() {
+    if (!lobby.stakes) {
+      try { lobby.stakes = JSON.parse(global.localStorage.getItem(STAKES_STORAGE_KEY) || "{}") || {}; } catch (error) { lobby.stakes = {}; }
+    }
+    return lobby.stakes;
+  }
+
+  /* A playlist's terms at the stake it is searched at: in a party, the
+     leader's pick; alone, the player's own; else the playlist's default.
+     Null for a free playlist. */
+  function selectedWager(playlist) {
+    if (!playlist || !playlist.wager) return null;
+    var view = partyView();
+    var wanted = view ? view.stake : storedStakes()[playlist.id];
+    var tiers = playlistTiers(playlist);
+    for (var index = 0; index < tiers.length; index++) if (tiers[index].stake === wanted) return tiers[index];
+    return playlist.wager;
+  }
+
+  function chooseStake(playlist, stake) {
+    var tiers = playlistTiers(playlist);
+    if (!tiers.some(function(tier) { return tier.stake === stake; })) return;
+    if (partyView()) {
+      if (!partyLeader()) return;
+      configureParty({ stake: stake });
+    }
+    storedStakes()[playlist.id] = stake;
+    try { global.localStorage.setItem(STAKES_STORAGE_KEY, JSON.stringify(storedStakes())); } catch (error) { /* this load only */ }
+    /* searching already at another stake: search at this one instead */
+    if (lobby.queue && !session.active && lobby.queue.playlist === playlist.id && lobby.queue.state === "queued" &&
+        lobby.queue.stake !== stake && !lobby.queue.party) {
+      cancelQueue();
+      lobby.started = false;
+    }
+  }
+
+  /* The party's terms for SOL, or null when what it starts stakes nothing:
+     its playlist's tier, or its custom game's. */
+  function partyWager() {
+    var view = partyView();
+    if (!view) return null;
+    if (view.lobby === "custom") {
+      return global.HaloStakes ? global.HaloStakes.customWager(view.customStakes, view.modeIndex) : null;
+    }
+    return selectedWager(playlistById(view.playlist));
+  }
+
+  /* the playlist the stakes are for: the party's, or this player's pick */
+  function stakesPlaylist() {
+    var view = partyView();
+    return (view && playlistById(view.playlist)) || selectedPlaylist();
+  }
+
+  /* the players a wager's projection assumes: the playlist's full match, or
+     the party */
+  function wagerPlayers() {
+    var view = partyView();
+    if (view && view.lobby === "custom") return view.members.length;
+    return stakesPlaylist().maximum;
+  }
+
+  function selfAccepted(view) {
+    for (var index = 0; index < view.members.length; index++) {
+      if (view.members[index].self) return !!view.members[index].accepted;
+    }
+    return false;
+  }
+
+  /* A member accepts the stakes they see (by the terms' number). */
+  async function acceptStakes() {
+    var view = partyView();
+    if (!view) return;
+    try {
+      applyParty((await partyRequest("accept", { terms: view.terms })).party);
+      lobby.error = null;
+    } catch (error) {
+      lobby.error = (error && error.message) || "Couldn't accept the stakes.";
+      if (lobby.party) lobby.party.polledAt = 0;
+    }
+    renderStakesDialog();
+  }
+
+  function setCustomStakes(change) {
+    var view = partyView();
+    if (!view || !view.leader) return;
+    var current = view.customStakes;
+    if (change === null) {
+      configureParty({ customStakes: null });
+      return;
+    }
+    var next = {
+      stake: current ? current.stake : stakeOptions().tiers[0],
+      killTarget: current ? current.killTarget : 25,
+      teamShareBps: current ? current.teamShareBps : 2500,
+    };
+    Object.keys(change).forEach(function(key) { next[key] = change[key]; });
+    configureParty({ customStakes: next });
+  }
+
+  /* The stakes dialog: a playlist's tier, or a party's custom game's
+     terms; and for a member, accepting them. */
+  function renderStakesDialog() {
+    var dialog = lobbyElement("stakes-dialog");
+    var Stakes = global.HaloStakes;
+    if (!dialog || !dialog.open || !Stakes) return;
+    var view = partyView();
+    var custom = lobbyKind() === "custom";
+    var leader = partyLeader();
+    var setText = function(id, text) {
+      var node = lobbyElement(id);
+      if (node && node.textContent !== text) node.textContent = text;
+    };
+    var feeBps = stakeOptions().feeBps;
+    var wager = null;
+    if (custom) {
+      wager = partyWager();
+      var choices = Stakes.customChoices(stakeOptions().tiers);
+      var terms = view ? view.customStakes : null;
+      setText("stakes-intro", leader ?
+        "Set what everyone stakes. Each member accepts before the game starts; nothing is staked until it does." :
+        "The leader sets the stakes. Nothing is staked until you accept them and the game starts.");
+      Stakes.renderChoices(lobbyElement("stakes-tiers"), choices.stake, terms ? terms.stake : null, function(value) {
+        setCustomStakes(value === null ? null : { stake: value });
+      }, !leader);
+      var more = lobbyElement("stakes-custom");
+      if (more) more.hidden = !terms;
+      if (terms) {
+        Stakes.renderChoices(lobbyElement("stakes-kill-target"), choices.killTarget, terms.killTarget, function(value) {
+          setCustomStakes({ killTarget: value });
+        }, !leader);
+        Stakes.renderChoices(lobbyElement("stakes-team-share"), choices.teamShare, terms.teamShareBps, function(value) {
+          setCustomStakes({ teamShareBps: value });
+        }, !leader);
+      }
+    } else {
+      var playlist = stakesPlaylist();
+      wager = selectedWager(playlist);
+      var more2 = lobbyElement("stakes-custom");
+      if (more2) more2.hidden = true;
+      setText("stakes-intro", wager ? "Pick your stake for " + playlist.label +
+        ". You only match players at the same stake, so the busier tiers find a match sooner." :
+        playlist.label + " is free: nothing is staked.");
+      Stakes.renderChoices(lobbyElement("stakes-tiers"), Stakes.tierChoices(playlistTiers(playlist), playlist.maximum, feeBps),
+        wager ? wager.stake : null, function(value) {
+          chooseStake(playlist, value);
+          renderStakesDialog();
+        }, !leader);
+    }
+    var described = wager ? Stakes.terms(wager, wagerPlayers(), feeBps) : null;
+    setText("stakes-terms", described ? described.line : custom ? "A free game: nothing is staked." : "");
+    setText("stakes-detail", described ? described.detail : "");
+    var waiting = view && wager ? view.members.filter(function(member) { return !member.accepted; }) : [];
+    setText("stakes-acceptance", !view || !wager ? "" : waiting.length ?
+      "Waiting for " + waiting.map(function(member) { return member.name; }).join(", ") + " to accept." :
+      "Everyone has accepted these stakes.");
+    var accept = lobbyElement("stakes-accept");
+    if (accept) accept.hidden = !view || !wager || leader || selfAccepted(view);
+  }
+
   function teamSize(playlist) {
     if (playlist.teams) {
       var side = Math.floor(playlist.maximum / 2);
@@ -2785,7 +2963,9 @@
     fetchJson("/v1/playlists", { method: "GET" })
       .then(function(result) {
         if (result && Array.isArray(result.playlists)) lobby.playlists = result.playlists;
+        if (result && result.stakes && Array.isArray(result.stakes.tiers)) lobby.stakeOptions = result.stakes;
         renderPlaylistDialog();
+        renderStakesDialog();
       })
       .catch(function() { /* the next refresh tries again */ })
       .then(function() { lobby.playlistsBusy = false; });
@@ -2824,7 +3004,7 @@
         count.textContent = playlist.searching ? playlist.searching + " searching" : "";
         if (playlist.wager && !playlist.searching) {
           count.className = "wager";
-          count.textContent = "\u25ce " + formatSol(playlist.wager.stake);
+          count.textContent = "\u25ce " + formatSol(selectedWager(playlist).stake);
         }
         option.appendChild(count);
         option.addEventListener("click", function() {
@@ -2842,10 +3022,24 @@
     lobbyElement("playlist-detail-size").textContent = teamSize(focused);
     lobbyElement("playlist-detail-description").textContent = focused.description;
     var wagerLine = lobbyElement("playlist-detail-wager");
-    wagerLine.hidden = !focused.wager;
-    wagerLine.textContent = !focused.wager ? "" : "\u25ce " + formatSol(focused.wager.stake) + " SOL buy-in · " +
-      (focused.wager.mode === "team" ? "winners get their stake back and split the losers' stakes by kills" :
-        formatSol(focused.wager.perKill) + " SOL a kill") + " · 5% fee on winnings";
+    var focusedWager = selectedWager(focused);
+    var described = focusedWager && global.HaloStakes ?
+      global.HaloStakes.terms(focusedWager, focused.maximum, stakeOptions().feeBps) : null;
+    wagerLine.hidden = !focusedWager;
+    wagerLine.textContent = !focusedWager ? "" : described ? described.line : "\u25ce " + formatSol(focusedWager.stake) + " SOL stake";
+    /* its stake tiers: a queue each */
+    var tierPicker = lobbyElement("playlist-detail-stakes");
+    if (tierPicker) {
+      tierPicker.hidden = !focusedWager || !global.HaloStakes;
+      if (focusedWager && global.HaloStakes) {
+        global.HaloStakes.renderChoices(tierPicker,
+          global.HaloStakes.tierChoices(playlistTiers(focused), focused.maximum, stakeOptions().feeBps),
+          focusedWager.stake, function(stake) {
+            chooseStake(focused, stake);
+            renderPlaylistDialog();
+          }, !partyLeader());
+      }
+    }
     lobbyElement("playlist-detail-counts").textContent = playlistCounts(focused);
     var maps = lobbyElement("playlist-detail-maps");
     if (maps.dataset.playlist !== focused.id) {
@@ -3425,6 +3619,7 @@
       });
     }
     renderPartyDialog();
+    renderStakesDialog();
   }
 
   /* The party started something: this member follows their own ticket in
@@ -3470,6 +3665,9 @@
     try {
       var settings = { buildId: buildId(), lobby: lobbyKind(), playlist: selectedPlaylist().id,
         mapIndex: lobby.customMap || 0, modeIndex: lobby.customMode === undefined ? 1 : lobby.customMode };
+      /* the stake this player picked for a playlist for SOL */
+      var wager = selectedWager(selectedPlaylist());
+      if (wager) settings.stake = wager.stake;
       var result = await partyRequest("create", settings);
       lobby.party = null;
       applyParty(result.party);
@@ -3673,6 +3871,17 @@
     show("lobby-playlist-open", !custom);
     show("lobby-game-open", custom);
     show("lobby-map-open", custom);
+    /* the stake: a playlist for SOL's tier, or a party's custom game's */
+    var wager = custom ? partyWager() : selectedWager(stakesPlaylist());
+    show("lobby-stakes-open", custom ? !!view : !!wager);
+    if (wager && global.HaloStakes) {
+      var perKill = global.HaloStakes.terms(wager, wagerPlayers(), stakeOptions().feeBps).perKill;
+      setText("lobby-stakes", "\u25ce " + global.HaloStakes.sol(wager.stake) + " \u00b7 " +
+        (wager.mode === "team" ? "~" : "") + "\u25ce " + global.HaloStakes.sol(perKill) + "/kill");
+    } else {
+      setText("lobby-stakes", "Free");
+    }
+    show("lobby-stakes-accept", !!view && !!wager && !view.leader && !selfAccepted(view) && !session.active);
     setText("lobby-game", selectedLabel(elements.mode, currentCustomMode()) || "Slayer");
     setText("lobby-map", selectedLabel(elements.map, currentCustomMap()) || "Battle Creek");
     /* friends: Leave Party once anyone else is in it; Invite while not in a
@@ -3692,6 +3901,7 @@
     if (queue.state === "joining") return { text: "Joining the " + label + " queue…" };
     if (queue.state === "queued") {
       var others = Math.max(0, (queue.queued || 1) - 1);
+      if (queue.stake) label += " (\u25ce " + formatSol(queue.stake) + ")";
       return { text: "Searching for " + label + " players… " +
         (others === 0 ? "nobody else is queued yet." : others + (others === 1 ? " other player" : " other players") + " queued.") };
     }
@@ -4994,7 +5204,7 @@
     renew.disabled = wallet.busy;
     var reason = lobbyElement("wallet-gate-reason");
     /* why it opened, kept current: connecting answers "connect a wallet" */
-    var wagered = selectedPlaylist().wager;
+    var wagered = lobbyKind() === "custom" ? partyWager() : selectedWager(selectedPlaylist());
     var text = lobby.loadUpReason ? (wagered ? stakeBlocker(wagered.stake) || "" : "") : "";
     if (reason.textContent !== text) reason.textContent = text;
     var funds = lobbyElement("wallet-gate-funds");
@@ -5095,7 +5305,8 @@
       stake: match.wager.stake,
       perKill: match.wager.perKill,
       mode: match.wager.mode || "bounty",
-      label: (playlistById(lobby.queue && lobby.queue.playlist) || { label: "Wagered match" }).label,
+      label: (playlistById(lobby.queue && lobby.queue.playlist) ||
+        { label: lobby.queue && lobby.queue.playlist === "custom" ? "Custom game" : "Wagered match" }).label,
       view: null,
       done: false,
       polledAt: 0,
@@ -5598,7 +5809,7 @@
     /* a match for SOL: the one just played, or the playlist's buy-in */
     var wagered = null;
     if (lobby.wager && match && lobby.wager.matchId === match.id) wagered = { stake: lobby.wager.stake, label: lobby.wager.label };
-    else if (playlist && playlist.wager) wagered = { stake: playlist.wager.stake, label: playlist.label };
+    else if (playlist && playlist.wager) wagered = { stake: selectedWager(playlist).stake, label: playlist.label };
     lobby.postMatch = {
       kind: kind,
       since: Date.now(),
@@ -5828,7 +6039,7 @@
         }
       }
       /* a wagered playlist: load up first, if the vault cannot stake yet */
-      var wagered = custom ? null : selectedPlaylist().wager;
+      var wagered = custom ? null : selectedWager(selectedPlaylist());
       if (WALLET_ENABLED && wagered && !session.active && !lobby.wantsPlay) {
         var blocker = stakeBlocker(wagered.stake);
         if (blocker) {
@@ -5941,6 +6152,34 @@
       if (event.target === playlistDialog) playlistDialog.close();
     });
     playlistDialog.addEventListener("keydown", function(event) { event.stopPropagation(); });
+    /* the stakes: a tier, or a custom game's terms, and accepting them */
+    var stakesDialog = lobbyElement("stakes-dialog");
+    var stakesOpen = lobbyElement("lobby-stakes-open");
+    if (stakesDialog && stakesOpen) {
+      stakesOpen.addEventListener("click", function() {
+        stakesDialog.showModal();
+        lobby.playlistsAt = 0;
+        refreshPlaylists();
+        renderStakesDialog();
+      });
+      var closeStakes = function() { if (stakesDialog.open) stakesDialog.close(); };
+      var stakesClose = lobbyElement("stakes-dialog-close");
+      if (stakesClose) stakesClose.addEventListener("click", closeStakes);
+      var stakesDone = lobbyElement("stakes-done");
+      if (stakesDone) stakesDone.addEventListener("click", closeStakes);
+      var stakesAccept = lobbyElement("stakes-accept");
+      if (stakesAccept) stakesAccept.addEventListener("click", function() { acceptStakes(); });
+      stakesDialog.addEventListener("click", function(event) { if (event.target === stakesDialog) closeStakes(); });
+      stakesDialog.addEventListener("keydown", function(event) { event.stopPropagation(); });
+    }
+    var lobbyAccept = lobbyElement("lobby-stakes-accept");
+    if (lobbyAccept && stakesDialog) {
+      /* accepting starts from the terms: the dialog shows them first */
+      lobbyAccept.addEventListener("click", function() {
+        stakesDialog.showModal();
+        renderStakesDialog();
+      });
+    }
     /* the Spartan modal: name, armor and emblem, with a preview */
     var spartanDialog = lobbyElement("spartan-dialog");
     var closeSpartan = function() { if (spartanDialog.open) spartanDialog.close(); };
@@ -5977,7 +6216,7 @@
     lobbyElement("lobby-wallet-connect").addEventListener("click", function() { signInWithWallet(); });
     /* loaded up for a wagered playlist: search right away */
     var playIfReady = function(loaded) {
-      var wagered = selectedPlaylist().wager;
+      var wagered = selectedWager(selectedPlaylist());
       if (!loaded || !wagered || stakeBlocker(wagered.stake) || session.active || lobby.wantsPlay) return;
       lobbyElement("wallet-gate").hidden = true;
       lobby.wantsPlay = true;

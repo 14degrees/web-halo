@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import { PARTY_CHAT_HISTORY, allowChat, censorChatText } from "./chat";
 import { randomToken } from "./crypto";
+import type { CustomStakes } from "./matchmaker";
 
 /* A party: friends together in the lobby, by a short code anyone can share
    (a link with #party=CODE, or typed in). One Durable Object per code.
@@ -13,6 +14,13 @@ import { randomToken } from "./crypto";
    and game type) and starts it. Starting gives every member a matchmaker
    ticket (src/matchmaker.ts: enqueueParty, startCustom), which each page
    then follows as it follows its own.
+
+   Money: the leader picks the stake of a playlist for SOL, or a custom
+   game's stake, kill target and team share. Those terms are numbered; any
+   change to them (or to the lobby, playlist or game type, which change
+   what they mean) starts a new number, which only the leader has
+   accepted. Every member must accept the current terms before the party
+   starts anything that stakes, so nobody stakes on terms they didn't see.
 
    Members chat by text while they wait (src/chat.ts): a message is kept
    with the party, numbered, and a poll brings back the ones after the
@@ -80,6 +88,13 @@ interface PartyRecord {
   modeIndex: number;
   activity: PartyActivity | null;
   createdAt: number;
+  /* a playlist for SOL: the leader's stake tier (null: its default) */
+  stake?: number | null;
+  /* a custom game for SOL: its terms (null: a free game) */
+  customStakes?: CustomStakes | null;
+  /* the terms' number, and the members (by key) who accepted them */
+  terms?: number;
+  accepted?: string[];
   /* the last PARTY_CHAT_HISTORY lines of chat (absent in parties made
      before chat) */
   chat?: PartyChatMessage[];
@@ -91,6 +106,8 @@ export interface PartySettings {
   playlist?: string;
   mapIndex?: number;
   modeIndex?: number;
+  stake?: number | null;
+  customStakes?: CustomStakes | null;
 }
 
 /* What a member sees: everyone's public face, the settings, and their own
@@ -99,11 +116,15 @@ export interface PartyView {
   code: string;
   leader: boolean;
   self: string;
-  members: Array<PartyProfile & { id: string; leader: boolean; self: boolean }>;
+  members: Array<PartyProfile & { id: string; leader: boolean; self: boolean; accepted: boolean }>;
   lobby: PartyLobby;
   playlist: string;
   mapIndex: number;
   modeIndex: number;
+  stake: number | null;
+  customStakes: CustomStakes | null;
+  /* the terms' number, for accept */
+  terms: number;
   activity: { id: string; kind: "queue" | "custom"; playlist: string; ticket: string | null; at: number } | null;
   /* the chat after the line the member saw last (chatSince), oldest first */
   chat: PartyChatMessage[];
@@ -111,7 +132,11 @@ export interface PartyView {
 
 export type PartyResult =
   | { party: PartyView }
-  | { error: "NOT_FOUND" | "FULL" | "NOT_MEMBER" | "NOT_LEADER" | "CHAT_RATE_LIMITED" };
+  | { error: "NOT_FOUND" | "FULL" | "NOT_MEMBER" | "NOT_LEADER" | "CHAT_RATE_LIMITED" | "TERMS_CHANGED" };
+
+const sameStakes = (left: CustomStakes | null, right: CustomStakes | null): boolean =>
+  left === right || (left !== null && right !== null && left.stake === right.stake &&
+    left.killTarget === right.killTarget && left.teamShareBps === right.teamShareBps);
 
 export class Party extends DurableObject<Env> {
   private read(): PartyRecord | null {
@@ -149,11 +174,15 @@ export class Party extends DurableObject<Env> {
         emblem: member.profile.emblem,
         leader: member.key === record.leader,
         self: member.key === key,
+        accepted: member.key === record.leader || (record.accepted ?? []).includes(member.key),
       })),
       lobby: record.lobby,
       playlist: record.playlist,
       mapIndex: record.mapIndex,
       modeIndex: record.modeIndex,
+      stake: record.stake ?? null,
+      customStakes: record.customStakes ?? null,
+      terms: record.terms ?? 0,
       activity: record.activity ? {
         id: record.activity.id,
         kind: record.activity.kind,
@@ -252,23 +281,59 @@ export class Party extends DurableObject<Env> {
     if (live) this.write(live);
   }
 
-  /* The leader changes the lobby, playlist, map or game type. */
+  /* The leader changes the lobby, playlist, map, game type or stakes; a
+     change to the terms needs everyone's acceptance again. */
   async configure(key: string, settings: PartySettings, now: number): Promise<PartyResult> {
     const record = this.read();
     const live = record ? this.prune(record, now) : null;
     if (!live) return { error: "NOT_FOUND" };
     if (live.leader !== key) return { error: "NOT_LEADER" };
+    const changed = (settings.lobby !== undefined && settings.lobby !== live.lobby) ||
+      (settings.playlist !== undefined && settings.playlist !== live.playlist) ||
+      (settings.modeIndex !== undefined && settings.modeIndex !== live.modeIndex) ||
+      (settings.stake !== undefined && settings.stake !== (live.stake ?? null)) ||
+      (settings.customStakes !== undefined && !sameStakes(settings.customStakes, live.customStakes ?? null));
     if (settings.lobby) live.lobby = settings.lobby;
     if (settings.playlist) live.playlist = settings.playlist;
     if (settings.mapIndex !== undefined) live.mapIndex = settings.mapIndex;
     if (settings.modeIndex !== undefined) live.modeIndex = settings.modeIndex;
+    if (settings.stake !== undefined) live.stake = settings.stake;
+    if (settings.customStakes !== undefined) live.customStakes = settings.customStakes;
+    if (changed) {
+      live.terms = (live.terms ?? 0) + 1;
+      live.accepted = [];
+    }
     this.write(live);
     return { party: this.view(live, key) };
   }
 
+  /* A member accepts the terms they were shown (by number): stale terms
+     are refused, so an acceptance never carries over to a change. */
+  async accept(join: PartyJoin, terms: number, now: number): Promise<PartyResult> {
+    const record = this.read();
+    const live = record ? this.prune(record, now) : null;
+    if (!live) return { error: "NOT_FOUND" };
+    if (!live.members.some((member) => member.key === join.key)) {
+      this.write(live);
+      return { error: "NOT_MEMBER" };
+    }
+    this.upsert(live, join, now);
+    if (terms !== (live.terms ?? 0)) {
+      this.write(live);
+      return { error: "TERMS_CHANGED" };
+    }
+    live.accepted = [...new Set([...(live.accepted ?? []), join.key])];
+    this.write(live);
+    return { party: this.view(live, join.key) };
+  }
+
   /* The members the leader starts with: everyone here now. */
   async startingMembers(key: string, now: number): Promise<
-    { members: Array<{ key: string; identifier: string; wallet: string | null; name: string }>; record: Pick<PartyRecord, "buildId" | "lobby" | "playlist" | "mapIndex" | "modeIndex"> } |
+    {
+      members: Array<{ key: string; identifier: string; wallet: string | null; name: string; accepted: boolean }>;
+      record: Pick<PartyRecord, "buildId" | "lobby" | "playlist" | "mapIndex" | "modeIndex"> &
+        { stake: number | null; customStakes: CustomStakes | null };
+    } |
     { error: "NOT_FOUND" | "NOT_LEADER" }
   > {
     const record = this.read();
@@ -279,8 +344,12 @@ export class Party extends DurableObject<Env> {
     return {
       members: live.members.map((member) => ({
         key: member.key, identifier: member.identifier, wallet: member.wallet, name: member.profile.name,
+        accepted: member.key === live.leader || (live.accepted ?? []).includes(member.key),
       })),
-      record: { buildId: live.buildId, lobby: live.lobby, playlist: live.playlist, mapIndex: live.mapIndex, modeIndex: live.modeIndex },
+      record: {
+        buildId: live.buildId, lobby: live.lobby, playlist: live.playlist, mapIndex: live.mapIndex,
+        modeIndex: live.modeIndex, stake: live.stake ?? null, customStakes: live.customStakes ?? null,
+      },
     };
   }
 

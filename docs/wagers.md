@@ -12,7 +12,10 @@ Production Money System". This page describes what is built.
 
 ## How a player sees it
 
-1. They pick a bounty playlist and press Start matchmaking.
+1. They pick a playlist for SOL and its stake (0.01, 0.05 or 0.1 SOL: the
+   Stake line in the lobby, or the tiers in the playlist picker, which show
+   the stake, what a kill is worth and who is searching at each), then press
+   Start matchmaking.
 2. If their vault can't stake yet, the Load Up window opens. They connect a
    wallet (Phantom), pick 0.05, 0.1 or 0.25 SOL, and approve **once**. That
    one transaction opens their vault, deposits, and approves a play session:
@@ -34,8 +37,39 @@ Production Money System". This page describes what is built.
 | | Bounty Duel | Bounty Rumble | Team Stakes |
 | --- | --- | --- | --- |
 | Players | 2 | 2 to 4, free-for-all | exactly 4, two on two Team Slayer |
-| Buy-in | 0.05 SOL | 0.05 SOL | 0.05 SOL |
-| Pays | 0.01 SOL a kill | 0.01 SOL a kill | the winners get their stake back and split the losers' stakes: a quarter evenly, the rest by kills |
+| Buy-in | 0.01, 0.05 or 0.1 SOL | 0.01, 0.05 or 0.1 SOL | 0.01, 0.05 or 0.1 SOL |
+| Pays | a fifth of the stake a kill | a fifth of the stake a kill | the winners get their stake back and split the losers' stakes: a quarter evenly, the rest by kills |
+
+## Picking the stake
+
+A playlist for SOL offers a few stake tiers (`STAKE_TIERS` and each
+playlist's `tiers` in `services/signaling/src/matchmaker.ts`). The queue
+ticket carries the tier picked, and a ticket only matches tickets at the
+same stake: everyone in a match stakes the same.
+
+The tradeoff is the queue. Every tier is a queue of its own, so a stake
+picked freely would split the players so thin that nobody found a match.
+A handful of tiers keeps each queue full enough; the picker shows who is
+searching at each tier, so players drift to the busy one; and the playlist's
+default tier (0.05) is what anyone gets without picking. Add a tier only
+when the queues are busy enough to take it. Every tier must stay within the
+escrow program's maximum stake (0.1 SOL on devnet) and a play session's
+limit (0.5 SOL, `SESSION_LIMIT_LAMPORTS` in the page; at most 1 SOL in
+`src/vault.ts`).
+
+A party queues at the leader's tier. Before the leader can start a search
+for SOL, every member must accept the stake (the Stake line opens the terms;
+members see "Review & accept stakes").
+
+**A custom game for SOL.** A party's leader can set a custom game's stake
+(Free, or a tier), kill target (10, 25, 50 or 100; the Worker takes 5 to
+100) and team share (0, 25, 50 or 100%). It plays by the Team Stakes rule:
+in two teams for a team game type, every player alone otherwise. The terms
+are numbered; any change to them, the lobby, the playlist or the game type
+starts a new number that only the leader has accepted, and the party starts
+only once every member has accepted the current one
+(`POST /v1/parties/:code/accept`). Nothing is staked before the game starts,
+and every member's vault is checked at the chosen stake.
 
 **Bounty** (Bounty Duel, Bounty Rumble):
 
@@ -187,10 +221,11 @@ gateway sends it to the Worker with the match's end report
   signs. The wallet only signs; `/v1/escrow/submit` sends the signed
   transaction to the game's cluster, so it works whatever network the wallet
   itself is set to. It sends only transactions the signed-in wallet pays for.
-- **The matchmaker** (`src/matchmaker.ts`) admits a wallet to a bounty
-  playlist only if its vault holds the buy-in free and its session is active
-  with the buy-in left in its limit. When a bounty match forms it starts the
-  match's wager. It hands out the invite only once the stakes are locked, and
+- **The matchmaker** (`src/matchmaker.ts`) admits a wallet to a playlist
+  for SOL only if its vault holds the chosen stake free and its session is
+  active with that stake left in its limit. It matches tickets only at the
+  same stake. When a match for SOL forms (or a party's custom game for SOL
+  starts) it starts the match's wager with the match's own terms. It hands out the invite only once the stakes are locked, and
   voids the match if they can't be.
 - **The wager** (`src/wager.ts`, a Durable Object per match) locks the
   stakes (one transaction: create the match and join every player), keeps
@@ -292,7 +327,11 @@ wallets.
 
 ## Known gaps
 
-- Team Stakes is Team Slayer only; there is no objective (CTF) wagering.
+- The Team Stakes playlist is Team Slayer only. A custom game for SOL can be
+  any game type, but its kill target only sets what a kill is worth: the
+  game still plays to its own score limit (50 in the dedicated Team Slayer
+  variant), and a fixed set of kill targets is offered rather than the
+  game's limit being changed to match.
   The payout rule already handles any team sizes and free-for-alls; a
   playlist or custom game only has to pass its stakes configuration. The
   dedicated server reports two team scores, so games with more than two
