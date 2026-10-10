@@ -402,13 +402,18 @@ export interface EscrowSetup {
   cluster: string;
 }
 
+/* the fee on winnings, in basis points (at most 10%) */
+export function escrowFeeBps(env: RuntimeEnv): number {
+  const feeBps = Number(env.ESCROW_FEE_BPS ?? "500");
+  return Number.isSafeInteger(feeBps) && feeBps >= 0 && feeBps <= 1_000 ? feeBps : 500;
+}
+
 export async function escrowSetup(env: RuntimeEnv): Promise<EscrowSetup | null> {
   if (!env.ESCROW_AUTHORITY_SECRET_KEY || !env.ESCROW_SESSION_SECRET || !env.ESCROW_FEE_VAULT) return null;
-  const feeBps = Number(env.ESCROW_FEE_BPS ?? "500");
   return {
     authority: await keypairFromSecret(env.ESCROW_AUTHORITY_SECRET_KEY),
     feeVault: env.ESCROW_FEE_VAULT,
-    feeBps: Number.isSafeInteger(feeBps) && feeBps >= 0 && feeBps <= 1_000 ? feeBps : 500,
+    feeBps: escrowFeeBps(env),
     sessionSecret: env.ESCROW_SESSION_SECRET,
     cluster: env.SOLANA_CLUSTER ?? "devnet",
   };
@@ -922,12 +927,17 @@ export async function stakeProblem(env: RuntimeEnv, wallet: string, stake: numbe
   const data = await escrowRpc(env).accountData(await vaultAddress(wallet));
   const vault = data ? decodeVault(data) : null;
   if (!vault) return "Load up your vault first.";
-  if (vault.free < BigInt(stake)) return "Your vault does not hold enough for this playlist's buy-in.";
+  if (vault.free < BigInt(stake)) return `Your vault does not hold the ${solText(stake)} SOL buy-in.`;
   const session = await sessionKeypair(setup.sessionSecret, wallet);
   if (vault.sessionKey !== session.address) return "Approve a play session first.";
   if (vault.sessionExpiry < Math.floor(Date.now() / 1000) + 30 * 60) return "Your play session has run out. Approve a new one.";
   if (vault.sessionLimit - vault.sessionSpent < BigInt(stake)) {
-    return "Your play session's limit is used up. Approve a new one.";
+    return `Your play session has less than the ${solText(stake)} SOL buy-in left. Approve a new one.`;
   }
   return null;
+}
+
+/* lamports as SOL for a message: 0.05, 0.1, 0.0125 */
+function solText(lamports: number): string {
+  return String(Number((lamports / 1_000_000_000).toFixed(4)));
 }

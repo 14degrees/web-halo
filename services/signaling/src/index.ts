@@ -13,7 +13,7 @@ import { roomIdSignatureMatches, signedRoomId } from "./crypto";
 import { HttpError } from "./errors";
 import type { RuntimeEnv } from "./env";
 import { DEDICATED_HOST_LEASE_MS, LOBBY_DIRECTORY_NAME } from "./lobby";
-import { MATCHMAKER_NAME, isPlaylist, playlistWager } from "./matchmaker";
+import { CUSTOM_KILL_TARGET, MATCHMAKER_NAME, STAKE_TIERS, chosenStake, isPlaylist, playlistWager } from "./matchmaker";
 import {
   LOBBY_MAP_COUNT,
   LOBBY_MODE_COUNT,
@@ -53,7 +53,7 @@ import { adminPendingFomoHandles, adminProfileLookup, adminVerifyFomoHandle, han
 import { siteInfo } from "./site";
 import { handleStatsRequest } from "./stats";
 import { handleEscrowRequest } from "./vault";
-import { type MatchResult, stakeProblem } from "./wager";
+import { type MatchResult, escrowFeeBps, stakeProblem } from "./wager";
 import { handleVoteRequest, parseVote } from "./vote";
 import { handleWalletRequest, walletForToken } from "./wallet";
 
@@ -1046,7 +1046,7 @@ function record(body: unknown): Record<string, unknown> {
 }
 
 /* A player joins the queue: their machine, build, playlist and (to wager)
-   wallet. */
+   wallet and stake, one of the playlist's tiers (its default if none). */
 async function enqueue(request: Request, env: RuntimeEnv, origin: string | null): Promise<Response> {
   const body = record(await readJsonBody(request));
   if (body.protocolVersion !== SIGNALING_PROTOCOL_VERSION || !isBuildId(body.buildId) ||
@@ -1061,10 +1061,12 @@ async function enqueue(request: Request, env: RuntimeEnv, origin: string | null)
   const walletToken = typeof body.walletToken === "string" ? body.walletToken : undefined;
   const wallet = await walletForToken(env, walletToken);
   /* a wagered playlist needs a wallet whose vault and session can stake */
+  const stake = chosenStake(playlist, body.stake);
   const wager = playlistWager(playlist);
   if (wager) {
+    if (stake === null) throw new HttpError(400, "VALIDATION_FAILED", "stake is not one of the playlist's stakes.");
     if (wallet === null) throw new HttpError(401, "WALLET_SIGN_IN_REQUIRED", "Sign in with your wallet to play for SOL.");
-    const problem = await stakeProblem(env, wallet, wager.stake);
+    const problem = await stakeProblem(env, wallet, stake);
     if (problem !== null) throw new HttpError(409, "STAKE_NOT_READY", problem);
   }
   const playerKey = typeof body.playerKey === "string" && PLAYER_KEY_PATTERN.test(body.playerKey) ?
@@ -1076,6 +1078,7 @@ async function enqueue(request: Request, env: RuntimeEnv, origin: string | null)
     now: Date.now(),
     playlist,
     wallet: wallet ?? null,
+    stake: wager ? stake : null,
     /* the pick from the last match's vote, carried to the next */
     vote: parseVote(body.vote),
   });
@@ -1155,7 +1158,9 @@ async function handleMatchmaking(
   if (request.method === "GET" && url.pathname === "/v1/playlists") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
     const playlists = await matchmaker(env).playlists(now);
-    return withCors(jsonResponse({ playlists, v: SIGNALING_PROTOCOL_VERSION }), origin);
+    /* and what a party's custom game for SOL can be set to */
+    const stakes = { tiers: STAKE_TIERS, killTarget: CUSTOM_KILL_TARGET, feeBps: escrowFeeBps(env) };
+    return withCors(jsonResponse({ playlists, stakes, v: SIGNALING_PROTOCOL_VERSION }), origin);
   }
   if (request.method === "GET" && url.pathname === "/v1/matchmaker") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
