@@ -6,8 +6,9 @@ Xbox controllers and the debug keyboard for the Linux build.
 Port 0 is always connected: it is the keyboard and mouse, merged with the
 first SDL gamepad when one is present. Further SDL gamepads take ports 1-3.
 
-Keyboard and mouse (port 0):
-	W A S D          left stick          arrows           D-pad
+Keyboard and mouse (port 0), by default (the key map below; the browser
+game's are slightly different and the player can rebind them there):
+	W A S D         left stick          arrows           D-pad
 	mouse            aim (see halo_linux_mouse_look)
 	left button      right trigger       right button, G  left trigger
 	space, enter     A                   F, backspace, X1 B
@@ -190,6 +191,139 @@ static void mouse_poll(const struct platform_input_state *input)
 	pthread_mutex_unlock(&mouse_lock);
 }
 
+/* ---------- the key map
+
+What drives each control of the keyboard's controller: up to KEY_SLOTS
+inputs per action, each a scancode, a mouse button or the wheel (the
+KEY_INPUT_* codes, which the browser page's bindings dialog shares through
+platform_web_set_key_binding). The page may change them mid-session from its
+own thread, so they are atomics; 0 means the default below, which is also
+what every slot holds until something sets it.
+
+A few keys are fixed and not in the map, so the menus always work: escape
+(start), F1 (back), enter (A) and backspace (B). */
+
+enum
+{
+	KEY_ACTION_MOVE_FORWARD,
+	KEY_ACTION_MOVE_BACK,
+	KEY_ACTION_MOVE_LEFT,
+	KEY_ACTION_MOVE_RIGHT,
+	KEY_ACTION_JUMP, /* A */
+	KEY_ACTION_MELEE, /* B */
+	KEY_ACTION_ACTION, /* X: action and reload */
+	KEY_ACTION_SWITCH_WEAPON, /* Y */
+	KEY_ACTION_FLASHLIGHT, /* white */
+	KEY_ACTION_SWITCH_GRENADE, /* black */
+	KEY_ACTION_GRENADE, /* left trigger */
+	KEY_ACTION_FIRE, /* right trigger */
+	KEY_ACTION_CROUCH, /* left stick click */
+	KEY_ACTION_ZOOM, /* right stick click */
+	KEY_ACTION_DPAD_UP,
+	KEY_ACTION_DPAD_DOWN,
+	KEY_ACTION_DPAD_LEFT,
+	KEY_ACTION_DPAD_RIGHT,
+	KEY_ACTION_SCORES, /* back */
+	KEY_ACTION_COUNT
+};
+
+#define KEY_SLOTS 2
+#define KEY_INPUT_DEFAULT 0
+#define KEY_INPUT_NONE (-1)
+/* scancodes are 1 to SDL_SCANCODE_COUNT - 1; the mouse comes after */
+#define KEY_INPUT_MOUSE_BUTTON 1000 /* + SDL_BUTTON_* */
+#define KEY_INPUT_WHEEL 1100
+#define KEY_MOUSE(button) (KEY_INPUT_MOUSE_BUTTON + (button))
+#define KEY_UNBOUND KEY_INPUT_NONE
+
+static const int key_defaults[KEY_ACTION_COUNT][KEY_SLOTS] =
+{
+	[KEY_ACTION_MOVE_FORWARD] = { SDL_SCANCODE_W, KEY_UNBOUND },
+	[KEY_ACTION_MOVE_BACK] = { SDL_SCANCODE_S, KEY_UNBOUND },
+	[KEY_ACTION_MOVE_LEFT] = { SDL_SCANCODE_A, KEY_UNBOUND },
+	[KEY_ACTION_MOVE_RIGHT] = { SDL_SCANCODE_D, KEY_UNBOUND },
+	[KEY_ACTION_JUMP] = { SDL_SCANCODE_SPACE, KEY_UNBOUND },
+	[KEY_ACTION_MELEE] = { SDL_SCANCODE_F, KEY_MOUSE(SDL_BUTTON_X1) },
+	[KEY_ACTION_ACTION] = { SDL_SCANCODE_E, SDL_SCANCODE_R },
+#ifdef HALO_WEB
+	/* the browser game: Q switches weapons, T is the flashlight, Tab holds
+	up the scores as in other shooters */
+	[KEY_ACTION_SWITCH_WEAPON] = { SDL_SCANCODE_Q, KEY_INPUT_WHEEL },
+	[KEY_ACTION_FLASHLIGHT] = { SDL_SCANCODE_T, KEY_UNBOUND },
+#else
+	[KEY_ACTION_SWITCH_WEAPON] = { SDL_SCANCODE_TAB, KEY_INPUT_WHEEL },
+	[KEY_ACTION_FLASHLIGHT] = { SDL_SCANCODE_Q, KEY_UNBOUND },
+#endif
+	[KEY_ACTION_SWITCH_GRENADE] = { SDL_SCANCODE_X, KEY_UNBOUND },
+	[KEY_ACTION_GRENADE] = { SDL_SCANCODE_G, KEY_MOUSE(SDL_BUTTON_RIGHT) },
+	[KEY_ACTION_FIRE] = { KEY_MOUSE(SDL_BUTTON_LEFT), KEY_UNBOUND },
+#ifdef HALO_WEB
+	/* Control plus a movement key is a browser shortcut (Ctrl+W closes the
+	 * tab, Ctrl+S opens Save, and Ctrl+D bookmarks). Keep web crouch on C so
+	 * ordinary tab play cannot accidentally leave the game. */
+	[KEY_ACTION_CROUCH] = { SDL_SCANCODE_C, KEY_UNBOUND },
+#else
+	[KEY_ACTION_CROUCH] = { SDL_SCANCODE_LCTRL, SDL_SCANCODE_C },
+#endif
+	[KEY_ACTION_ZOOM] = { SDL_SCANCODE_Z, KEY_MOUSE(SDL_BUTTON_MIDDLE) },
+	[KEY_ACTION_DPAD_UP] = { SDL_SCANCODE_UP, KEY_UNBOUND },
+	[KEY_ACTION_DPAD_DOWN] = { SDL_SCANCODE_DOWN, KEY_UNBOUND },
+	[KEY_ACTION_DPAD_LEFT] = { SDL_SCANCODE_LEFT, KEY_UNBOUND },
+	[KEY_ACTION_DPAD_RIGHT] = { SDL_SCANCODE_RIGHT, KEY_UNBOUND },
+#ifdef HALO_WEB
+	[KEY_ACTION_SCORES] = { SDL_SCANCODE_TAB, KEY_UNBOUND },
+#else
+	[KEY_ACTION_SCORES] = { KEY_UNBOUND, KEY_UNBOUND },
+#endif
+};
+
+static atomic_int key_bindings[KEY_ACTION_COUNT][KEY_SLOTS];
+
+/* binds one slot of an action from now on: a scancode, KEY_MOUSE(button),
+KEY_INPUT_WHEEL, KEY_INPUT_NONE (nothing) or KEY_INPUT_DEFAULT; FALSE for an
+unknown action, slot or input. Any thread may call it. */
+int halo_linux_key_binding_configure(int action, int slot, int input)
+{
+	BOOL valid = input == KEY_INPUT_DEFAULT || input == KEY_INPUT_NONE || input == KEY_INPUT_WHEEL ||
+		(input > SDL_SCANCODE_UNKNOWN && input < SDL_SCANCODE_COUNT) ||
+		(input >= KEY_MOUSE(SDL_BUTTON_LEFT) && input <= KEY_MOUSE(SDL_BUTTON_X2));
+
+	if (action < 0 || action >= KEY_ACTION_COUNT || slot < 0 || slot >= KEY_SLOTS || !valid)
+		return FALSE;
+	atomic_store_explicit(&key_bindings[action][slot], input, memory_order_relaxed);
+	return TRUE;
+}
+
+static BOOL input_down(const struct platform_input_state *input, int code)
+{
+	/* the mouse and the wheel drive the controller only while captured */
+	BOOL mouse = !input->mouse_released;
+
+	if (code > SDL_SCANCODE_UNKNOWN && code < SDL_SCANCODE_COUNT)
+		return input->keys[code] != 0;
+	if (code >= KEY_MOUSE(SDL_BUTTON_LEFT) && code <= KEY_MOUSE(SDL_BUTTON_X2))
+		return mouse && input->mouse_buttons[code - KEY_INPUT_MOUSE_BUTTON];
+	if (code == KEY_INPUT_WHEEL)
+		return mouse && SDL_GetTicks() < wheel_press_until_ms;
+	return FALSE;
+}
+
+static BOOL action_down(const struct platform_input_state *input, int action)
+{
+	int slot;
+
+	for (slot = 0; slot < KEY_SLOTS; slot++)
+	{
+		int code = atomic_load_explicit(&key_bindings[action][slot], memory_order_relaxed);
+
+		if (code == KEY_INPUT_DEFAULT)
+			code = key_defaults[action][slot];
+		if (input_down(input, code))
+			return TRUE;
+	}
+	return FALSE;
+}
+
 /* ---------- keyboard and mouse as a controller */
 
 static BYTE analog(BOOL down)
@@ -199,15 +333,43 @@ static BYTE analog(BOOL down)
 
 static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GAMEPAD *pad)
 {
+	static const struct
+	{
+		int action;
+		WORD mask;
+	} digital[] =
+	{
+		{ KEY_ACTION_DPAD_UP, XINPUT_GAMEPAD_DPAD_UP },
+		{ KEY_ACTION_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_DOWN },
+		{ KEY_ACTION_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_LEFT },
+		{ KEY_ACTION_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_RIGHT },
+		{ KEY_ACTION_SCORES, XINPUT_GAMEPAD_BACK },
+		{ KEY_ACTION_CROUCH, XINPUT_GAMEPAD_LEFT_THUMB },
+		{ KEY_ACTION_ZOOM, XINPUT_GAMEPAD_RIGHT_THUMB },
+	};
+	static const struct
+	{
+		int action;
+		int button;
+	} analog_buttons[] =
+	{
+		{ KEY_ACTION_JUMP, XINPUT_GAMEPAD_A },
+		{ KEY_ACTION_MELEE, XINPUT_GAMEPAD_B },
+		{ KEY_ACTION_ACTION, XINPUT_GAMEPAD_X },
+		{ KEY_ACTION_SWITCH_WEAPON, XINPUT_GAMEPAD_Y },
+		{ KEY_ACTION_FLASHLIGHT, XINPUT_GAMEPAD_WHITE },
+		{ KEY_ACTION_SWITCH_GRENADE, XINPUT_GAMEPAD_BLACK },
+		{ KEY_ACTION_GRENADE, XINPUT_GAMEPAD_LEFT_TRIGGER },
+		{ KEY_ACTION_FIRE, XINPUT_GAMEPAD_RIGHT_TRIGGER },
+	};
 	const unsigned char *k = input->keys;
-	BOOL mouse = !input->mouse_released;
-	const unsigned char *m = input->mouse_buttons;
 	int x = 0, y = 0;
+	size_t index;
 
-	if (k[SDL_SCANCODE_D]) x++;
-	if (k[SDL_SCANCODE_A]) x--;
-	if (k[SDL_SCANCODE_W]) y++;
-	if (k[SDL_SCANCODE_S]) y--;
+	if (action_down(input, KEY_ACTION_MOVE_RIGHT)) x++;
+	if (action_down(input, KEY_ACTION_MOVE_LEFT)) x--;
+	if (action_down(input, KEY_ACTION_MOVE_FORWARD)) y++;
+	if (action_down(input, KEY_ACTION_MOVE_BACK)) y--;
 	if (x || y)
 	{
 		/* full deflection, diagonals on the unit circle */
@@ -217,47 +379,23 @@ static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GA
 		pad->sThumbLY = (SHORT)(y * 32767 * length);
 	}
 
-	if (k[SDL_SCANCODE_UP]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_UP;
-	if (k[SDL_SCANCODE_DOWN]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_DOWN;
-	if (k[SDL_SCANCODE_LEFT]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_LEFT;
-	if (k[SDL_SCANCODE_RIGHT]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+	for (index = 0; index < sizeof(digital) / sizeof(digital[0]); index++)
+	{
+		if (action_down(input, digital[index].action))
+			pad->wButtons |= digital[index].mask;
+	}
+	for (index = 0; index < sizeof(analog_buttons) / sizeof(analog_buttons[0]); index++)
+		pad->bAnalogButtons[analog_buttons[index].button] |= analog(action_down(input, analog_buttons[index].action));
+
+	/* the fixed keys */
 	if (k[SDL_SCANCODE_ESCAPE]) pad->wButtons |= XINPUT_GAMEPAD_START;
 	if (k[SDL_SCANCODE_F1]) pad->wButtons |= XINPUT_GAMEPAD_BACK;
-#ifdef HALO_WEB
-	/* the browser game: Tab holds up the scores, as in other shooters (the
-	wheel switches weapons) */
-	if (k[SDL_SCANCODE_TAB]) pad->wButtons |= XINPUT_GAMEPAD_BACK;
-#endif
-#ifdef HALO_WEB
-	/* Control plus a movement key is a browser shortcut (Ctrl+W closes the
-	 * tab, Ctrl+S opens Save, and Ctrl+D bookmarks). Keep web crouch on C so
-	 * ordinary tab play cannot accidentally leave the game. */
-	if (k[SDL_SCANCODE_C]) pad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
-#else
-	if (k[SDL_SCANCODE_LCTRL] || k[SDL_SCANCODE_C]) pad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
-#endif
-	if (k[SDL_SCANCODE_Z] || (mouse && m[SDL_BUTTON_MIDDLE])) pad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
-
-	pad->bAnalogButtons[XINPUT_GAMEPAD_A] |= analog(k[SDL_SCANCODE_SPACE] || k[SDL_SCANCODE_RETURN] ||
-		k[SDL_SCANCODE_KP_ENTER]);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(k[SDL_SCANCODE_F] || k[SDL_SCANCODE_BACKSPACE] ||
-		(mouse && m[SDL_BUTTON_X1]));
-	#if defined(HALO_ANDROID) && !defined(HALO_WEB)
+	pad->bAnalogButtons[XINPUT_GAMEPAD_A] |= analog(k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_KP_ENTER]);
+	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(k[SDL_SCANCODE_BACKSPACE]);
+#if defined(HALO_ANDROID) && !defined(HALO_WEB)
 	/* the system back key (gesture or button) backs out of menus */
 	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(k[SDL_SCANCODE_AC_BACK]);
 #endif
-	pad->bAnalogButtons[XINPUT_GAMEPAD_X] |= analog(k[SDL_SCANCODE_E] || k[SDL_SCANCODE_R]);
-#ifdef HALO_WEB
-	/* (the browser game: Q switches weapons, T is the flashlight) */
-	pad->bAnalogButtons[XINPUT_GAMEPAD_Y] |= analog(k[SDL_SCANCODE_Q] || SDL_GetTicks() < wheel_press_until_ms);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] |= analog(k[SDL_SCANCODE_T]);
-#else
-	pad->bAnalogButtons[XINPUT_GAMEPAD_Y] |= analog(k[SDL_SCANCODE_TAB] || SDL_GetTicks() < wheel_press_until_ms);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] |= analog(k[SDL_SCANCODE_Q]);
-#endif
-	pad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] |= analog(k[SDL_SCANCODE_X]);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] |= analog(k[SDL_SCANCODE_G] || (mouse && m[SDL_BUTTON_RIGHT]));
-	pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] |= analog(mouse && m[SDL_BUTTON_LEFT]);
 }
 
 /* A scroll of the wheel switches weapons once: it holds Y for WHEEL_PRESS_MS
