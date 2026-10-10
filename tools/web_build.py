@@ -337,6 +337,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         # before the client, which looks for HaloStats when the lobby opens
         f"--pre-js {WEB_DIR}/stats_panel.js",
         f"--pre-js {WEB_DIR}/loading_ux.js",
+        f"--pre-js {WEB_DIR}/badges.js",
         f"--pre-js {WEB_DIR}/stakes.js",
         f"--pre-js {WEB_DIR}/profile_panel.js",
         f"--pre-js {WEB_DIR}/post_match.js",
@@ -355,6 +356,7 @@ def generate_web_build(n: Writer, sln: Any) -> None:
             WEB_DIR / "fetch_path_normalization.js",
             WEB_DIR / "stats_panel.js",
             WEB_DIR / "loading_ux.js",
+            WEB_DIR / "badges.js",
             WEB_DIR / "stakes.js",
             WEB_DIR / "profile_panel.js",
             WEB_DIR / "post_match.js",

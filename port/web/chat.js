@@ -101,6 +101,8 @@
       from: typeof message.from === "string" ? message.from : null,
       name: message.name,
       username: username,
+      /* the links the room or party attached (badges.js) */
+      links: global.HaloBadges ? global.HaloBadges.normalize(message.links) : null,
       style: typeof message.style === "string" ? message.style : "sage",
       text: message.text,
       at: typeof message.at === "number" ? message.at : Date.now(),
@@ -192,6 +194,8 @@
     text.className = "chat-text";
     text.textContent = line.text;
     item.appendChild(name);
+    var badges = !compact && line.links && global.HaloBadges ? global.HaloBadges.element(line.links) : null;
+    if (badges) item.appendChild(badges);
     item.appendChild(text);
     return item;
   }

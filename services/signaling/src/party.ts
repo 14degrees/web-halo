@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { BadgeCache, BADGE_LOOKUP_TTL_MS, badgeFields, type PlayerBadges } from "./badges";
 import { PARTY_CHAT_HISTORY, allowChat, censorChatText } from "./chat";
 import { randomToken } from "./crypto";
 import type { CustomStakes } from "./matchmaker";
@@ -21,6 +22,10 @@ import type { CustomStakes } from "./matchmaker";
    what they mean) starts a new number, which only the leader has
    accepted. Every member must accept the current terms before the party
    starts anything that stakes, so nobody stakes on terms they didn't see.
+
+   Members wear the badges of the wallet they signed in with (src/badges.ts):
+   their account name and shown links, looked up after a poll and asked
+   again only every BADGE_LOOKUP_TTL_MS.
 
    Members chat by text while they wait (src/chat.ts): a message is kept
    with the party, numbered, and a poll brings back the ones after the
@@ -56,6 +61,9 @@ interface PartyMember extends PartyJoin {
   /* text chat: how often this member has spoken lately (src/chat.ts) */
   chatCount?: number;
   chatWindowStartedAt?: number;
+  /* the wallet's badges (src/badges.ts), and when the party last asked */
+  badges?: PlayerBadges;
+  badgesAt?: number;
 }
 
 /* a line of chat, as members see it: who (their member id, name and
@@ -67,6 +75,9 @@ export interface PartyChatMessage {
   style: string;
   text: string;
   at: number;
+  /* the speaker's badges then (src/badges.ts) */
+  username?: string;
+  links?: PlayerBadges["links"];
 }
 
 export interface PartyActivity {
@@ -116,7 +127,7 @@ export interface PartyView {
   code: string;
   leader: boolean;
   self: string;
-  members: Array<PartyProfile & { id: string; leader: boolean; self: boolean; accepted: boolean }>;
+  members: Array<PartyProfile & PlayerBadges & { id: string; leader: boolean; self: boolean; accepted: boolean }>;
   lobby: PartyLobby;
   playlist: string;
   mapIndex: number;
@@ -139,6 +150,8 @@ const sameStakes = (left: CustomStakes | null, right: CustomStakes | null): bool
     left.killTarget === right.killTarget && left.teamShareBps === right.teamShareBps);
 
 export class Party extends DurableObject<Env> {
+  private readonly badges = new BadgeCache(this.env);
+
   private read(): PartyRecord | null {
     return (this.ctx.storage.kv.get(RECORD_KEY) as PartyRecord | undefined) ?? null;
   }
@@ -175,6 +188,7 @@ export class Party extends DurableObject<Env> {
         leader: member.key === record.leader,
         self: member.key === key,
         accepted: member.key === record.leader || (record.accepted ?? []).includes(member.key),
+        ...badgeFields(member.badges ?? {}),
       })),
       lobby: record.lobby,
       playlist: record.playlist,
@@ -198,14 +212,38 @@ export class Party extends DurableObject<Env> {
     const existing = record.members.find((member) => member.key === join.key);
     if (existing) {
       existing.identifier = join.identifier;
+      if (existing.wallet !== join.wallet) {
+        delete existing.badges;
+        delete existing.badgesAt;
+      }
       existing.wallet = join.wallet;
       existing.profile = join.profile;
       existing.seenAt = now;
+      this.refreshBadges(existing, now);
       return existing;
     }
     const member: PartyMember = { ...join, id: randomToken(8), joinedAt: now, seenAt: now };
     record.members.push(member);
+    this.refreshBadges(member, now);
     return member;
+  }
+
+  /* A member's badges, when they are due: asked for after the answer, and
+     kept on the member for everyone's next poll. */
+  private refreshBadges(member: PartyMember, now: number): void {
+    const wallet = member.wallet;
+    if (wallet === null || (member.badgesAt !== undefined && now - member.badgesAt < BADGE_LOOKUP_TTL_MS)) return;
+    member.badgesAt = now;
+    const key = member.key;
+    this.ctx.waitUntil((async () => {
+      const badges = (await this.badges.lookUp([wallet], now)).get(wallet);
+      const record = this.read();
+      const current = record?.members.find((candidate) => candidate.key === key && candidate.wallet === wallet);
+      if (!record || !current) return;
+      if (badges === undefined) delete current.badgesAt;
+      else current.badges = badges;
+      this.write(record);
+    })());
   }
 
   /* A new party, its creator leading; false if the code is taken. */
@@ -268,6 +306,7 @@ export class Party extends DurableObject<Env> {
     live.chatSeq = seq;
     live.chat = [...(live.chat ?? []), {
       seq, from: member.id, name: member.profile.name, style: member.profile.style, text: censorChatText(text), at: now,
+      ...badgeFields(member.badges ?? {}),
     }].slice(-PARTY_CHAT_HISTORY);
     this.write(live);
     return { party: this.view(live, join.key, chatSince) };
