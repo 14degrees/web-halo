@@ -119,6 +119,15 @@ const context = {
 context.window = context;
 context.globalThis = context;
 vm.createContext(context);
+/* the page's own window guard (shell.html) registers first, ahead of chat.js */
+const pageGuard = shell.match(/\["keydown", "keyup", "keypress"\]\.forEach\(\(type\) => \{\s*window\.addEventListener\(type, \(event\) => \{[\s\S]*?\}, true\);\s*\}\);/);
+assert(pageGuard, 'missing the page\'s window key guard');
+vm.runInContext(pageGuard[0], context, { filename: 'shell.html' });
+const guardListeners = Object.assign({}, windowListeners);
+['keydown', 'keyup', 'keypress'].forEach(type => {
+  assert(guardListeners[type] && guardListeners[type].capture === true, `the page guards ${type} on the window`);
+  delete windowListeners[type];
+});
 vm.runInContext(chatSource, context, { filename: 'chat.js' });
 const HaloChat = context.HaloChat;
 assert(HaloChat && typeof HaloChat.receive === 'function', 'chat.js installs HaloChat');
@@ -133,6 +142,18 @@ function keyEvent(type, key, extra) {
   const entry = windowListeners[type];
   assert(entry && entry.capture === true, `chat.js listens to ${type} on the window, ahead of SDL`);
   entry.listener(event);
+  return event;
+}
+/* as the browser does: the page's guard, then chat.js unless stopped */
+function pageKeyEvent(type, key, extra) {
+  const event = Object.assign({
+    type, key, repeat: false, altKey: false, ctrlKey: false, metaKey: false,
+    prevented: false, stopped: false,
+    preventDefault() { this.prevented = true; },
+    stopImmediatePropagation() { this.stopped = true; },
+  }, extra || {});
+  guardListeners[type].listener(event);
+  if (!event.stopped) windowListeners[type].listener(event);
   return event;
 }
 function lines(list) {
@@ -230,6 +251,28 @@ async function settle() { for (let index = 0; index < 20; index++) await Promise
   assert.equal(HaloChat.isComposing(), false);
   keyEvent('keydown', 'y');
   keyEvent('keydown', 'Escape');
+  assert.equal(HaloChat.isComposing(), false);
+  /* Esc through the page's guard closes the composer, mouse captured or
+     free, and never reaches the game */
+  pageKeyEvent('keydown', 'y');
+  assert.equal(HaloChat.isComposing(), true);
+  event = pageKeyEvent('keydown', 'Escape');
+  assert.equal(event.prevented && event.stopped, true);
+  assert.equal(HaloChat.isComposing(), false, 'Esc closes the composer with the mouse captured');
+  assert.equal(document.activeElement, canvas);
+  document.pointerLockElement = null;
+  pageKeyEvent('keydown', 'y');
+  assert.equal(HaloChat.isComposing(), true);
+  event = pageKeyEvent('keydown', 'Escape');
+  assert.equal(event.prevented && event.stopped, true);
+  assert.equal(HaloChat.isComposing(), false, 'Esc closes the composer with the mouse free');
+  assert.equal(pageKeyEvent('keyup', 'Escape').stopped, true);
+  /* with the composer closed, Esc is as before: the game never sees it and
+     the browser still frees the mouse (the page's menu follows) */
+  document.pointerLockElement = canvas;
+  event = pageKeyEvent('keydown', 'Escape');
+  assert.equal(event.stopped, true, 'Esc never opens Halo\'s own Start menu');
+  assert.equal(event.prevented, false, 'the browser still frees the mouse');
   assert.equal(HaloChat.isComposing(), false);
   /* a modifier, a repeat, the lobby open, or no game: Y is not the composer's */
   assert.equal(keyEvent('keydown', 'y', { ctrlKey: true }).stopped, false);
