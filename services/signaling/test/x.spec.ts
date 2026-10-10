@@ -220,7 +220,6 @@ describe("linking X", () => {
     expect(verified.status).toBe(200);
     expect(verified.body).toMatchObject({
       handle: "SpartanJack",
-      moved: false,
       message: "Linked @SpartanJack. You can delete the post now.",
     });
     expect(verified.body.profile.x).toEqual({
@@ -338,7 +337,7 @@ describe("linking X", () => {
     expect(x.requests).toHaveLength(X_VERIFY_ATTEMPTS);
   });
 
-  it("keeps one handle on one profile: a fresh proof moves it", async () => {
+  it("keeps one handle on one profile: another profile's proof is refused until it's unlinked", async () => {
     const first = await player();
     const second = await player();
     const one = await challenge(first.auth);
@@ -348,19 +347,32 @@ describe("linking X", () => {
 
     const two = await challenge(second.auth);
     const secondPost = x.post("shared", two.text);
-    const moved = await call("POST", "/v1/profile/x/verify", { url: `https://x.com/shared/status/${secondPost}` }, second.auth);
-    expect(moved.status).toBe(200);
-    expect(moved.body).toMatchObject({ handle: "shared", moved: true });
-    expect((await call("GET", "/v1/profile", undefined, first.auth)).body.profile.x).toBeNull();
-    const events = (await store().adminLookup({ id: first.profile.id }, Date.now())).events;
-    expect(events[0]).toMatchObject({ kind: "x_moved", profileId: first.profile.id });
+    const secondUrl = `https://x.com/shared/status/${secondPost}`;
+    expect((await call("POST", "/v1/profile/x/verify", { url: secondUrl }, second.auth)))
+      .toEqual(failed(409, "X_HANDLE_TAKEN"));
+    expect((await call("GET", "/v1/profile", undefined, first.auth)).body.profile.x.handle).toBe("Shared");
+    expect((await call("GET", "/v1/profile", undefined, second.auth)).body.profile.x).toBeNull();
+    const events = (await store().adminLookup({ id: second.profile.id }, Date.now())).events;
+    expect(events[0]).toMatchObject({ kind: "x_failed", profileId: second.profile.id });
+    expect(JSON.parse(events[0]!.detail!)).toMatchObject({ reason: "X_HANDLE_TAKEN", holder: first.profile.id });
+
+    /* the owner unlinks, which frees it; the refused code still works */
+    expect((await call("DELETE", "/v1/profile/x", undefined, first.auth)).status).toBe(200);
+    const freed = await call("POST", "/v1/profile/x/verify", { url: secondUrl }, second.auth);
+    expect(freed.status).toBe(200);
+    expect(freed.body.profile.x.handle).toBe("shared");
 
     /* relinking another handle replaces the profile's own */
     const three = await challenge(second.auth);
     const other = x.post("other_one", three.text);
     const replaced = await call("POST", "/v1/profile/x/verify", { url: `https://x.com/other_one/status/${other}` }, second.auth);
     expect(replaced.body.profile.x.handle).toBe("other_one");
-    expect(replaced.body.moved).toBe(false);
+
+    /* and the handle it gave up is free again */
+    const four = await challenge(first.auth);
+    const back = x.post("Shared", four.text);
+    expect((await call("POST", "/v1/profile/x/verify", { url: `https://x.com/Shared/status/${back}` }, first.auth)).status)
+      .toBe(200);
   });
 
   it("unlinks", async () => {

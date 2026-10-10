@@ -44,7 +44,11 @@ offers Connect wallet.
    Spartan: <code>`), a Post on X link that fills it in, and when the code
    expires (15 minutes). The player posts, pastes the post's link and
    presses Verify; the Worker reads the post through X's public embed
-   endpoint. Once linked the dialog says the post can be deleted.
+   endpoint. Once linked the dialog says the post can be deleted. An X
+   account is linked to one profile at a time: while another profile holds
+   it, a proof for it is refused (`409 X_HANDLE_TAKEN`) and the code stays
+   for another try. Unlinking it frees it; relinking a different account
+   replaces a profile's own.
 6. **Shown to other players.** Three switches, all off at first: wallets,
    fomo (the proven wallet and, once verified, the handle), and X.
 
