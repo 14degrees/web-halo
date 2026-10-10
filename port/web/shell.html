@@ -4340,6 +4340,12 @@
       window.addEventListener(type, (event) => {
         /* watching: the page takes the keys (online_client.js) */
         if (document.body.dataset.spectate === "true") return;
+        /* Esc closes the chat composer first (chat.js listens after this),
+           mouse captured or not */
+        if (event.key === "Escape" && event.type === "keydown" && window.HaloChat && window.HaloChat.isComposing()) {
+          event.preventDefault();
+          window.HaloChat.close();
+        }
         /* Esc frees the mouse and opens the page's menu (online_client.js),
            never Halo's own Start menu under it */
         if (document.body.dataset.lobby === "open" || event.key === "Escape") event.stopImmediatePropagation();
