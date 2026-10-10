@@ -49,7 +49,6 @@
     FOMO_CHECK_RATE_LIMITED: "Checked recently. Try again in a few minutes.",
     FOMO_CHECK_UNAVAILABLE: "Couldn't read the chain. Try again later.",
     FOMO_HANDLE_RATE_LIMITED: "Too many handle changes. Try again in an hour.",
-    FOMO_HANDLE_UNKNOWN: "fomo doesn't know that handle. Check the spelling.",
     FOMO_HANDLE_TAKEN: "That fomo handle is verified on another profile.",
     FOMO_HANDLE_MISSING: "Your profile has no fomo handle.",
     FOMO_HANDLE_CHANGED: "Your fomo handle changed. Reload and look again.",
@@ -337,8 +336,7 @@
       return request("/v1/profile/fomo/handle", "PUT", { handle: handle }).then(function(result) {
         setProfile(result.profile);
         if (input) input.value = "";
-        var fomo = result.profile.fomo;
-        return fomo && fomo.handleSeen === null ? "Saved. fomo couldn't be asked whether that handle exists right now." : "Saved.";
+        return "Saved.";
       });
     });
   }
@@ -476,11 +474,10 @@
     if (fomo.handleVerified) {
       return { state: "verified", text: name + " · verified ✓" + (profile.show.fomo ? " · shown to other players" : " · hidden from other players") };
     }
-    var unchecked = fomo.handleSeen === null ? " fomo couldn't be asked whether it exists." : "";
     if (fomo.verified) {
-      return { state: "awaiting", text: name + " · claimed, waiting for an admin to confirm it belongs to your fomo wallet. Private until then." + unchecked };
+      return { state: "awaiting", text: name + " · claimed, waiting for an admin to confirm it belongs to your fomo wallet. Private until then." };
     }
-    return { state: "claimed", text: name + " · claimed. Prove a fomo wallet below, then an admin confirms the handle. Private until then." + unchecked };
+    return { state: "claimed", text: name + " · claimed. Prove a fomo wallet below, then an admin confirms the handle. Private until then." };
   }
 
   function renderWallets(profile) {

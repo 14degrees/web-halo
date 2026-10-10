@@ -13,12 +13,15 @@ import { requireWallet } from "./wallet";
    nothing that ties a handle to a wallet, so a claim proves nothing by
    itself: it is stored unverified and private. Two checks happen here:
 
-   - The handle exists: fomo's public profile card
-     (image-renderer.fomo.cloud/og/profile/<handle>/card.png) answers 200
-     for a real handle and redirects for an unknown one. One HEAD request
-     per claim, the answer cached a day per handle, a global cap per hour;
-     FOMO_HANDLE_CHECK = "off" stops it. A handle fomo doesn't know is
-     refused; one that could not be checked is kept.
+   - Whether the handle exists: nothing public tells. fomo's profile card
+     (image-renderer.fomo.cloud/og/profile/<handle>/card.png) redirects to
+     its generic image for real handles as well as unknown ones (seen
+     2026-10-10), and fomo.family/profile/<handle> serves the same page for
+     both. So FOMO_HANDLE_CHECK is "off" by default and no claim is ever
+     refused for it. Set "on", the card is asked once per claim (HEAD,
+     cached a day per handle, a global cap per hour) and a 200 is recorded
+     as `handleSeen`, a hint for the admin; any other answer records
+     nothing.
    - The player controls a fomo wallet: detected automatically (src/fomo.ts,
      a linked wallet fomo paid fees for), or proven here by a transfer. The
      player is given a small, random USDC amount and sends exactly that from
@@ -83,17 +86,17 @@ export function normaliseFomoHandle(input: unknown): { handle: string; key: stri
 }
 
 export function fomoHandleCheckEnabled(env: Pick<RuntimeEnv, "FOMO_HANDLE_CHECK">): boolean {
-  return (env.FOMO_HANDLE_CHECK ?? "on").trim().toLowerCase() !== "off";
+  return (env.FOMO_HANDLE_CHECK ?? "off").trim().toLowerCase() === "on";
 }
 
-/* Whether fomo knows the handle, from its profile card: true (200), false
-   (a redirect to the generic card), or null when it could not be told (the
-   check is off, over its cap, or fomo answered something else). */
-export async function fomoHandleSeen(env: RuntimeEnv, key: string, now: number): Promise<boolean | null> {
+/* Whether fomo's profile card shows the handle: true (200), or null when
+   it can't be told (the check is off, over its cap, or fomo answered
+   anything else, its redirect to the generic card included). Never false:
+   that redirect is also what real handles get. */
+export async function fomoHandleSeen(env: RuntimeEnv, key: string, now: number): Promise<true | null> {
   if (!fomoHandleCheckEnabled(env)) return null;
   const cacheKey = `fomo-handle-seen:${key}`;
-  const cached = await env.HALO_ABUSE.get(cacheKey);
-  if (cached === "1" || cached === "0") return cached === "1";
+  if ((await env.HALO_ABUSE.get(cacheKey)) === "1") return true;
 
   const capKey = `fomo-handle-checks:${Math.floor(now / HOUR_MS)}`;
   const made = Number(await env.HALO_ABUSE.get(capKey)) || 0;
@@ -112,11 +115,9 @@ export async function fomoHandleSeen(env: RuntimeEnv, key: string, now: number):
   } catch {
     return null;
   }
-  const seen = status === 200 ? true : status >= 300 && status < 400 ? false : null;
-  if (seen !== null) {
-    await env.HALO_ABUSE.put(cacheKey, seen ? "1" : "0", { expirationTtl: FOMO_HANDLE_SEEN_TTL_SECONDS });
-  }
-  return seen;
+  if (status !== 200) return null;
+  await env.HALO_ABUSE.put(cacheKey, "1", { expirationTtl: FOMO_HANDLE_SEEN_TTL_SECONDS });
+  return true;
 }
 
 /* The wallet's token account for a mint (its associated token account),
@@ -250,7 +251,6 @@ export async function handleFomoHandleRequest(
       throw new HttpError(429, "FOMO_HANDLE_RATE_LIMITED", "Too many handle changes. Try again later.");
     }
     const seen = await fomoHandleSeen(env, name.key, now);
-    if (seen === false) throw new HttpError(404, "FOMO_HANDLE_UNKNOWN", "fomo doesn't know that handle.");
     return answer(await profiles(env).claimFomoHandle(wallet, name.handle, name.key, seen, now));
   }
 

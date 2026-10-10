@@ -389,7 +389,7 @@ The caller is the signed-in wallet (`Authorization: Bearer` from
 | `GET /v1/profiles/:username` | another player's view: the name, and only the links the owner shows that are verified (no auth) |
 | `GET /v1/profiles?wallets=a,b,c` | the same for up to 16 wallets of a roster, by wallet (no auth) |
 | `GET /v1/admin/profiles?wallet=\|username=\|id=` | support lookup with the name history and the last events (admin token) |
-| `PUT /v1/profile/fomo/handle` `{ "handle" }` | claims a fomo.family handle (`@name` or a pasted profile link works); stored unverified and private. fomo's public profile card is asked once whether the handle exists (cached a day, capped per hour; `FOMO_HANDLE_CHECK=off` stops it): unknown is refused, unanswered is kept. Ten claims an hour per wallet |
+| `PUT /v1/profile/fomo/handle` `{ "handle" }` | claims a fomo.family handle (`@name` or a pasted profile link works); stored unverified and private, and never refused for whether fomo knows it: nothing public tells (fomo's profile card redirects for real and unknown handles alike). `FOMO_HANDLE_CHECK=on` (default `off`) asks the card anyway and records a 200 as `handleSeen` for the admin. Ten claims an hour per wallet |
 | `DELETE /v1/profile/fomo/handle` | drops it |
 | `POST /v1/profile/fomo/transfer` | the transfer that proves a fomo wallet: a random USDC amount (0.10 to 0.99) to send from fomo to the signed-in wallet, valid 30 minutes |
 | `POST /v1/profile/fomo/transfer/check` | looks for it (once a minute): a transfer of exactly that amount, its fee paid by fomo's fee payer; the sender becomes the profile's fomo wallet (`method: "transfer"`) |
