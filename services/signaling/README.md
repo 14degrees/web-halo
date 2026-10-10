@@ -510,11 +510,22 @@ It is independent of the host/guest WebRTC star topology:
     {
       "peerId": "g_...",
       "role": "guest",
-      "profile": { "name": "Spartan 117", "style": "sage" }
+      "profile": { "name": "Spartan 117", "style": "sage" },
+      "username": "Chief",
+      "links": { "fomo": { "handle": null }, "x": { "handle": "chief" } }
     }
   ]
 }
 ```
+
+`username` and `links` are badges (`src/badges.ts`): the account name and the
+verified links the owner shows (`showFomo`, `showX`) of the wallet the player
+signed in with, from the Profiles store's public view. The room attaches
+them, so a client can't name its own; a fomo badge carries the handle only
+once an admin confirmed it, and no wallet goes out with a badge. The room
+asks the store once a player says who they are and again only after five
+minutes, and keeps the answers in memory; the party does the same for its
+members (`members[].username`, `members[].links`, and on its chat lines).
 
 ### Client to server
 
@@ -576,7 +587,7 @@ trimmed, single-spaced, and with the words on the profanity list
 (`src/chat.ts`) masked. The room keeps no chat:
 
 ```json
-{ "v": 1, "type": "chat", "from": "g_...", "name": "Spartan 117", "username": "Chief", "style": "sage", "text": "gg", "at": 1700000000000 }
+{ "v": 1, "type": "chat", "from": "g_...", "name": "Spartan 117", "username": "Chief", "links": { "x": { "handle": "chief" } }, "style": "sage", "text": "gg", "at": 1700000000000 }
 ```
 
 The transport must process `welcome.peers` and `peer-joined.peer` first, pass

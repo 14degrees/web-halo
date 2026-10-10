@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { BadgeCache, BADGE_LOOKUP_TTL_MS, badgeFields, isPlayerLinks, type PlayerLinks } from "./badges";
 import { allowChat, censorChatText } from "./chat";
 import {
   hashesMatch,
@@ -9,7 +10,6 @@ import {
 } from "./crypto";
 import { LOBBY_DIRECTORY_NAME, LOBBY_NAMES_LIMIT, type LobbyEntry } from "./lobby";
 import { MATCHMAKER_NAME } from "./matchmaker";
-import { PROFILES_NAME } from "./profiles";
 import { walletPlayerName } from "./solana";
 import type { RoomRoster } from "./stats";
 import type { WagerView } from "./wager";
@@ -79,6 +79,9 @@ interface SocketAttachment {
   /* the account name behind the wallet (src/profiles.ts), shown with chat
      and the roster when the player has one */
   username?: string;
+  /* the links they show (src/badges.ts), and when the room last asked */
+  links?: PlayerLinks;
+  badgesAt?: number;
   /* text chat: how often this player has spoken lately (src/chat.ts) */
   chatCount?: number;
   chatWindowStartedAt?: number;
@@ -175,6 +178,9 @@ function isSocketAttachment(value: unknown): value is SocketAttachment {
   if (record.username !== undefined && typeof record.username !== "string") {
     return false;
   }
+  if (record.links !== undefined && !isPlayerLinks(record.links)) {
+    return false;
+  }
   return (
     typeof record.joinedAt === "number" &&
     typeof record.identifier === "string" &&
@@ -238,8 +244,12 @@ const BROADCAST_ON_KEY = "broadcast-on";
 const MAX_HOST_WEBSOCKET_MESSAGES_PER_MINUTE = 16_384;
 
 export class SignalingRoom extends DurableObject<Env> {
+  /* the Profiles store's answers, kept a while (src/badges.ts) */
+  private readonly badges: BadgeCache;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.badges = new BadgeCache(env);
   }
 
   private initializeStorage(): void {
@@ -749,7 +759,7 @@ export class SignalingRoom extends DurableObject<Env> {
         style: sender.profile.style,
         text: censorChatText(message.text),
         type: "chat",
-        ...(sender.username === undefined ? {} : { username: sender.username }),
+        ...badgeFields(sender),
         v: SIGNALING_PROTOCOL_VERSION,
       }));
       return;
@@ -825,8 +835,9 @@ export class SignalingRoom extends DurableObject<Env> {
       if (sender.matches === undefined && sender.role === "guest") {
         this.ctx.waitUntil(this.lookUpRank(sender.peerId, sender.identifier));
       }
-      if (sender.username === undefined && sender.wallet !== undefined) {
-        this.ctx.waitUntil(this.lookUpUsername(sender.peerId, sender.wallet));
+      if (sender.wallet !== undefined && (sender.badgesAt === undefined || now - sender.badgesAt >= BADGE_LOOKUP_TTL_MS)) {
+        sender.badgesAt = now;
+        this.ctx.waitUntil(this.lookUpBadges(sender.peerId, sender.wallet, now));
       }
       try {
         socket.serializeAttachment(sender);
@@ -1040,25 +1051,34 @@ export class SignalingRoom extends DurableObject<Env> {
     this.broadcastRoster();
   }
 
-  /* A wallet's account name (src/profiles.ts): the roster and chat show it
-     beside the in-game name once it is known. */
-  private async lookUpUsername(peerId: string, wallet: string): Promise<void> {
-    let username: string | undefined;
-    try {
-      const profiles = await this.env.PROFILES.getByName(PROFILES_NAME).publicProfilesForWallets([wallet]);
-      username = profiles[wallet]?.username;
-    } catch {
+  /* A wallet's account name and shown links (src/badges.ts): the roster
+     and chat show them beside the in-game name once they are known. The
+     room asks the Profiles store again only after BADGE_LOOKUP_TTL_MS. */
+  private async lookUpBadges(peerId: string, wallet: string, now: number): Promise<void> {
+    const badges = (await this.badges.lookUp([wallet], now)).get(wallet);
+    const connection = this.connectionForPeer(peerId);
+    if (!connection || connection.attachment.wallet !== wallet) return;
+    if (badges === undefined) {
+      /* the store didn't answer: ask again with the next profile */
+      delete connection.attachment.badgesAt;
+      this.persistAttachment(connection);
       return;
     }
-    const connection = this.connectionForPeer(peerId);
-    if (!connection || username === undefined || connection.attachment.wallet !== wallet) return;
-    connection.attachment.username = username;
+    const before = JSON.stringify(badgeFields(connection.attachment));
+    if (badges.username === undefined) delete connection.attachment.username;
+    else connection.attachment.username = badges.username;
+    if (badges.links === undefined) delete connection.attachment.links;
+    else connection.attachment.links = badges.links;
+    this.persistAttachment(connection);
+    if (JSON.stringify(badgeFields(connection.attachment)) !== before) this.broadcastRoster();
+  }
+
+  private persistAttachment(connection: { socket: WebSocket; attachment: SocketAttachment }): void {
     try {
       connection.socket.serializeAttachment(connection.attachment);
     } catch {
       /* the socket is closing */
     }
-    this.broadcastRoster();
   }
 
   private broadcastRoster(): void {
@@ -1070,7 +1090,7 @@ export class SignalingRoom extends DurableObject<Env> {
         role: attachment.role,
         matches: attachment.matches ?? null,
         ...(attachment.spectator ? { spectator: true } : {}),
-        ...(attachment.username === undefined ? {} : { username: attachment.username }),
+        ...badgeFields(attachment),
       })),
       type: "roster",
       v: SIGNALING_PROTOCOL_VERSION,
