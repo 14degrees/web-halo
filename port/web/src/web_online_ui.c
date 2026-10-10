@@ -95,6 +95,7 @@ void network_lobby_broadcast_update(float seconds);
 #endif
 long halo_screen_width(void);
 void halo_linux_mouse_look_configure(float sensitivity, int invert);
+int halo_linux_key_binding_configure(int action, int slot, int input);
 
 enum
 {
@@ -409,6 +410,16 @@ thread's look code reads, so a change applies on the next mouse poll. */
 EMSCRIPTEN_KEEPALIVE void platform_web_set_mouse_look(float sensitivity, int invert)
 {
 	halo_linux_mouse_look_configure(sensitivity, invert);
+}
+
+/* One slot of the key map (port/linux/src/xinput_sdl.c), from the page's
+bindings dialog: action and slot index its table, input is a scancode,
+1000 + a mouse button, 1100 for the wheel, -1 for nothing or 0 for the
+default. Like the mouse look, it only stores an atomic the game thread reads
+on its next input poll. Returns 0 for anything out of range. */
+EMSCRIPTEN_KEEPALIVE int platform_web_set_key_binding(int action, int slot, int input)
+{
+	return halo_linux_key_binding_configure(action, slot, input);
 }
 
 EMSCRIPTEN_KEEPALIVE int platform_web_online_set_player_customization(
