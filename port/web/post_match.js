@@ -185,8 +185,9 @@
     }
     var left = secondsLeft(model, now);
     var reportRows = rows(model.board, model.wagerView, model.wagered ? model.wagered.stake : undefined);
+    var badges = model.badges || {};
     var key = JSON.stringify([left, model.offers, model.votes, model.myVote, model.stay, model.decided, reportRows,
-      model.kind, model.leader, model.wagered]);
+      model.kind, model.leader, model.wagered, badges]);
     if (root.hidden) root.hidden = false;
     if (root.dataset.key === key) return;
     root.dataset.key = key;
@@ -212,6 +213,11 @@
           var cell = document.createElement("td");
           cell.textContent = text;
           if (index === 1 && row.self) cell.dataset.self = "true";
+          /* the player's badges (badges.js), from the room's roster */
+          if (index === 1 && !row.header && badges[row.name] && global.HaloBadges) {
+            var shown = global.HaloBadges.element(badges[row.name]);
+            if (shown) cell.appendChild(shown);
+          }
           line.appendChild(cell);
         });
         body.push(line);

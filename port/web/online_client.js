@@ -876,7 +876,20 @@
       peerId: value.peerId, role: value.role, profile: profile,
       matches: typeof value.matches === "number" && value.matches >= 0 ? value.matches : null,
       spectator: value.spectator === true,
+      /* the account name and shown links the room attached (badges.js) */
+      username: typeof value.username === "string" && value.username ? value.username : null,
+      links: global.HaloBadges ? global.HaloBadges.normalize(value.links) : null,
     };
+  }
+
+  /* a player's badges after their name (badges.js), or nothing */
+  function appendBadges(parent, links) {
+    var badges = links && global.HaloBadges ? global.HaloBadges.element(links) : null;
+    if (badges) parent.appendChild(badges);
+  }
+
+  function badgesKey(links) {
+    return links && global.HaloBadges ? global.HaloBadges.key(links) : "";
   }
 
   function renderRoster() {
@@ -931,6 +944,7 @@
           (player.role === "host" ? "Host" : "Player");
         row.appendChild(swatch);
         row.appendChild(label);
+        appendBadges(row, player.links);
         row.appendChild(role);
         row.appendChild(pingSpan("sidebar", player));
         elements.playerList.appendChild(row);
@@ -953,10 +967,14 @@
 
   function updateLocalRoster() {
     if (!session.selfPeerId || !session.profile || !session.role) return;
+    /* the badges are the room's word, kept */
+    var known = session.roster.get(session.selfPeerId);
     session.roster.set(session.selfPeerId, {
       peerId: session.selfPeerId,
       profile: session.profile,
       role: session.role,
+      username: known ? known.username : null,
+      links: known ? known.links : null,
     });
     renderRoster();
   }
@@ -4021,6 +4039,7 @@
       /* the party, its leader starred */
       players = party.members.map(function(member) {
         return { peerId: "party:" + member.id, role: "guest", self: member.self, leader: member.leader,
+          links: global.HaloBadges ? global.HaloBadges.normalize(member.links) : null,
           profile: { name: member.name, style: member.style, emblem: member.emblem === null ? undefined : member.emblem } };
       });
       if (lobby.queue && lobbyKind() !== "custom") slots = Math.max(0, playlist.maximum - players.length);
@@ -4040,7 +4059,8 @@
     }
     var signature = players.map(function(player) {
       return player.peerId + (player.leader ? "*" : "") + ":" + (player.profile ? player.profile.name + "/" + player.profile.style + "/" +
-        player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches);
+        player.profile.emblem : "") + "/" + (player.matches !== undefined ? player.matches : lobby.matches) +
+        "/" + badgesKey(player.links);
     }).join("|") + "#" + session.selfPeerId + "#" + slots + (searching ? "s" : "");
     if (list.dataset.signature === signature) {
       updateRowPings("lobby");
@@ -4077,6 +4097,7 @@
       role.className = "role";
       role.textContent = player.peerId === session.selfPeerId ? "You" : (player.role === "host" ? "Host" : "");
       row.appendChild(name);
+      appendBadges(row, player.links);
       if (player.leader) {
         var star = document.createElement("span");
         star.className = "leader";
@@ -5693,7 +5714,7 @@
     return money;
   }
 
-  function scoreboardRow(className, place, emblem, name, tag, score, ping) {
+  function scoreboardRow(className, place, emblem, name, tag, score, ping, links) {
     var row = document.createElement("div");
     row.className = "sb-row " + className;
     var placeCell = document.createElement("span");
@@ -5705,6 +5726,7 @@
     var nameCell = document.createElement("span");
     nameCell.className = "sb-name";
     nameCell.textContent = name;
+    appendBadges(nameCell, links);
     var tagCell = document.createElement("span");
     tagCell.className = "sb-tag";
     tagCell.textContent = tag;
@@ -5735,7 +5757,9 @@
     var money = scoreboardMoney();
     var pings = session.pings || {};
     var watchers = session.roster ? Array.from(session.roster.values()).filter(function(entry) { return entry.spectator; }).length : 0;
-    var key = JSON.stringify([state.over, state.teams, state.red, state.blue, state.title, state.self, state.players, money, pings, watchers]);
+    var badges = global.HaloBadges ? global.HaloBadges.byName(session.roster) : {};
+    var key = JSON.stringify([state.over, state.teams, state.red, state.blue, state.title, state.self, state.players, money, pings, watchers,
+      badges]);
     if (root.hidden) root.hidden = false;
     if (key === scoreboard.key) return;
     scoreboard.key = key;
@@ -5774,7 +5798,8 @@
           .sort(function(left, right) { return left.quit - right.quit || right.score - left.score || left.name.localeCompare(right.name); })
           .forEach(function(player) {
             rows.push(scoreboardRow("sb-" + team.tone + (player.quit ? " sb-quit" : "") + (player.name === state.self ? " sb-self" : ""),
-              team.place, emblems[player.name], player.name, tagFor(player), player.score, player.quit ? null : pings[player.name]));
+              team.place, emblems[player.name], player.name, tagFor(player), player.score, player.quit ? null : pings[player.name],
+              badges[player.name]));
           });
       });
     } else {
@@ -5783,7 +5808,8 @@
       players.forEach(function(player, index) {
         if (index === 0 || player.score !== players[index - 1].score) place = index + 1;
         rows.push(scoreboardRow("sb-solo" + (player.quit ? " sb-quit" : "") + (player.name === state.self ? " sb-self" : ""),
-          player.quit ? "–" : place, emblems[player.name], player.name, tagFor(player), player.score, player.quit ? null : pings[player.name]));
+          player.quit ? "–" : place, emblems[player.name], player.name, tagFor(player), player.score, player.quit ? null : pings[player.name],
+          badges[player.name]));
       });
     }
     body.replaceChildren.apply(body, rows);
@@ -6013,6 +6039,11 @@
 
   function renderPostMatch() {
     if (!global.HaloPostMatch) return;
+    /* the players' badges, while the room still knows them (badges.js) */
+    if (lobby.postMatch && global.HaloBadges && session.roster && session.roster.size) {
+      var badges = global.HaloBadges.byName(session.roster);
+      if (Object.keys(badges).length || !lobby.postMatch.badges) lobby.postMatch.badges = badges;
+    }
     global.HaloPostMatch.render({
       root: lobbyElement("lobby-post-match"),
       title: lobbyElement("post-match-title"),
