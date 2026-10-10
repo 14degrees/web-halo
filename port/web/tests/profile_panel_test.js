@@ -405,6 +405,7 @@ const text = id => byId(id).textContent;
     ['X_URL_INVALID', 'Paste the link to your post, like https://x.com/you/status/123.'],
     ['X_TWEET_NOT_FOUND', "We couldn't see that post. Check the link and that your account is public."],
     ['X_HANDLE_MISMATCH', 'That post was written by a different account than its link says.'],
+    ['X_HANDLE_TAKEN', 'That X account is already linked to another profile. It has to be unlinked there first.'],
     ['X_UNAVAILABLE', "Couldn't reach X. Try again in a minute."],
     ['X_VERIFY_RATE_LIMITED', 'Too many tries. Wait a few minutes.'],
     ['X_VERIFY_BUSY', 'Lots of players are linking X right now. Try again in a minute.'],
@@ -415,7 +416,7 @@ const text = id => byId(id).textContent;
     assert.equal(text('profile-x-status'), words);
     assert.equal(byId('profile-x-proof').hidden, false, 'the code stays for another try');
   }
-  respond('POST', '/v1/profile/x/verify', () => ({ handle: 'jack', moved: false, message: 'Linked @jack. You can delete the post now.',
+  respond('POST', '/v1/profile/x/verify', () => ({ handle: 'jack', message: 'Linked @jack. You can delete the post now.',
     profile: view({ x: { handle: 'jack', verified: true, verifiedAt: clock, proofUrl: 'https://x.com/jack/status/1' } }) }));
   await byId('profile-x-verify').click();
   assert.deepEqual(calls[calls.length - 1].body, { url: 'https://x.com/jack/status/1' });
