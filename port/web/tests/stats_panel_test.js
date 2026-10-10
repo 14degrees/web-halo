@@ -96,6 +96,7 @@ assert.ok(HaloStats, 'the panel installs itself');
 assert.deepEqual(Array.from(HaloStats.sorts, sort => sort.id), ['kills', 'wins', 'kd', 'matches', 'net']);
 
 let walletAddress = null;
+let username = null;
 function fetchJson(requestPath, options) {
   requests.push(requestPath);
   assert.equal(options.method, 'GET');
@@ -108,7 +109,7 @@ function fetchJson(requestPath, options) {
   }
   return Promise.resolve(answer);
 }
-HaloStats.init({ fetchJson, playerKey: () => 'player-key-of-this-browser', walletAddress: () => walletAddress });
+HaloStats.init({ fetchJson, playerKey: () => 'player-key-of-this-browser', walletAddress: () => walletAddress, username: () => username });
 
 /* the sort buttons are built once, kills first and selected */
 const sorts = byId('leaderboard-sorts');
@@ -218,6 +219,23 @@ answers = {
   assert.deepEqual(requests.slice(-2), [`/v1/players/${walletAddress}`, '/v1/players/player-key-of-this-browser']);
   assert.equal(byId('spartan-stats-identity').childNodes[0].textContent, 'Guest');
   assert.match(byId('spartan-stats-status').textContent, /Tied to this browser only\. Sign in with a wallet to keep it\./);
+
+  /* a claimed username is the record's identity at once, before a match
+     folds the older record into it */
+  username = 'Chief';
+  await HaloStats.refreshPlayerStats();
+  const badge = byId('spartan-stats-identity').childNodes[0];
+  assert.equal(badge.textContent, 'Username');
+  assert.equal(badge.dataset.identity, 'username');
+  assert.equal(badge.title, 'A claimed username: Chief');
+  assert.match(byId('spartan-stats-status').textContent,
+    /Tied to your username: every wallet you link plays for the same record\. It folds into Chief's record with your next matchmade game\.$/);
+  /* no record at all: still the username's badge */
+  delete answers['/v1/players/player-key-of-this-browser'];
+  await HaloStats.refreshPlayerStats();
+  assert.equal(byId('spartan-stats-identity').childNodes[0].textContent, 'Username');
+  assert.match(byId('spartan-stats-status').textContent, /^No matchmade games on record yet\./);
+  username = null;
 
   /* the service down: the board says so and keeps working */
   answers['/v1/leaderboard'] = () => Promise.reject(new Error('The private-room service is unreachable.'));

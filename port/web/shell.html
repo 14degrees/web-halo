@@ -1120,7 +1120,7 @@
     }
     .lobby-wallet-head { display: flex; align-items: center; justify-content: space-between; }
     #lobby-wallet-name { font-family: ui-monospace, Menlo, monospace; font-size: .95rem; color: #ffe7a3; }
-    #lobby-wallet-signout { padding: 0; border: 0; background: none; color: #c8b27a; font: inherit; font-size: .8rem; text-decoration: underline; cursor: pointer; }
+    #lobby-wallet-signout, #lobby-wallet-profile { padding: 0; border: 0; background: none; color: #c8b27a; font: inherit; font-size: .8rem; text-decoration: underline; cursor: pointer; }
     .lobby-wallet-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; color: #e8d7a4; }
     .lobby-wallet-row span { display: grid; font-size: .85rem; letter-spacing: .05em; text-transform: uppercase; }
     .lobby-wallet-row small { font-size: .72rem; letter-spacing: 0; text-transform: none; color: #a8956a; }
@@ -1262,6 +1262,38 @@
     }
     #key-tips dd { margin: 0; color: #c9d3e6; }
     @media (max-width: 700px) { #key-tips { display: none; } }
+    /* ---------- the profile and linked accounts (profile_panel.js) */
+    .spartan-settings .spartan-controls small { margin-left: .3rem; color: #5fd0ff; }
+    .profile-dialog { width: min(36rem, calc(100vw - 2rem)); }
+    .profile-dialog .h3-dialog-card { max-height: calc(100vh - 2rem); overflow-y: auto; }
+    .profile-body { display: grid; gap: .7rem; }
+    .profile-section { display: grid; gap: .35rem; padding-top: .6rem; border-top: 1px solid rgba(128, 148, 180, .25); }
+    .profile-section h3 { margin: 0; color: #8094b4; font-weight: 400; font-size: .95rem; letter-spacing: .08em; text-transform: uppercase; }
+    .profile-section h3 strong { margin-left: .4rem; color: #fff; font-weight: 400; font-size: 1.2rem; letter-spacing: 0; text-transform: none; }
+    .profile-dialog .profile-hint { color: #8094b4; font-size: .95rem; }
+    .profile-dialog .profile-note { min-height: 0; color: #c9d3e6; font-size: .95rem; }
+    .profile-dialog .profile-note:empty { display: none; }
+    .profile-dialog .profile-note[data-tone="error"] { color: #ff8a7a; }
+    .profile-dialog .profile-note[data-tone="ok"] { color: #8ee08e; }
+    .profile-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+    .profile-row p { flex: 1; min-width: 12rem; }
+    .profile-dialog input[type="text"], .profile-dialog input[type="url"] {
+      flex: 1; min-width: 10rem; padding: .45rem .6rem; border: 1px solid rgba(128, 148, 180, .5); background: #040a16; color: #fff; font: inherit; font-size: 1.05rem;
+    }
+    .profile-link-button {
+      justify-self: start; padding: .35rem .8rem; border: 1px solid rgba(128, 148, 180, .5); background: rgba(0, 0, 0, .3);
+      color: #e1e8f2; font: inherit; font-size: .95rem; text-decoration: none; cursor: pointer;
+    }
+    .profile-link-button:disabled { opacity: .5; cursor: default; }
+    .profile-wallets { display: grid; gap: .25rem; margin: 0; padding: 0; list-style: none; }
+    .profile-wallet { display: flex; align-items: center; gap: .6rem; }
+    .profile-wallet-address { font-family: ui-monospace, monospace; font-size: .95rem; }
+    .profile-wallet-you { color: #5fd0ff; font-size: .85rem; text-transform: uppercase; letter-spacing: .06em; }
+    .profile-proof { display: grid; gap: .4rem; padding: .6rem .7rem; border-left: 3px solid #5fd0ff; background: rgba(0, 0, 0, .25); }
+    .profile-code { padding: .3rem .5rem; background: #040a16; color: #fff; font-family: ui-monospace, monospace; font-size: .9rem; word-break: break-all; }
+    #profile-fomo-handle-state[data-state="verified"] { color: #8ee08e; }
+    #profile-fomo-handle-state[data-state="awaiting"] { color: #ffd65a; }
+    #lobby-players .name[title] { cursor: help; }
     /* ---------- controls (controls.js): the bindings dialog and the tips */
     .spartan-settings .spartan-controls {
       align-self: flex-start; margin-top: .4rem; padding: .4rem .9rem; border: 1px solid rgba(128, 148, 180, .5);
@@ -2733,6 +2765,7 @@
       <div id="lobby-wallet-in" hidden>
         <div class="lobby-wallet-head">
           <span id="lobby-wallet-name"></span>
+          <button id="lobby-wallet-profile" type="button">Profile</button>
           <button id="lobby-wallet-signout" type="button">Sign out</button>
         </div>
         <div class="lobby-wallet-row lobby-wallet-game">
@@ -2896,6 +2929,7 @@
         <input id="lobby-mouse-sensitivity" type="range" min="0.1" max="4" step="0.05" value="1" aria-describedby="lobby-mouse-sensitivity-value">
         <label class="spartan-switch" for="lobby-invert-y"><input id="lobby-invert-y" type="checkbox"> Invert mouse Y <small>forward looks down</small></label>
         <button id="spartan-controls" class="spartan-controls" type="button">Controls &amp; key bindings</button>
+        <button id="spartan-profile" class="spartan-controls" type="button">Profile &amp; linked accounts <small id="spartan-profile-username"></small></button>
         <section id="spartan-stats" class="spartan-stats" aria-label="Your record">
           <h3>Your record <span id="spartan-stats-identity"></span></h3>
           <dl id="spartan-stats-grid" class="stats-grid"></dl>
@@ -2919,6 +2953,102 @@
         <button id="controls-tips-again" type="button">Show tips again</button>
         <button id="controls-done" type="button">Done</button>
       </div>
+    </div>
+  </dialog>
+  <!-- the player's profile and linked accounts (profile_panel.js), from the Spartan dialog -->
+  <dialog id="profile-dialog" class="h3-dialog profile-dialog" aria-labelledby="profile-dialog-title">
+    <div class="h3-dialog-card">
+      <button id="profile-dialog-close" class="spartan-close" type="button" aria-label="Close">✕</button>
+      <h2 id="profile-dialog-title">Profile &amp; linked accounts</h2>
+      <div id="profile-signed-out">
+        <p>Sign in with your wallet first. Your profile, username and links belong to your wallets.</p>
+        <button id="profile-sign-in" class="h3-action" type="button">Connect wallet</button>
+      </div>
+      <div id="profile-body" class="profile-body" hidden>
+        <p id="profile-status" class="profile-note" role="status" aria-live="polite"></p>
+        <section class="profile-section" aria-labelledby="profile-username-title">
+          <h3 id="profile-username-title">Username <strong id="profile-username-current"></strong></h3>
+          <p id="profile-username-left" class="profile-hint"></p>
+          <div class="profile-row">
+            <input id="profile-username-input" type="text" maxlength="11" autocomplete="off" spellcheck="false" placeholder="New username" aria-label="Username">
+            <button id="profile-username-save" class="profile-link-button" type="button">Claim</button>
+          </div>
+          <p id="profile-username-rules" class="profile-hint"></p>
+          <p id="profile-username-status" class="profile-note" role="status" aria-live="polite"></p>
+        </section>
+        <p id="profile-needs-username" class="profile-hint" hidden>Claim a username to link wallets, fomo and X.</p>
+        <div id="profile-links" hidden>
+          <section class="profile-section" aria-labelledby="profile-wallets-title">
+            <h3 id="profile-wallets-title">Wallets</h3>
+            <ul id="profile-wallets" class="profile-wallets"></ul>
+            <p class="profile-hint">To add a wallet, switch your wallet app to it, then press Link and sign the message. Nothing is sent or spent.</p>
+            <button id="profile-wallet-link" class="profile-link-button" type="button">Link another wallet</button>
+            <p id="profile-wallet-status" class="profile-note" role="status" aria-live="polite"></p>
+          </section>
+          <section class="profile-section" aria-labelledby="profile-fomo-title">
+            <h3 id="profile-fomo-title">fomo</h3>
+            <div class="profile-row">
+              <p id="profile-fomo-detect"></p>
+              <button id="profile-fomo-recheck" class="profile-link-button" type="button">Check again</button>
+            </div>
+            <p id="profile-fomo-status" class="profile-note" role="status" aria-live="polite"></p>
+            <p id="profile-fomo-handle-state" class="profile-hint"></p>
+            <div class="profile-row">
+              <input id="profile-fomo-handle-input" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="@handle on fomo" aria-label="fomo handle">
+              <button id="profile-fomo-handle-save" class="profile-link-button" type="button">Claim</button>
+              <button id="profile-fomo-handle-remove" class="profile-link-button" type="button" hidden>Remove</button>
+            </div>
+            <p id="profile-fomo-handle-status" class="profile-note" role="status" aria-live="polite"></p>
+            <div id="profile-fomo-transfer-box">
+              <p class="profile-hint">No fomo wallet seen? Send a small amount of USDC from fomo to your signed-in wallet. fomo pays its fee, which proves the sender is your fomo wallet. You keep the money.</p>
+              <button id="profile-fomo-transfer-start" class="profile-link-button" type="button">Prove with a transfer</button>
+              <div id="profile-fomo-transfer" class="profile-proof" hidden>
+                <p>Send exactly <strong id="profile-fomo-transfer-amount"></strong> from fomo to</p>
+                <div class="profile-row">
+                  <code id="profile-fomo-transfer-to" class="profile-code"></code>
+                  <button id="profile-fomo-transfer-copy" class="profile-link-button" type="button">Copy</button>
+                </div>
+                <p class="profile-hint">Expires <span id="profile-fomo-transfer-expiry"></span>. Any other amount won't count.</p>
+                <button id="profile-fomo-transfer-check" class="profile-link-button" type="button">I've sent it: check</button>
+              </div>
+              <p id="profile-fomo-transfer-status" class="profile-note" role="status" aria-live="polite"></p>
+            </div>
+          </section>
+          <section class="profile-section" aria-labelledby="profile-x-title">
+            <h3 id="profile-x-title">X</h3>
+            <div class="profile-row">
+              <p id="profile-x-state"></p>
+              <a id="profile-x-profile" class="profile-link-button" target="_blank" rel="noopener noreferrer" hidden>View</a>
+              <button id="profile-x-unlink" class="profile-link-button" type="button" hidden>Unlink</button>
+            </div>
+            <button id="profile-x-start" class="profile-link-button" type="button">Link X</button>
+            <div id="profile-x-proof" class="profile-proof" hidden>
+              <p>1. Post this from your X account (code <strong id="profile-x-code"></strong>, expires <span id="profile-x-expiry"></span>):</p>
+              <p id="profile-x-text" class="profile-code"></p>
+              <div class="profile-row">
+                <a id="profile-x-intent" class="profile-link-button" target="_blank" rel="noopener noreferrer">Post on X</a>
+                <button id="profile-x-copy" class="profile-link-button" type="button">Copy text</button>
+              </div>
+              <p>2. Paste the link to your post:</p>
+              <div class="profile-row">
+                <input id="profile-x-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://x.com/you/status/…" aria-label="Link to your post">
+                <button id="profile-x-verify" class="profile-link-button" type="button">Verify</button>
+              </div>
+              <p class="profile-hint">Once it's linked you can delete the post.</p>
+            </div>
+            <p id="profile-x-status" class="profile-note" role="status" aria-live="polite"></p>
+          </section>
+          <section class="profile-section" aria-labelledby="profile-show-title">
+            <h3 id="profile-show-title">Shown to other players</h3>
+            <p class="profile-hint">Off until you turn it on. Others see your username, and only the verified links you choose. Showing links ties your wallets, fomo and X together for anyone who looks.</p>
+            <label class="spartan-switch" for="profile-show-wallets"><input id="profile-show-wallets" type="checkbox"> My wallets</label>
+            <label class="spartan-switch" for="profile-show-fomo"><input id="profile-show-fomo" type="checkbox"> My fomo wallet and verified handle</label>
+            <label class="spartan-switch" for="profile-show-x"><input id="profile-show-x" type="checkbox"> My X account</label>
+            <p id="profile-show-status" class="profile-note" role="status" aria-live="polite"></p>
+          </section>
+        </div>
+      </div>
+      <button id="profile-dialog-done" class="h3-action" type="button">Done</button>
     </div>
   </dialog>
   <div id="wallet-gate" role="dialog" aria-modal="true" aria-labelledby="wallet-gate-title" hidden>
