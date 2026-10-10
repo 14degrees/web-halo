@@ -2687,6 +2687,7 @@
     queue.waited = ticket.waitedSeconds;
     if (typeof ticket.matches === "number") lobby.matches = ticket.matches;
     queue.match = ticket.match || null;
+    queue.serverStarting = !!ticket.serverStarting;
     applyPostMatchTally(ticket);
     if (ticket.state === "ready" && ticket.match && ticket.match.inviteCode && !queue.joined && !session.active) {
       queue.joined = true;
@@ -3690,6 +3691,9 @@
     var queue = lobby.queue;
     var label = (playlistById(queue.playlist) || { label: queue.playlist }).label;
     if (queue.state === "joining") return { text: "Joining the " + label + " queue…" };
+    if (queue.state === "queued" && queue.serverStarting) {
+      return { text: "Players found. Every server is busy, so one is starting for your match…" };
+    }
     if (queue.state === "queued") {
       var others = Math.max(0, (queue.queued || 1) - 1);
       return { text: "Searching for " + label + " players… " +
@@ -4347,6 +4351,29 @@
     updateRowPings("sidebar");
   }
 
+  /* the way from a click to the match (loading_ux.js): the boot on the
+     landing, a starting server and the map's load in the lobby, and the
+     map's load over the game */
+  function tickLoading(state) {
+    if (!global.HaloLoading) return;
+    var queue = lobby.queue && !lobby.quickPlay ? {
+      state: lobby.queue.state,
+      serverStarting: !!lobby.queue.serverStarting,
+      staking: !!(lobby.queue.match && lobby.queue.match.wager && lobby.queue.match.wager.escrow === "locking"),
+      custom: lobby.queue.playlist === "custom",
+    } : null;
+    var lobbySection = lobbyElement("lobby");
+    global.HaloLoading.update({
+      runtimeReady: session.runtimeReady,
+      queue: queue,
+      session: {
+        active: !!session.active,
+        connected: session.role === "host" || (session.transportConnected && state >= CLIENT_STATE.PREGAME),
+      },
+      lobbyOpen: !!lobbySection && !lobbySection.hidden && document.body.dataset.lobby === "open",
+    }, Date.now());
+  }
+
   function tickLobby() {
     pollQueue();
     pollParty();
@@ -4376,6 +4403,7 @@
     var inMatch = session.active && session.publicLobby && state === CLIENT_STATE.INGAME &&
       (session.role === "host" || session.transportConnected);
     if (session.runtimeReady && !inMatch && state !== CLIENT_STATE.INGAME) refreshPing(Date.now());
+    tickLoading(state);
 
     /* A guest whose host vanished still shows the old lobby; start over. */
     if (lobby.wantsPlay && session.active && session.role === "guest" && !session.transportConnected &&

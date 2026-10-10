@@ -52,6 +52,8 @@ describe("matchmaker", () => {
     const first = await enqueue(buildId, 0x101);
     expect(first.status).toBe(201);
     expect(first.body.ticket.state).toBe("queued");
+    /* one player is no match yet: nothing is starting for them */
+    expect(first.body.ticket.serverStarting).toBeUndefined();
     const second = await enqueue(buildId, 0x102);
     /* a duel forms as soon as two are queued and a server is idle */
     expect(second.body.ticket.state).toBe("assigning");
@@ -87,9 +89,12 @@ describe("matchmaker", () => {
     await enqueue(buildId, 0x201);
     const second = await enqueue(buildId, 0x202);
     expect(second.body.ticket).toMatchObject({ state: "queued", queued: 2 });
+    /* enough players and no server free: the page says one is starting */
+    expect(second.body.ticket.serverStarting).toBe(true);
     await registerServer(buildId);
     const poll = await call("GET", `/v1/queue/${second.body.ticket.id}`);
     expect(poll.body.ticket.state).toBe("assigning");
+    expect(poll.body.ticket.serverStarting).toBeUndefined();
   });
 
   it("gives one machine one ticket, and a refreshed page its match back", async () => {
