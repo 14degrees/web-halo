@@ -10,6 +10,7 @@ import {
 } from "./profiles";
 import { handleFomoRequest } from "./fomo";
 import { handleFomoHandleRequest, normaliseFomoHandle } from "./fomo_handle";
+import { handleXRequest } from "./x";
 import { base58Decode, parseWallet, verifyWalletSignature } from "./solana";
 import { requireWallet } from "./wallet";
 
@@ -32,6 +33,9 @@ import { requireWallet } from "./wallet";
      POST   /v1/profile/fomo/transfer       the transfer that proves a fomo
                                             wallet; then .../transfer/check
                                             (src/fomo_handle.ts)
+     POST   /v1/profile/x/challenge         link X with a tweet (src/x.ts)
+     POST   /v1/profile/x/verify
+     DELETE /v1/profile/x
      GET    /v1/profiles/:username          another player's view (no auth)
      GET    /v1/profiles?wallets=a,b,c      the same for a roster's wallets
                                             (no auth, at most 16)
@@ -254,6 +258,9 @@ export async function handleProfileRequest(
   if (fomoResponse !== null) return fomoResponse;
   const fomoHandleResponse = await handleFomoHandleRequest(request, env, path, now, readBody);
   if (fomoHandleResponse !== null) return fomoHandleResponse;
+
+  const xResponse = await handleXRequest(request, env, path, now, readBody);
+  if (xResponse !== null) return xResponse;
 
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
 }
