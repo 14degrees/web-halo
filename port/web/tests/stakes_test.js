@@ -118,4 +118,36 @@ container.children[0].listeners.click();
 assert.deepEqual(picked, [SOL / 100]);
 Stakes.renderChoices(null, [], null, () => {}, false);
 
+/* a tier above the escrow's maximum stake: shown, but it can't be picked,
+   and says why (the Worker's /v1/playlists marks it) */
+const reason = "The 0.25 SOL stake isn't open yet: the escrow takes stakes up to 0.1 SOL for now.";
+const withClosed = tiers.concat([{ stake: SOL / 4, perKill: SOL / 20, mode: 'bounty', stakes: null, searching: 0, available: false, reason }]);
+assert.deepEqual(plain(Stakes.tierChoices(withClosed, 2, 500))[2],
+  { value: SOL / 4, label: '◎ 0.25', note: 'not open yet', disabled: true, title: reason });
+const closedContainer = documentRef.createElement('div');
+const closedPicks = [];
+Stakes.renderChoices(closedContainer, Stakes.tierChoices(withClosed, 2, 500), SOL / 20, value => closedPicks.push(value), false);
+assert.equal(closedContainer.children[2].disabled, true);
+assert.equal(closedContainer.children[2].title, reason);
+assert.equal(closedContainer.children[1].disabled, false);
+closedContainer.children[2].listeners.click();
+closedContainer.children[0].listeners.click();
+assert.deepEqual(closedPicks, [SOL / 100]);
+/* a custom game's stakes above the maximum, likewise */
+const cappedCustom = plain(Stakes.customChoices([SOL / 10, SOL / 4, SOL], SOL / 10));
+assert.deepEqual(cappedCustom.stake.map(choice => !!choice.disabled), [false, false, true, true]);
+assert.match(cappedCustom.stake[2].title, /up to 0\.1 SOL/);
+
+/* a play session may stake five buy-ins at the stake picked, between 0.5
+   and 5 SOL (the Worker's cap) */
+assert.equal(Stakes.sessionLimit(null), SOL / 2);
+assert.equal(Stakes.sessionLimit(SOL / 20), SOL / 2);
+assert.equal(Stakes.sessionLimit(SOL / 4), SOL * 1.25);
+assert.equal(Stakes.sessionLimit(SOL), SOL * 5);
+assert.equal(Stakes.sessionLimit(SOL * 2), SOL * 5);
+/* the page asks for it, says it, and offers a top-tier load-up */
+assert.match(client, /limit: sessionLimit\(\)/);
+assert.match(shell, /id="wallet-gate-limit"/);
+assert.match(shell, /data-lamports="1000000000"/);
+
 console.log('stakes: ok');

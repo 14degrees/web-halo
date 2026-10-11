@@ -658,6 +658,19 @@ boolean player_ui_configure_network_server_game(
 	long multiplayer_level_index,
 	long game_mode_index)
 {
+	return player_ui_configure_network_server_game_scored(
+		multiplayer_level_index,
+		game_mode_index,
+		0);
+}
+
+/* score_to_win, when positive, replaces a Slayer variant's score limit (a
+staked match's kill target); the objective modes keep their own. */
+boolean player_ui_configure_network_server_game_scored(
+	long multiplayer_level_index,
+	long game_mode_index,
+	long score_to_win)
+{
 	static char const *const multiplayer_levels[] =
 	{
 		"levels\\test\\beavercreek\\beavercreek",
@@ -717,6 +730,8 @@ boolean player_ui_configure_network_server_game(
 	game_engine_override_map_name(map_name);
 	network_game_server_change_map_name(server, map_name);
 	game_engine_get_variant_by_name(&variant, variant_name);
+	if (score_to_win > 0 && variant.game_engine_index == game_engine_slayer)
+		variant.universal_variant.score_to_win = score_to_win;
 	player_ui_set_game_variant(&variant);
 	network_game_server_change_game_variant(server, &variant);
 	return TRUE;

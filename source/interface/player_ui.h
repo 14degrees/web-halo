@@ -89,6 +89,10 @@ void player_ui_fast_setup_network_server(
 boolean player_ui_configure_network_server_game(
 	long multiplayer_level_index,
 	long game_mode_index);
+boolean player_ui_configure_network_server_game_scored(
+	long multiplayer_level_index,
+	long game_mode_index,
+	long score_to_win);
 boolean player_ui_edit_profile_is_default_profile(
 	void);
 void player_ui_remember_player1_profile(

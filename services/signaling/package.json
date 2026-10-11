@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "types": "wrangler types",
     "types:check": "wrangler types --check",
-    "escrow:devnet": "esbuild scripts/escrow-devnet.ts --bundle --platform=node --format=esm --outfile=.escrow-devnet.mjs --log-level=warning && node .escrow-devnet.mjs"
+    "escrow:devnet": "esbuild scripts/escrow-devnet.ts --bundle --platform=node --format=esm --outfile=.escrow-devnet.mjs --log-level=warning && node .escrow-devnet.mjs",
+    "escrow:config": "esbuild scripts/escrow-config.ts --bundle --platform=node --format=esm --outfile=.escrow-config.mjs --log-level=warning && node .escrow-config.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.3.1",

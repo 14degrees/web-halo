@@ -53,7 +53,7 @@ import { adminPendingFomoHandles, adminProfileLookup, adminVerifyFomoHandle, han
 import { siteInfo } from "./site";
 import { handleStatsRequest } from "./stats";
 import { handleEscrowRequest } from "./vault";
-import { type MatchResult, escrowFeeBps, stakeProblem } from "./wager";
+import { type MatchResult, escrowFeeBps, escrowMaximumStake, stakeLimitProblem, stakeProblem } from "./wager";
 import { handleVoteRequest, parseVote } from "./vote";
 import { handleWalletRequest, walletForToken } from "./wallet";
 
@@ -1157,9 +1157,18 @@ async function handleMatchmaking(
   }
   if (request.method === "GET" && url.pathname === "/v1/playlists") {
     await requireRateLimit(env.SESSION_CREATE_LIMITER, request, "lobby-list");
-    const playlists = await matchmaker(env).playlists(now);
+    const maximumStake = await escrowMaximumStake(env);
+    /* each tier says whether it can be played yet: one above the escrow's
+       maximum stake is shown but can't be picked */
+    const playlists = (await matchmaker(env).playlists(now)).map((playlist) => ({
+      ...playlist,
+      tiers: playlist.tiers.map((tier) => {
+        const problem = stakeLimitProblem(tier.stake, maximumStake);
+        return problem ? { ...tier, available: false, reason: problem } : { ...tier, available: true };
+      }),
+    }));
     /* and what a party's custom game for SOL can be set to */
-    const stakes = { tiers: STAKE_TIERS, killTarget: CUSTOM_KILL_TARGET, feeBps: escrowFeeBps(env) };
+    const stakes = { tiers: STAKE_TIERS, maximumStake, killTarget: CUSTOM_KILL_TARGET, feeBps: escrowFeeBps(env) };
     return withCors(jsonResponse({ playlists, stakes, v: SIGNALING_PROTOCOL_VERSION }), origin);
   }
   if (request.method === "GET" && url.pathname === "/v1/matchmaker") {

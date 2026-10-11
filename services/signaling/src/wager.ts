@@ -8,7 +8,9 @@ import {
   assembleTransaction,
   closeMatchInstruction,
   compileMessage,
+  configAddress,
   createMatchInstruction,
+  decodeConfig,
   decodeMatch,
   decodeVault,
   escrowMatchId,
@@ -69,7 +71,8 @@ export type WagerMode = "bounty" | "team";
 export interface StakesConfig {
   /* lamports per player */
   stake: number;
-  /* the variant's score to win: one group's kill limit, at least 1 */
+  /* the game's score to win (Slayer plays to it): one group's kill limit,
+     at least 1 */
   killTarget: number;
   /* the part of the prize split evenly among the winners, 0..10000 */
   teamShareBps: number;
@@ -228,7 +231,7 @@ export const HOLD_MS = 12 * 60 * 60_000;
 export const HOLD_MARGIN_MS = 60 * 60_000;
 export const DEFAULT_TEAM_SHARE_BPS = 2_500;
 /* the kill target a record from before the stakes configuration played by:
-   the dedicated Team Slayer variant's score to win */
+   the dedicated Team Slayer variant's own score to win */
 const LEGACY_KILL_TARGET = 50;
 
 /* ---------- the rules, kept pure for the tests */
@@ -279,10 +282,18 @@ export function stakesConfigProblem(config: StakesConfig): string | null {
    - L = pot − stake × winners is forfeited; F = L × feeBps / 10000 is the
      fee; D = L − F the prize; T = D × teamShareBps / 10000 the team share
      pool; Kp = D − T the kill pool.
+   - The game plays to the kill target in Halo's score (the server sets
+     the Slayer variant's score to win from it): an enemy kill +1, a
+     betrayal or suicide −1. Halo's score picks the winners; the Worker's
+     kill count (enemy kills only) pays them. So a group that reaches the
+     target has made at least killTarget kills, more when betrayals or
+     suicides cost it points, and a match that ends first (the time limit,
+     everyone leaving) has fewer.
    - A kill is worth Kp / max(killTarget, the winners' kills): exactly
      Kp / killTarget unless the winners made more kills than the target
-     (betrayals cost Halo's score, not the kill count), when the pool is
-     shared pro rata so it never overpays. Winner i's kill share is
+     (the betrayals and suicides above), when the pool is shared pro rata
+     so it never overpays; short of the target, the kill money nobody
+     earned goes to the even share. Winner i's kill share is
      Kp × kills_i / that, floored.
    - E = D − the kill shares (the team share, kill money nobody earned, and
      rounding dust) is split evenly; the odd lamports go one each to the
@@ -417,6 +428,47 @@ export async function escrowSetup(env: RuntimeEnv): Promise<EscrowSetup | null> 
     sessionSecret: env.ESCROW_SESSION_SECRET,
     cluster: env.SOLANA_CLUSTER ?? "devnet",
   };
+}
+
+/* The largest stake the escrow program takes (its config's maximum_stake),
+   read from chain and cached, so a stake tier above it is never offered
+   or queued: such a match could not lock and would be void. Until it can
+   be read (no escrow set up, or the RPC failing) it is taken to be what
+   the program was set up with on devnet. The operator raises it with
+   update_config (docs/wagers.md). */
+export const ASSUMED_MAXIMUM_STAKE = 100_000_000;
+const MAXIMUM_STAKE_CACHE_MS = 5 * 60_000;
+const MAXIMUM_STAKE_RETRY_MS = 60_000;
+const maximumStakeCache = new Map<string, { lamports: number; until: number }>();
+
+export async function escrowMaximumStake(env: RuntimeEnv, now = Date.now()): Promise<number> {
+  if (!env.ESCROW_AUTHORITY_SECRET_KEY || !env.ESCROW_SESSION_SECRET || !env.ESCROW_FEE_VAULT) {
+    return ASSUMED_MAXIMUM_STAKE;
+  }
+  const key = [env.SOLANA_RPC_PRIVATE_URL, env.SOLANA_RPC_URL].join(",");
+  const cached = maximumStakeCache.get(key);
+  if (cached && cached.until > now) return cached.lamports;
+  let lamports = cached?.lamports ?? ASSUMED_MAXIMUM_STAKE;
+  let until = now + MAXIMUM_STAKE_RETRY_MS;
+  try {
+    const config = decodeConfig((await escrowRpc(env).accountData(await configAddress())) ?? new Uint8Array());
+    if (config) {
+      lamports = Number(config.maximumStake);
+      until = now + MAXIMUM_STAKE_CACHE_MS;
+    }
+  } catch {
+    /* the last value read, or the assumed one, for a minute */
+  }
+  maximumStakeCache.set(key, { lamports, until });
+  return lamports;
+}
+
+/* Why a stake can't be played yet when it is above the escrow's maximum,
+   or null. */
+export function stakeLimitProblem(stake: number, maximumStake: number): string | null {
+  return stake > maximumStake ?
+    `The ${solText(stake)} SOL stake isn't open yet: the escrow takes stakes up to ${solText(maximumStake)} SOL for now.` :
+    null;
 }
 
 /* The session key the game joins matches with for a wallet: derived from a
@@ -924,6 +976,8 @@ export class Wager extends DurableObject<Env> {
 export async function stakeProblem(env: RuntimeEnv, wallet: string, stake: number): Promise<string | null> {
   const setup = await escrowSetup(env);
   if (!setup) return "Wagered playlists are not set up on this server.";
+  const limit = stakeLimitProblem(stake, await escrowMaximumStake(env));
+  if (limit) return limit;
   const data = await escrowRpc(env).accountData(await vaultAddress(wallet));
   const vault = data ? decodeVault(data) : null;
   if (!vault) return "Load up your vault first.";

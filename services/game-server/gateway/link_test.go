@@ -36,3 +36,12 @@ func TestParseResult(t *testing.T) {
 		t.Fatal("a short result must not parse")
 	}
 }
+
+func TestHostPacket(t *testing.T) {
+	if got := hostPacket(4, 1, 4, 5, 20, 0); string(got) != "H\x04\x01\x04\x05\x14" {
+		t.Fatalf("no score: % x", got)
+	}
+	if got := hostPacket(4, 1, 4, 5, 20, 300); string(got) != "H\x04\x01\x04\x05\x14\x2c\x01" {
+		t.Fatalf("score 300: % x", got)
+	}
+}
