@@ -35,8 +35,9 @@ offers Connect wallet.
    it to from fomo, and when the request expires (30 minutes); "I've sent
    it: check" looks for it. The player keeps the money.
 4. **fomo handle.** Claimed by typing it (a profile link or `@` is fine).
-   fomo's public profile card says whether the handle exists; an unknown
-   handle is refused. The handle then reads **claimed** (prove a fomo
+   It isn't checked against fomo: nothing public tells a real handle from
+   an unknown one, so the admin's confirmation is the check. The handle
+   then reads **claimed** (prove a fomo
    wallet), **awaiting an admin** (the wallet is proven; an admin compares
    it with the masked address fomo shows on the handle's page), or
    **verified**. It is private until verified.

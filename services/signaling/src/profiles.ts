@@ -136,7 +136,7 @@ export interface ProfileView {
   fomo: {
     /* the claimed handle, as typed */
     handle: string | null;
-    /* whether fomo knows the handle (its profile card): null when not checked */
+    /* true when fomo's profile card showed the handle (FOMO_HANDLE_CHECK on); null otherwise */
     handleSeen: boolean | null;
     handleClaimedAt: number | null;
     /* an admin confirmed the handle belongs to the proven fomo wallet */
@@ -685,7 +685,7 @@ export class Profiles extends DurableObject<Env> {
   /* Claim a fomo handle for the caller's profile. The claim is private and
      unverified; claiming the handle it already has (in another case) keeps
      its verification. A handle verified on another profile can't be
-     claimed. `seen` is what fomo's profile card said (null: not checked). */
+     claimed. `seen` is true when fomo's profile card showed it (null: not checked, or not told). */
   claimFomoHandle(ownerWallet: string, handle: string, key: string, seen: boolean | null, now: number): ProfileResult {
     return this.ctx.storage.transactionSync(() => {
       const id = this.profileIdForWallet(ownerWallet);

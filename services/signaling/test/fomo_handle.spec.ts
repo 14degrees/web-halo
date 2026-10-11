@@ -6,6 +6,7 @@ import { DEFAULT_FOMO_FEE_PAYER } from "../src/fomo";
 import {
   FOMO_HANDLE_CLAIMS_PER_HOUR,
   FOMO_TRANSFER_MINT,
+  fomoHandleCheckEnabled,
   fomoHandleSeen,
   fomoTransferSender,
   normaliseFomoHandle,
@@ -220,28 +221,32 @@ describe("a fomo handle", () => {
     }
   });
 
-  it("is looked up on fomo's profile card once a day, and not at all when the check is off", async () => {
+  it("is off unless switched on, and then records only a card fomo shows, never a miss", async () => {
     const network = useNetwork();
+    const now = Date.now();
+    /* off by default: nothing is asked */
+    expect(fomoHandleCheckEnabled(env as unknown as RuntimeEnv)).toBe(false);
+    expect(fomoHandleCheckEnabled({ FOMO_HANDLE_CHECK: undefined } as unknown as RuntimeEnv)).toBe(false);
+    expect(await fomoHandleSeen(env as unknown as RuntimeEnv, freshHandle().toLowerCase(), now)).toBeNull();
+    expect(network.calls.cards).toBe(0);
+
+    const on = { ...env, FOMO_HANDLE_CHECK: "on" } as unknown as RuntimeEnv;
     const key = freshHandle().toLowerCase();
     network.cards.set(key, 200);
-    const now = Date.now();
-    expect(await fomoHandleSeen(env as unknown as RuntimeEnv, key, now)).toBe(true);
-    expect(await fomoHandleSeen(env as unknown as RuntimeEnv, key, now)).toBe(true);
+    expect(await fomoHandleSeen(on, key, now)).toBe(true);
+    expect(await fomoHandleSeen(on, key, now)).toBe(true);
     expect(network.calls.cards).toBe(1);
 
-    const unknown = freshHandle().toLowerCase();
-    expect(await fomoHandleSeen(env as unknown as RuntimeEnv, unknown, now)).toBe(false);
-    /* an answer that says neither is not cached */
+    /* the redirect to the generic card is what real handles get too: it
+       says nothing, and is asked again next time */
+    const redirected = freshHandle().toLowerCase();
+    expect(await fomoHandleSeen(on, redirected, now)).toBeNull();
+    expect(await fomoHandleSeen(on, redirected, now)).toBeNull();
     const flaky = freshHandle().toLowerCase();
     network.cards.set(flaky, 503);
-    expect(await fomoHandleSeen(env as unknown as RuntimeEnv, flaky, now)).toBeNull();
+    expect(await fomoHandleSeen(on, flaky, now)).toBeNull();
     network.cards.set(flaky, 200);
-    expect(await fomoHandleSeen(env as unknown as RuntimeEnv, flaky, now)).toBe(true);
-
-    const calls = network.calls.cards;
-    const off = { ...env, FOMO_HANDLE_CHECK: "off" } as unknown as RuntimeEnv;
-    expect(await fomoHandleSeen(off, freshHandle().toLowerCase(), now)).toBeNull();
-    expect(network.calls.cards).toBe(calls);
+    expect(await fomoHandleSeen(on, flaky, now)).toBe(true);
   });
 });
 
@@ -275,11 +280,10 @@ describe("claiming a fomo handle", () => {
     expect(missing.body.error.code).toBe("PROFILE_NOT_FOUND");
   });
 
-  it("stores the claim unverified and private, refuses a handle fomo doesn't know, and keeps one it couldn't check", async () => {
+  it("stores the claim unverified and private, without asking fomo", async () => {
     const network = useNetwork();
     const owner = await player();
     const handle = freshHandle("Chief");
-    network.cards.set(handle.toLowerCase(), 200);
 
     const bad = await call("PUT", "/v1/profile/fomo/handle", { handle: "not a handle" }, owner.auth);
     expect(bad.status).toBe(400);
@@ -287,32 +291,21 @@ describe("claiming a fomo handle", () => {
     const claimed = await call("PUT", "/v1/profile/fomo/handle", { handle: `@${handle}` }, owner.auth);
     expect(claimed.status).toBe(200);
     expect(claimed.body.profile.fomo).toEqual({
-      handle, handleSeen: true, handleClaimedAt: expect.any(Number), handleVerified: false, handleVerifiedAt: null,
+      handle, handleSeen: null, handleClaimedAt: expect.any(Number), handleVerified: false, handleVerifiedAt: null,
       wallet: null, verified: false, verifiedAt: null, method: null,
     });
+    expect(network.calls.cards).toBe(0);
 
     /* shown or not, an unverified claim is not public */
     await call("PATCH", "/v1/profile", { showFomo: true }, owner.auth);
     expect((await call("GET", `/v1/profiles/${owner.username}`)).body.profile).toEqual({ id: owner.id, username: owner.username });
 
-    const unknown = await call("PUT", "/v1/profile/fomo/handle", { handle: freshHandle() }, owner.auth);
-    expect(unknown.status).toBe(404);
-    expect(unknown.body.error.code).toBe("FOMO_HANDLE_UNKNOWN");
-
-    const unchecked = freshHandle();
-    network.cards.set(unchecked.toLowerCase(), 500);
-    const kept = await call("PUT", "/v1/profile/fomo/handle", { handle: unchecked }, owner.auth);
-    expect(kept.status).toBe(200);
-    expect(kept.body.profile.fomo).toMatchObject({ handle: unchecked, handleSeen: null, handleVerified: false });
-
     /* a second player may claim the same unverified handle: a claim alone
-       can't lock out the real owner; the card is not asked again */
+       can't lock out the real owner */
     const other = await player();
-    const cards = network.calls.cards;
     const same = await call("PUT", "/v1/profile/fomo/handle", { handle: handle.toUpperCase() }, other.auth);
     expect(same.status).toBe(200);
-    expect(same.body.profile.fomo).toMatchObject({ handle: handle.toUpperCase(), handleSeen: true });
-    expect(network.calls.cards).toBe(cards);
+    expect(same.body.profile.fomo).toMatchObject({ handle: handle.toUpperCase(), handleSeen: null, handleVerified: false });
 
     const dropped = await call("DELETE", "/v1/profile/fomo/handle", undefined, other.auth);
     expect(dropped.status).toBe(200);
@@ -320,10 +313,9 @@ describe("claiming a fomo handle", () => {
   });
 
   it("allows a few claims an hour per wallet", async () => {
-    const network = useNetwork();
+    useNetwork();
     const owner = await player();
     const handle = freshHandle();
-    network.cards.set(handle.toLowerCase(), 200);
     for (let attempt = 0; attempt < FOMO_HANDLE_CLAIMS_PER_HOUR; attempt += 1) {
       expect((await call("PUT", "/v1/profile/fomo/handle", { handle }, owner.auth)).status).toBe(200);
     }
@@ -339,7 +331,6 @@ describe("verifying a fomo handle", () => {
     const owner = await player();
     const squatter = await player();
     const handle = freshHandle("Real");
-    network.cards.set(handle.toLowerCase(), 200);
     expect((await call("PUT", "/v1/profile/fomo/handle", { handle }, owner.auth)).status).toBe(200);
     expect((await call("PUT", "/v1/profile/fomo/handle", { handle }, squatter.auth)).status).toBe(200);
     await call("PATCH", "/v1/profile", { showFomo: true }, owner.auth);
@@ -392,7 +383,7 @@ describe("verifying a fomo handle", () => {
     /* the wallet shows; the handle does not, until an admin confirms it */
     expect((await call("GET", `/v1/profiles/${owner.username}`)).body.profile.fomo).toEqual({ handle: null, wallet: fomoWallet });
     expect(await queue()).toContainEqual(expect.objectContaining({
-      profileId: owner.id, handle, handleSeen: true, wallet: fomoWallet, method: "transfer",
+      profileId: owner.id, handle, handleSeen: null, wallet: fomoWallet, method: "transfer",
     }));
 
     expect((await call("POST", "/v1/admin/profiles/fomo-handle", { profileId: owner.id, handle, verified: true })).status).toBe(401);

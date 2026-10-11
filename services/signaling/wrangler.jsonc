@@ -44,9 +44,11 @@
     // fomo.family detection (src/fomo.ts): the mainnet wallet fomo pays its
     // users' fees from. The mainnet RPC URL is the FOMO_RPC_URL secret.
     "FOMO_FEE_PAYER": "AgmLJBMDCqWynYnQiPCuj9ewsNNsBJXyzoUhD9LJzN51",
-    // The fomo handle claim (src/fomo_handle.ts) checks a handle exists
-    // through fomo's public profile card; "off" stops that request.
-    "FOMO_HANDLE_CHECK": "on",
+    // The fomo handle claim (src/fomo_handle.ts) can ask fomo's public
+    // profile card about the handle ("on"). The card doesn't tell real
+    // handles from unknown ones, so this stays "off"; a claim is never
+    // refused for it either way.
+    "FOMO_HANDLE_CHECK": "off",
     // The page's links out (src/site.ts): the fomo referral code behind
     // the landing's fomo.family link, and the game's X profile URL (none
     // chosen yet: the link stays hidden until this is set).

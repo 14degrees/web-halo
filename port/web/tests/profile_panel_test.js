@@ -125,8 +125,8 @@ function failure(code, status, serverMessage) {
 }
 assert.equal(HaloProfile.failureText(failure('X_CODE_MISSING', 422, "That post doesn't contain your code ABCD2345.")),
   "That post doesn't contain your code ABCD2345.");
-assert.equal(HaloProfile.failureText(failure('FOMO_HANDLE_UNKNOWN', 404, "fomo doesn't know that handle.")),
-  "fomo doesn't know that handle. Check the spelling.", 'a 404 never reads as an expired invite');
+assert.equal(HaloProfile.failureText(failure('FOMO_HANDLE_MISSING', 404, 'That profile has no fomo handle.')),
+  'Your profile has no fomo handle.', 'a 404 never reads as an expired invite');
 assert.equal(HaloProfile.failureText(failure('SOMETHING_NEW', 404, null)), "The profile service isn't available.");
 
 /* the page's own username check matches the Worker's rules */
@@ -325,7 +325,6 @@ const text = id => byId(id).textContent;
   assert.equal(text('profile-fomo-handle-save'), 'Change');
   assert.equal(byId('profile-fomo-handle-remove').hidden, false);
   for (const [code, words] of [
-    ['FOMO_HANDLE_UNKNOWN', "fomo doesn't know that handle. Check the spelling."],
     ['FOMO_HANDLE_TAKEN', 'That fomo handle is verified on another profile.'],
     ['FOMO_HANDLE_RATE_LIMITED', 'Too many handle changes. Try again in an hour.'],
   ]) {
