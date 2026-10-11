@@ -219,12 +219,14 @@ export async function handleXRequest(
     const linked = await store.linkX(wallet, { profileId: attempt.profileId, code: attempt.code, handle: fetched.handle, proofUrl }, now);
     if ("error" in linked) {
       if (linked.error === "PROFILE_NOT_FOUND") noProfile();
+      if (linked.error === "X_HANDLE_TAKEN") {
+        throw new HttpError(409, "X_HANDLE_TAKEN", `@${fetched.handle} is already linked to another profile.`);
+      }
       expired();
     }
     return {
       profile: linked.profile,
       handle: fetched.handle,
-      moved: linked.movedFrom !== null,
       message: `Linked @${fetched.handle}. You can delete the post now.`,
     };
   }

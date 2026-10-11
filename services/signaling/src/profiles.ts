@@ -200,8 +200,8 @@ export type XAttemptResult =
   | { error: "PROFILE_NOT_FOUND" | "X_CHALLENGE_EXPIRED" | "X_VERIFY_RATE_LIMITED" | "X_VERIFY_BUSY" };
 
 export type XLinkResult =
-  | { profile: ProfileView; movedFrom: string | null }
-  | { error: "PROFILE_NOT_FOUND" | "X_CHALLENGE_EXPIRED" };
+  | { profile: ProfileView }
+  | { error: "PROFILE_NOT_FOUND" | "X_CHALLENGE_EXPIRED" | "X_HANDLE_TAKEN" };
 
 interface ProfileRow extends Record<string, SqlStorageValue> {
   id: string;
@@ -881,9 +881,10 @@ export class Profiles extends DurableObject<Env> {
     this.log(now, "x_failed", profileId, wallet, { reason });
   }
 
-  /* The tweet checked out: use up the code and give the profile the handle,
-     taking it from any profile that had it. Fails when the code was used or
-     replaced meanwhile, or the caller's profile changed. */
+  /* The tweet checked out: use up the code and give the profile the handle.
+     Fails when the code was used or replaced meanwhile, or the caller's
+     profile changed, or another profile holds the handle (it stays there
+     until that profile unlinks it; the code stays for another try). */
   linkX(wallet: string, input: { profileId: string; code: string; handle: string; proofUrl: string }, now: number): XLinkResult {
     return this.ctx.storage.transactionSync(() => {
       const id = this.profileIdForWallet(wallet);
@@ -892,26 +893,21 @@ export class Profiles extends DurableObject<Env> {
       if (id !== input.profileId || challenge === null || challenge.code !== input.code || challenge.expires_at <= now) {
         return { error: "X_CHALLENGE_EXPIRED" };
       }
-      this.ctx.storage.sql.exec("DELETE FROM x_challenges WHERE profile_id = ?", id);
       const holder = this.ctx.storage.sql.exec<ProfileRow>(
         "SELECT * FROM profiles WHERE lower(x_handle) = lower(?) AND id != ?", input.handle, id,
       ).toArray()[0] ?? null;
       if (holder !== null) {
-        this.ctx.storage.sql.exec(
-          "UPDATE profiles SET x_handle = NULL, x_verified_at = NULL, x_proof_url = NULL, updated_at = ? WHERE id = ?",
-          now, holder.id,
-        );
-        this.log(now, "x_moved", holder.id, null, { handle: holder.x_handle, to: id });
+        this.log(now, "x_failed", id, wallet, { reason: "X_HANDLE_TAKEN", handle: input.handle, holder: holder.id });
+        return { error: "X_HANDLE_TAKEN" };
       }
+      this.ctx.storage.sql.exec("DELETE FROM x_challenges WHERE profile_id = ?", id);
       const before = this.profileRow(id)!;
       this.ctx.storage.sql.exec(
         "UPDATE profiles SET x_handle = ?, x_verified_at = ?, x_proof_url = ?, updated_at = ? WHERE id = ?",
         input.handle, now, input.proofUrl, now, id,
       );
-      this.log(now, "x_verified", id, wallet, {
-        handle: input.handle, proofUrl: input.proofUrl, previous: before.x_handle, from: holder?.id ?? null,
-      });
-      return { profile: this.view(this.profileRow(id)!, now), movedFrom: holder?.id ?? null };
+      this.log(now, "x_verified", id, wallet, { handle: input.handle, proofUrl: input.proofUrl, previous: before.x_handle });
+      return { profile: this.view(this.profileRow(id)!, now) };
     });
   }
 

@@ -64,6 +64,7 @@
     X_TWEET_NOT_FOUND: "We couldn't see that post. Check the link and that your account is public.",
     X_UNAVAILABLE: "Couldn't reach X. Try again in a minute.",
     X_HANDLE_MISMATCH: "That post was written by a different account than its link says.",
+    X_HANDLE_TAKEN: "That X account is already linked to another profile. It has to be unlinked there first.",
     X_CODE_MISSING: null,
   });
 
@@ -394,8 +395,7 @@
         state.x = null;
         if (input) input.value = "";
         setProfile(result.profile);
-        return (result.message || "Linked @" + result.handle + ". You can delete the post now.") +
-          (result.moved ? " It was linked to another profile before; it's yours now." : "");
+        return result.message || "Linked @" + result.handle + ". You can delete the post now.";
       });
     });
   }
