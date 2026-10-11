@@ -42,9 +42,10 @@ void player_ui_set_active_player_profile(
 	short local_player_index,
 	long profile_index,
 	void *profile);
-unsigned char player_ui_configure_network_server_game(
+unsigned char player_ui_configure_network_server_game_scored(
 	long multiplayer_level_index,
-	long game_mode_index);
+	long game_mode_index,
+	long score_to_win);
 void game_connection_set(short connection);
 void main_goto_main_menu(void);
 short network_game_client_get_state(struct network_game_client *client, short *state_data);
@@ -134,6 +135,8 @@ enum
 	/* a match ends after this long, so players waiting to join (system link
 	admits nobody mid-match) are never kept out for good */
 	WEB_ONLINE_DEDICATED_MAXIMUM_GAME_SECONDS = 600,
+	/* platform_web_online_set_score_to_win's bound */
+	WEB_ONLINE_DEDICATED_MAXIMUM_SCORE_TO_WIN = 999,
 	WEB_ONLINE_DEDICATED_RESTORE_SECONDS = 1,
 	WEB_ONLINE_DEDICATED_START_RETRY_SECONDS = 5,
 };
@@ -168,6 +171,8 @@ static unsigned int web_online_applied_customization_sequence;
 /* a dedicated host's options, its next game, and what it reports */
 static atomic_int web_online_dedicated_options = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_next_game = ATOMIC_VAR_INIT(0);
+/* the next dedicated host's Slayer score limit, or 0 for the variant's own */
+static atomic_int web_online_score_to_win = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_match_state = ATOMIC_VAR_INIT(_web_online_match_none);
 static atomic_int web_online_player_count = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_headless = ATOMIC_VAR_INIT(0);
@@ -209,6 +214,8 @@ static struct
 	int minimum_players;
 	float countdown_seconds;
 	float postgame_seconds;
+	/* a Slayer game's score limit (a staked match's kill target), or 0 */
+	int score_to_win;
 	/* how long enough players have been in the lobby */
 	float lobby_seconds;
 	/* until the start is asked (again) */
@@ -300,6 +307,14 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_host_dedicated(
 		&web_online_requested_request,
 		pack_request(_web_online_command_host_dedicated, map_index, mode_index),
 		memory_order_release);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_set_score_to_win(int score_to_win)
+{
+	if (score_to_win < 0 || score_to_win > WEB_ONLINE_DEDICATED_MAXIMUM_SCORE_TO_WIN)
+		return 0;
+	atomic_store_explicit(&web_online_score_to_win, score_to_win, memory_order_release);
 	return 1;
 }
 
@@ -627,6 +642,9 @@ static void begin_request(int command, int map_index, int mode_index)
 	web_online.dedicated = dedicated;
 	web_online.host_map_index = map_index;
 	web_online.host_mode_index = mode_index;
+	/* each dedicated host request takes the score limit set before it */
+	web_online.score_to_win = dedicated ?
+		atomic_exchange_explicit(&web_online_score_to_win, 0, memory_order_acq_rel) : 0;
 	if (dedicated)
 	{
 		int options = atomic_load_explicit(&web_online_dedicated_options, memory_order_acquire);
@@ -637,6 +655,8 @@ static void begin_request(int command, int map_index, int mode_index)
 		web_online.last_client_state = WEB_NONE;
 		platform_log("web online: dedicated host starts with %d player(s), %g s countdown, %g s postgame",
 			web_online.minimum_players, web_online.countdown_seconds, web_online.postgame_seconds);
+		if (web_online.score_to_win > 0)
+			platform_log("web online: Slayer games play to %d", web_online.score_to_win);
 	}
 	publish_match(_web_online_match_none);
 	publish_error(_web_online_error_none);
@@ -665,7 +685,7 @@ static void apply_next_game(void)
 		return;
 	map_index = (next >> WEB_ONLINE_REQUEST_MAP_SHIFT) & 0xff;
 	mode_index = (next >> WEB_ONLINE_REQUEST_MODE_SHIFT) & 0xff;
-	if (player_ui_configure_network_server_game(map_index, mode_index))
+	if (player_ui_configure_network_server_game_scored(map_index, mode_index, web_online.score_to_win))
 	{
 		web_online.host_map_index = map_index;
 		web_online.host_mode_index = mode_index;
@@ -853,9 +873,10 @@ static void setup_host(void)
 		fail_session(_web_online_error_host_setup_failed);
 		return;
 	}
-	if (!player_ui_configure_network_server_game(
+	if (!player_ui_configure_network_server_game_scored(
 		web_online.host_map_index,
-		web_online.host_mode_index))
+		web_online.host_mode_index,
+		web_online.score_to_win))
 	{
 		fail_session(_web_online_error_host_setup_failed);
 		return;

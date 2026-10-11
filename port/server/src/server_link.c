@@ -17,8 +17,11 @@ gateway to game
   'R' address:u32                the peer is gone
   'S' address:u32 open:u8        both of its DataChannels are open (1) or not
   'F' address:u32 reliable:u8 frame
-  'H' map:u8 mode:u8 minimum:u8 countdown:u8 postgame:u8
-                                 host the dedicated lobby
+  'H' map:u8 mode:u8 minimum:u8 countdown:u8 postgame:u8 [score:u16]
+                                 host the dedicated lobby; a Slayer game plays
+                                 to score (a staked match's kill target), or
+                                 to its variant's own limit when it is 0 or
+                                 left out
   'G' map:u8 mode:u8             the next game's map and mode
   'm' minimum:u8                 the players the lobby waits for from now on
   'T' address:u32 team:u8        the team this peer's players join (a
@@ -80,6 +83,7 @@ int web_net_remote_receive(unsigned long address, int length);
 int platform_web_online_host_dedicated(int map_index, int mode_index,
 	int minimum_players, int countdown_seconds, int postgame_seconds);
 int platform_web_online_set_next_game(int map_index, int mode_index);
+int platform_web_online_set_score_to_win(int score_to_win);
 void platform_web_online_request_restart(void);
 int platform_web_online_set_minimum_players(int minimum_players);
 void platform_web_online_set_headless(int headless);
@@ -399,10 +403,16 @@ static void *link_reader(void *unused)
 		case 'H':
 			/* a new match: no team plan until the gateway sends one */
 			clear_teams();
-			if (length == 6 &&
-				!platform_web_online_host_dedicated(packet[1], packet[2], packet[3], packet[4], packet[5]))
+			if (length == 6 || length == 8)
 			{
-				fprintf(stderr, "halo-server: the lobby settings were refused\n");
+				int score_to_win = length == 8 ? packet[6] | packet[7] << 8 : 0;
+
+				if (!platform_web_online_set_score_to_win(score_to_win))
+					fprintf(stderr, "halo-server: the score to win %d was refused\n", score_to_win);
+				else if (score_to_win > 0)
+					fprintf(stderr, "server link: Slayer plays to %d\n", score_to_win);
+				if (!platform_web_online_host_dedicated(packet[1], packet[2], packet[3], packet[4], packet[5]))
+					fprintf(stderr, "halo-server: the lobby settings were refused\n");
 			}
 			break;
 		case 'G':

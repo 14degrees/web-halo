@@ -107,9 +107,9 @@ export const PLAYLISTS = {
   /* Team Stakes (wager.ts, stakesOutcome): the winners get their stake back
      and split the losers' stakes by kills, a quarter of it evenly (the team
      share, in basis points; wager.ts imports this module, so no constant of
-     its can be read here at load). The kill target is the dedicated Team
-     Slayer variant's score to win (build_game_variant_team_slayer, 50). It
-     waits for a full two on two */
+     its can be read here at load). The kill target goes to the server with
+     the assignment and is the game's score to win. It waits for a full two
+     on two */
   teamstakes: {
     label: "Team Stakes", minimum: 4, maximum: 4, fillMs: 0, teams: true,
     description: "Two on two Team Slayer for SOL. Pick your buy-in; the winners split the losers' stakes by kills.",
@@ -285,6 +285,10 @@ export interface Assignment {
   roster: string[];
   /* a team match's plan: each machine's team (0 red, 1 blue) */
   teams?: Record<string, number>;
+  /* a staked match's kill target (its StakesConfig's): a Slayer game ends
+     when a team, or a player in a free-for-all, scores it (the gateway
+     sets the variant's score to win); the objective modes keep their own */
+  killTarget?: number;
 }
 
 export interface HeartbeatInput {
@@ -770,6 +774,7 @@ export class Matchmaker extends DurableObject<Env> {
     this.formMatches(input.now);
     await this.schedule(input.now);
     if (!match || match.state === "ended") return { known: true, assignment: null };
+    const killTarget = matchWager(match)?.stakes?.killTarget;
     return {
       known: true,
       assignment: {
@@ -779,6 +784,7 @@ export class Matchmaker extends DurableObject<Env> {
         modeIndex: match.mode_index,
         roster: JSON.parse(match.roster) as string[],
         ...(match.teams ? { teams: JSON.parse(match.teams) as Record<string, number> } : {}),
+        ...(killTarget ? { killTarget } : {}),
       },
     };
   }

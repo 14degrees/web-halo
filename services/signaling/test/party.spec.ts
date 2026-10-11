@@ -91,6 +91,8 @@ describe("parties", () => {
     const beat = await call("POST", `/v1/pool/servers/${server.body.serverId}/heartbeat`, {}, SERVER);
     expect(beat.body.assignment).toMatchObject({ playlist: "custom", mapIndex: 6, modeIndex: 0 });
     expect(beat.body.assignment.roster).toHaveLength(2);
+    /* a free game plays to the variant's own score limit */
+    expect(beat.body.assignment.killTarget).toBeUndefined();
     expect((await call("GET", `/v1/queue/${ticket}`)).body.ticket.state).toBe("assigning");
   });
 

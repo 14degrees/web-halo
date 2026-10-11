@@ -526,7 +526,7 @@ func run() error {
 	}
 
 	first := c.Rotation[0]
-	if err := s.link.hostDedicated(first.MapIndex, first.ModeIndex, c.MinimumPlayers, c.CountdownSeconds, c.PostgameSeconds); err != nil {
+	if err := s.link.hostDedicated(first.MapIndex, first.ModeIndex, c.MinimumPlayers, c.CountdownSeconds, c.PostgameSeconds, 0); err != nil {
 		return err
 	}
 	/* a public server's game: it starts with one player and goes on as
