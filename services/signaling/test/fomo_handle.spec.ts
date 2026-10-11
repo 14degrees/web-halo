@@ -417,11 +417,29 @@ describe("verifying a fomo handle", () => {
     expect(moved.body.profile.fomo).toMatchObject({ wallet: otherFomoWallet, verified: true, handleVerified: false });
     expect((await call("GET", `/v1/profiles/${owner.username}`)).body.profile.fomo).toEqual({ handle: null, wallet: otherFomoWallet });
 
-    /* confirmed again, then taken back by an admin */
+    /* confirmed again: listed as verified; then taken back by an admin,
+       which drops the claim (out of both lists) and keeps the wallet */
+    const verifiedList = async () =>
+      (await call("GET", "/v1/admin/profiles/fomo-handles", undefined, ADMIN)).body.verified as Array<{ profileId: string }>;
     expect((await call("POST", "/v1/admin/profiles/fomo-handle", { profileId: owner.id, handle, verified: true }, ADMIN)).status).toBe(200);
+    expect(await verifiedList()).toContainEqual({
+      profileId: owner.id, username: owner.username, handle: handle.toUpperCase(), verifiedAt: expect.any(Number),
+      wallet: otherFomoWallet, method: "transfer",
+    });
     const rejected = await call("POST", "/v1/admin/profiles/fomo-handle", { profileId: owner.id, handle, verified: false, note: "no match" }, ADMIN);
     expect(rejected.status).toBe(200);
-    expect(rejected.body.profile.fomo).toMatchObject({ handle: handle.toUpperCase(), handleVerified: false });
+    expect(rejected.body.profile.fomo).toMatchObject({ handle: null, handleVerified: false, wallet: otherFomoWallet, verified: true });
+    expect((await verifiedList()).some((entry) => entry.profileId === owner.id)).toBe(false);
+    expect((await queue()).some((entry) => entry.profileId === owner.id)).toBe(false);
+    const gone = await call("POST", "/v1/admin/profiles/fomo-handle", { profileId: owner.id, handle, verified: false }, ADMIN);
+    expect(gone.status).toBe(404);
+    expect(gone.body.error.code).toBe("FOMO_HANDLE_MISSING");
+
+    /* claimed again, then rejected before any confirmation: it leaves the queue */
+    expect((await call("PUT", "/v1/profile/fomo/handle", { handle }, owner.auth)).status).toBe(200);
+    expect((await queue()).some((entry) => entry.profileId === owner.id)).toBe(true);
+    expect((await call("POST", "/v1/admin/profiles/fomo-handle", { profileId: owner.id, handle, verified: false, note: "card differs" }, ADMIN)).status).toBe(200);
+    expect((await queue()).some((entry) => entry.profileId === owner.id)).toBe(false);
 
     const lookup = await call("GET", `/v1/admin/profiles?id=${owner.id}`, undefined, ADMIN);
     const kinds = (lookup.body.events as Array<{ kind: string }>).map((event) => event.kind);

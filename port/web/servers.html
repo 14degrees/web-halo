@@ -54,7 +54,8 @@
     th { color: var(--muted); font-weight: 600; }
     td { overflow-wrap: anywhere; }
     #matches, #events { overflow-x: auto; }
-    /* held wagers (servers_wagers.js): the admin's sign-in, cards and forms */
+    /* the admin panels (servers_admin.js, servers_wagers.js,
+       servers_fomo_handles.js): the admin's sign-in, cards and forms */
     .admin-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .6rem 0 0; }
     .admin-bar { margin: 0 0 .6rem; }
     .admin-bar .meta, .admin-row > span { margin: 0 auto 0 0; }
@@ -80,6 +81,12 @@
     .admin-form { margin-top: .8rem; padding: .8rem; border: 1px solid var(--countdown); border-radius: .4rem; }
     .admin-form-title { margin: 0; font-weight: 700; }
     .admin-form .meta { margin: .2rem 0 0; }
+    .admin-fomo .body { padding-top: .8rem; }
+    .admin-fomo .rows { margin-bottom: .6rem; }
+    .admin-fomo a, .admin-fomo-verified a { color: var(--accent); }
+    .admin-fomo-confirm { background: rgba(95, 211, 138, .22); }
+    .admin-fomo-reject, .admin-fomo-revoke { background: rgba(224, 104, 95, .22); }
+    h3 { margin: 1rem 0 .5rem; font-size: .85rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -100,8 +107,12 @@
   <section id="events"></section>
   <h2>Held wagers</h2>
   <section id="held-wagers"></section>
+  <h2>Fomo handles</h2>
+  <section id="fomo-handles"></section>
   <footer id="footer">Loading…</footer>
+  <script src="servers_admin.js"></script>
   <script src="servers_wagers.js"></script>
+  <script src="servers_fomo_handles.js"></script>
   <script>
     "use strict";
     /* The matchmaker's view (GET /v1/matchmaker): its queues, the servers in
@@ -246,8 +257,11 @@
 
     refresh();
     setInterval(refresh, 2000);
-    /* the admin's held-wager panel, with its own token and refresh */
-    HaloHeldWagers.mount({ container: document.getElementById("held-wagers"), signalingUrl: signaling });
+    /* the admin panels: one pasted token signs them all in and out; each
+       refreshes on its own timer */
+    const adminSession = HaloAdmin.session({ signalingUrl: signaling });
+    HaloHeldWagers.mount({ container: document.getElementById("held-wagers"), session: adminSession });
+    HaloFomoHandles.mount({ container: document.getElementById("fomo-handles"), session: adminSession });
   </script>
 </body>
 </html>

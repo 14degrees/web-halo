@@ -2,20 +2,16 @@
    whose stakes wait in escrow for an admin, with Forfeit, Void and Extend
    over the Worker's admin routes (docs/wagers.md, "Held matches").
 
-   The admin token never lives in this file or the page: the operator
-   pastes it, and it is kept in sessionStorage (this tab only) until they
-   sign out or the Worker rejects it. Every call is a bearer request, so
-   the Worker answers the browser's preflight on /v1/admin/ too. */
+   The admin token, its sign-in and the refresh timer are the dashboard's
+   admin session (servers_admin.js), shared with the other admin panels. */
 (function (root, factory) {
   "use strict";
-  if (typeof module === "object" && module.exports) module.exports = factory();
-  else root.HaloHeldWagers = factory();
-})(typeof self !== "undefined" ? self : this, function () {
+  if (typeof module === "object" && module.exports) module.exports = factory(require("./servers_admin.js"));
+  else root.HaloHeldWagers = factory(root.HaloAdmin);
+})(typeof self !== "undefined" ? self : this, function (admin) {
   "use strict";
 
-  const TOKEN_KEY = "halo-admin-token";
-  const REFRESH_MS = 10000;
-  const NOTE_LIMIT = 500;
+  const { TOKEN_KEY, REFRESH_MS, NOTE_LIMIT, span, when } = admin;
   const HOURS_LIMIT = 168;
   const ACTIONS = {
     forfeit: {
@@ -35,44 +31,12 @@
     },
   };
 
-  /* ---------- storage: sessionStorage may be missing or throw */
-
-  function readToken(storage) {
-    try { return (storage && storage.getItem(TOKEN_KEY)) || null; } catch (error) { return null; }
-  }
-
-  function writeToken(storage, token) {
-    try {
-      if (token) storage.setItem(TOKEN_KEY, token);
-      else storage.removeItem(TOKEN_KEY);
-      return true;
-    } catch (error) {
-      return false;
-    }
-  }
-
   /* ---------- formatting */
 
   function sol(lamports) {
     if (typeof lamports !== "number" || !Number.isFinite(lamports)) return "–";
     const value = lamports / 1e9;
     return (Number.isInteger(value * 1000) ? value.toFixed(3) : value.toFixed(4).replace(/0$/, "")) + " SOL";
-  }
-
-  function span(milliseconds) {
-    const minutes = Math.floor(Math.abs(milliseconds) / 60000);
-    if (minutes < 1) return "under a minute";
-    if (minutes < 60) return minutes + " min";
-    const hours = Math.floor(minutes / 60);
-    if (hours < 48) return hours + " h " + String(minutes % 60).padStart(2, "0") + " min";
-    return Math.floor(hours / 24) + " d " + (hours % 24) + " h";
-  }
-
-  function when(at, now) {
-    if (typeof at !== "number") return "–";
-    const date = new Date(at);
-    const relative = at >= now ? "in " + span(at - now) : span(now - at) + " ago";
-    return date.toLocaleString() + " (" + relative + ")";
   }
 
   function groupLabel(index, config, players) {
@@ -102,19 +66,18 @@
 
   /* ---------- the panel */
 
+  /* `options.session` is the page's shared admin session; without one the
+     panel makes its own from the same options (fetch, storage, timers). */
   function mount(options) {
     const container = options.container;
     if (!container) return null;
     const doc = options.document || container.ownerDocument || document;
-    const fetchImpl = options.fetch || ((input, init) => fetch(input, init));
-    const storage = "storage" in options ? options.storage : (typeof sessionStorage !== "undefined" ? sessionStorage : null);
-    const schedule = options.setInterval || ((fn, ms) => setInterval(fn, ms));
-    const unschedule = options.clearInterval || ((id) => clearInterval(id));
     const now = options.now || (() => Date.now());
-    const signalingUrl = options.signalingUrl;
+    const session = options.session || admin.session(options);
+    const element = admin.builder(doc);
 
     const state = {
-      token: readToken(storage),
+      get token() { return session.token; },
       held: [],
       records: {},
       status: "",
@@ -124,86 +87,54 @@
       /* the open form: { matchId, action } */
       form: null,
       busy: false,
-      timer: null,
     };
-
-    function element(tag, attributes, children) {
-      const node = doc.createElement(tag);
-      Object.entries(attributes || {}).forEach(([name, value]) => {
-        if (name === "text") node.textContent = value;
-        else if (name === "onclick") node.addEventListener("click", value);
-        else if (name === "oninput") node.addEventListener("input", value);
-        else if (name === "disabled") node.disabled = Boolean(value);
-        else node.setAttribute(name, value);
-      });
-      (children || []).forEach((child) => node.append(child));
-      return node;
-    }
+    const timer = session.timer(() => { if (!state.form && !state.busy) refresh(); });
 
     function setStatus(text, failed) {
       state.status = text || "";
       state.failed = Boolean(failed);
     }
 
-    async function call(method, path, body) {
-      const base = await signalingUrl();
-      const headers = { Authorization: "Bearer " + state.token };
-      if (body !== undefined) headers["Content-Type"] = "application/json";
-      const response = await fetchImpl(base + path, {
-        method, headers, cache: "no-store", body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      let data = null;
-      try { data = await response.json(); } catch (error) { data = null; }
-      return { status: response.status, ok: response.ok, data };
-    }
-
-    function errorMessage(result, fallback) {
-      const error = result.data && result.data.error;
-      return (error && error.message) || fallback + " (" + result.status + ")";
-    }
-
-    function signOut(message, failed) {
-      state.token = null;
-      state.held = [];
-      state.records = {};
-      state.form = null;
-      writeToken(storage, null);
-      setStatus(message || "Signed out.", failed);
-      stop();
-      render();
-    }
-
     async function signIn(token) {
-      const trimmed = (token || "").trim();
-      if (!trimmed) {
+      if (!(await session.signIn(token))) {
         setStatus("Paste the admin token first.", true);
         render();
-        return;
       }
-      state.token = trimmed;
-      if (!writeToken(storage, trimmed)) setStatus("The token is kept only in memory: this tab's storage is unavailable.", false);
-      else setStatus("", false);
-      await refresh();
-      if (state.token) start();
     }
+
+    session.subscribe({
+      async signedIn(message) {
+        setStatus(message, false);
+        await refresh();
+        if (state.token) timer.start();
+      },
+      signedOut(message, failed) {
+        state.held = [];
+        state.records = {};
+        state.form = null;
+        setStatus(message, failed);
+        timer.stop();
+        render();
+      },
+    });
 
     /* The held list, then each match's record (reason, players, history). */
     async function refresh() {
       if (!state.token || state.busy) return;
       state.busy = true;
       try {
-        const list = await call("GET", "/v1/admin/wagers/held");
+        const list = await session.call("GET", "/v1/admin/wagers/held");
         if (list.status === 401) {
-          signOut("The Worker rejected that token. Sign in again.", true);
+          session.signOut("The Worker rejected that token. Sign in again.", true);
           return;
         }
-        if (!list.ok) throw new Error(errorMessage(list, "The held list failed"));
+        if (!list.ok) throw new Error(admin.errorMessage(list, "The held list failed"));
         const held = Array.isArray(list.data && list.data.held) ? list.data.held : [];
         const records = {};
         for (const row of held) {
-          const record = await call("GET", "/v1/admin/wagers/" + encodeURIComponent(row.matchId));
+          const record = await session.call("GET", "/v1/admin/wagers/" + encodeURIComponent(row.matchId));
           if (record.status === 401) {
-            signOut("The Worker rejected that token. Sign in again.", true);
+            session.signOut("The Worker rejected that token. Sign in again.", true);
             return;
           }
           records[row.matchId] = record.ok ? record.data : null;
@@ -220,15 +151,6 @@
         state.busy = false;
       }
       render();
-    }
-
-    function start() {
-      if (state.timer === null) state.timer = schedule(() => { if (!state.form && !state.busy) refresh(); }, REFRESH_MS);
-    }
-
-    function stop() {
-      if (state.timer !== null) unschedule(state.timer);
-      state.timer = null;
     }
 
     async function submit(matchId, action, note, hours) {
@@ -248,8 +170,8 @@
       let result;
       try {
         result = action === "extend" ?
-          await call("POST", "/v1/admin/wagers/" + encodeURIComponent(matchId) + "/hold", { hours, note: trimmed }) :
-          await call("POST", "/v1/admin/wagers/" + encodeURIComponent(matchId) + "/decide", { action, note: trimmed });
+          await session.call("POST", "/v1/admin/wagers/" + encodeURIComponent(matchId) + "/hold", { hours, note: trimmed }) :
+          await session.call("POST", "/v1/admin/wagers/" + encodeURIComponent(matchId) + "/decide", { action, note: trimmed });
       } catch (error) {
         state.busy = false;
         setStatus(error.message || String(error), true);
@@ -258,14 +180,14 @@
       }
       state.busy = false;
       if (result.status === 401) {
-        signOut("The Worker rejected the token; nothing was changed. Sign in again.", true);
+        session.signOut("The Worker rejected the token; nothing was changed. Sign in again.", true);
         return;
       }
       if (result.status === 409) {
         state.form = null;
         setStatus("Match " + matchId + " is no longer held; nothing was changed.", true);
       } else if (!result.ok) {
-        setStatus(errorMessage(result, "The Worker refused the " + action), true);
+        setStatus(admin.errorMessage(result, "The Worker refused the " + action), true);
         render();
         return;
       } else if (action === "extend") {
@@ -284,19 +206,11 @@
     /* ---------- rendering */
 
     function signInForm() {
-      const input = element("input", {
-        type: "password", autocomplete: "off", spellcheck: "false", placeholder: "Admin token", "aria-label": "Admin token",
-      });
-      const button = element("button", { type: "button", text: "Sign in", onclick: () => signIn(input.value) });
-      return element("div", { class: "admin-signin" }, [
-        element("p", { class: "meta", text: "Deciding a held wager needs the Worker's admin token. It stays in this tab (sessionStorage) until you sign out or close the tab, and is sent only to the signaling Worker." }),
-        element("div", { class: "admin-row" }, [input, button]),
-      ]);
+      return admin.signInForm(element, "Deciding a held wager needs the Worker's admin token.", signIn);
     }
 
     function statusLine() {
-      if (!state.status) return [];
-      return [element("p", { class: state.failed ? "error admin-status" : "admin-status", text: state.status })];
+      return admin.statusLine(element, state.status, state.failed);
     }
 
     function actionForm(row, record) {
@@ -396,11 +310,8 @@
         container.replaceChildren(signInForm(), ...statusLine());
         return;
       }
-      const bar = element("div", { class: "admin-row admin-bar" }, [
-        element("span", { class: "meta", text: "Signed in with the admin token · refreshes every " + (REFRESH_MS / 1000) + " s" }),
-        element("button", { type: "button", text: "Refresh", disabled: state.busy, onclick: () => refresh() }),
-        element("button", { type: "button", class: "admin-signout", text: "Sign out", onclick: () => signOut("Signed out; the token was removed from this tab.", false) }),
-      ]);
+      const bar = admin.bar(element, state.busy, () => refresh(),
+        () => session.signOut("Signed out; the token was removed from this tab.", false));
       const cards = state.held.length ? state.held.map(card) :
         [element("div", { class: "empty", text: "No wagers are held." })];
       container.replaceChildren(bar, ...statusLine(), element("div", { class: "grid admin-grid" }, cards));
@@ -409,9 +320,9 @@
     render();
     if (state.token) {
       refresh();
-      start();
+      timer.start();
     }
-    return { refresh, signIn, signOut, submit, state };
+    return { refresh, signIn, signOut: session.signOut, submit, state };
   }
 
   return { mount, sol, span, when, groupLabel, describeHistory, TOKEN_KEY, REFRESH_MS, NOTE_LIMIT, HOURS_LIMIT };

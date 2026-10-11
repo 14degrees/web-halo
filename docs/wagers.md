@@ -241,7 +241,9 @@ the deadline, and their result card says the match is under review.
 The dashboard (`/servers.html`, its "Held wagers" section from
 `port/web/servers_wagers.js`) offers the same over these routes: the
 operator pastes the admin token, which the page keeps only in that tab's
-`sessionStorage` until they sign out or the Worker answers 401, and each
+`sessionStorage` until they sign out or the Worker answers 401 (the
+session in `port/web/servers_admin.js`, shared with the dashboard's other
+admin panels, so one sign-in or sign-out covers them all), and each
 held match shows its reason, dropped teams, stakes, deadline, ceiling and
 history with Forfeit, Void and Extend buttons that ask for a note (and
 hours) and a confirmation. The page never contains the token (the repo is
