@@ -40,9 +40,11 @@ import { requireWallet } from "./wallet";
      GET    /v1/profiles?wallets=a,b,c      the same for a roster's wallets
                                             (no auth, at most 16)
      GET    /v1/admin/profiles?wallet=|username=|id=   support lookup
-     GET    /v1/admin/profiles/fomo-handles  claimed handles waiting for an admin
+     GET    /v1/admin/profiles/fomo-handles  claimed handles waiting for an admin,
+                                            and confirmed ones
      POST   /v1/admin/profiles/fomo-handle   { profileId, handle, verified, note? }:
-                                            confirm (or take back) a handle */
+                                            confirm a handle, or reject (drop) the
+                                            claim, confirmed or not */
 
 const LINK_CHALLENGE_TTL_SECONDS = 300;
 const ROSTER_LOOKUP_MAXIMUM = 16;
@@ -293,11 +295,16 @@ export async function adminProfileLookup(env: RuntimeEnv, url: URL): Promise<Rec
 }
 
 const PENDING_FOMO_HANDLES_SHOWN = 100;
+const VERIFIED_FOMO_HANDLES_SHOWN = 100;
 
 /* GET /v1/admin/profiles/fomo-handles: claimed handles on profiles with a
-   proven fomo wallet, not yet confirmed. */
+   proven fomo wallet, not yet confirmed, and the latest confirmed ones. */
 export async function adminPendingFomoHandles(env: RuntimeEnv): Promise<Record<string, unknown>> {
-  return { pending: await profiles(env).pendingFomoHandles(PENDING_FOMO_HANDLES_SHOWN) };
+  const store = profiles(env);
+  return {
+    pending: await store.pendingFomoHandles(PENDING_FOMO_HANDLES_SHOWN),
+    verified: await store.verifiedFomoHandles(VERIFIED_FOMO_HANDLES_SHOWN),
+  };
 }
 
 /* POST /v1/admin/profiles/fomo-handle { profileId, handle, verified, note? }:

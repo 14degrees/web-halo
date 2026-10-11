@@ -224,8 +224,19 @@ func (link *gameLink) frame(address uint32, reliable bool, frame []byte) error {
 	return link.write(packet)
 }
 
-func (link *gameLink) hostDedicated(mapIndex, modeIndex, minimum, countdown, postgame int) error {
-	return link.write([]byte{'H', byte(mapIndex), byte(modeIndex), byte(minimum), byte(countdown), byte(postgame)})
+// hostDedicated hosts the dedicated lobby. A Slayer game plays to
+// scoreToWin (a staked match's kill target), or to its variant's own limit
+// when it is 0.
+func (link *gameLink) hostDedicated(mapIndex, modeIndex, minimum, countdown, postgame, scoreToWin int) error {
+	return link.write(hostPacket(mapIndex, modeIndex, minimum, countdown, postgame, scoreToWin))
+}
+
+func hostPacket(mapIndex, modeIndex, minimum, countdown, postgame, scoreToWin int) []byte {
+	packet := []byte{'H', byte(mapIndex), byte(modeIndex), byte(minimum), byte(countdown), byte(postgame)}
+	if scoreToWin > 0 {
+		packet = binary.LittleEndian.AppendUint16(packet, uint16(scoreToWin))
+	}
+	return packet
 }
 
 func (link *gameLink) setNextGame(mapIndex, modeIndex int) error {

@@ -420,7 +420,7 @@ describe("wagered playlists", () => {
     const buildId = "wager-test-build-3";
     const matchmaker = env.MATCHMAKER.getByName("main");
     const now = Date.now();
-    await matchmaker.registerServer(buildId, null, null, now);
+    const serverId = await matchmaker.registerServer(buildId, null, null, now);
     let formed = null;
     for (const [index, wallet] of ["WalletCCCCcccc3333", "WalletDDDDdddd4444", "WalletEEEEeeee5555", "WalletFFFFffff6666"].entries()) {
       formed = await matchmaker.enqueue({
@@ -432,5 +432,8 @@ describe("wagered playlists", () => {
       stake: STAKE, perKill: 0, mode: "team", escrow: "locking",
       stakes: { stake: STAKE, killTarget: 50, teamShareBps: DEFAULT_TEAM_SHARE_BPS, groups: 2 },
     });
+    /* the server plays the game to the playlist's kill target */
+    const beat = await matchmaker.heartbeat({ serverId, now });
+    expect(beat.assignment).toMatchObject({ playlist: "teamstakes", killTarget: 50 });
   });
 });

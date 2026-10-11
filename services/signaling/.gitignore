@@ -5,3 +5,4 @@ node_modules/
 coverage/
 worker-startup*.cpuprofile
 .escrow-devnet.mjs
+.escrow-config.mjs

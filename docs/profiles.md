@@ -40,7 +40,9 @@ offers Connect wallet.
    then reads **claimed** (prove a fomo
    wallet), **awaiting an admin** (the wallet is proven; an admin compares
    it with the masked address fomo shows on the handle's page), or
-   **verified**. It is private until verified.
+   **verified**. It is private until verified. An admin who rejects the
+   claim, or revokes a confirmation, drops it from the profile; the player
+   can claim a handle again.
 5. **X.** Link X gives a code, the text to post (`Linking my Halo
    Spartan: <code>`), a Post on X link that fills it in, and when the code
    expires (15 minutes). The player posts, pastes the post's link and
@@ -85,8 +87,21 @@ Routes the page uses, all with the wallet's bearer token:
 | `POST /v1/profile/fomo/transfer`, `.../transfer/check` | the transfer proof |
 | `POST /v1/profile/x/challenge`, `/x/verify`; `DELETE /v1/profile/x` | link and unlink X |
 
-Admins confirm fomo handles with `GET /v1/admin/profiles/fomo-handles` and
-`POST /v1/admin/profiles/fomo-handle` (no page for it yet).
+Admins confirm fomo handles with `GET /v1/admin/profiles/fomo-handles`
+(`pending`: claims on profiles with a proven fomo wallet, oldest first;
+`verified`: the latest 100 confirmed handles) and
+`POST /v1/admin/profiles/fomo-handle` `{ profileId, handle, verified, note? }`
+(`verified: false` drops the claim, confirmed or not; a claim changed since
+the admin looked answers `409 FOMO_HANDLE_CHANGED`).
+
+The dashboard (`/servers.html`, its "Fomo handles" section from
+`port/web/servers_fomo_handles.js`) offers the same, signed in with the
+admin token shared with the held-wagers panel (`port/web/servers_admin.js`,
+kept only in the tab's `sessionStorage`; see docs/wagers.md). Each pending
+claim shows the player, the handle, when it was claimed, the proven fomo
+wallet and how it was proven, with a link to the handle's page on
+fomo.family to compare the masked address; Confirm and Reject, and Revoke
+on a confirmed handle, ask for a note and a confirmation.
 
 ## Errors
 

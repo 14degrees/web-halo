@@ -21,9 +21,11 @@ import { escrowRpc, escrowSetup, sessionKeypair } from "./wager";
    approve a play session) and to withdraw. The Worker builds them; the
    wallet signs and sends them, so the Worker never holds the player's SOL. */
 
-/* Small stakes: what one load-up may deposit, and a session's limit. */
-const MAXIMUM_DEPOSIT_LAMPORTS = LAMPORTS_PER_SOL;
-const MAXIMUM_SESSION_LIMIT_LAMPORTS = LAMPORTS_PER_SOL;
+/* Safety caps, from the top stake tier (1 SOL, matchmaker.ts STAKE_TIERS):
+   one load-up may deposit two of its buy-ins, and a day's session may stake
+   five of them. The page asks for less (online_client.js). */
+const MAXIMUM_DEPOSIT_LAMPORTS = 2 * LAMPORTS_PER_SOL;
+const MAXIMUM_SESSION_LIMIT_LAMPORTS = 5 * LAMPORTS_PER_SOL;
 /* A session lasts a day (the program's longest), less a margin for clocks. */
 const SESSION_SECONDS = 24 * 60 * 60 - 5 * 60;
 

@@ -12,15 +12,17 @@ Production Money System". This page describes what is built.
 
 ## How a player sees it
 
-1. They pick a playlist for SOL and its stake (0.01, 0.05 or 0.1 SOL: the
-   Stake line in the lobby, or the tiers in the playlist picker, which show
-   the stake, what a kill is worth and who is searching at each), then press
-   Start matchmaking.
+1. They pick a playlist for SOL and its stake (0.01, 0.05, 0.1, 0.25, 0.5
+   or 1 SOL: the Stake line in the lobby, or the tiers in the playlist
+   picker, which show the stake, what a kill is worth and who is searching
+   at each), then press Start matchmaking. A tier above the escrow
+   program's maximum stake shows "not open yet" and can't be picked.
 2. If their vault can't stake yet, the Load Up window opens. They connect a
-   wallet (Phantom), pick 0.05, 0.1 or 0.25 SOL, and approve **once**. That
-   one transaction opens their vault, deposits, and approves a play session:
-   the game may stake up to 0.5 SOL of the vault in matches for 24 hours,
-   with no more prompts. Then it searches.
+   wallet (Phantom), pick 0.05, 0.1, 0.25 or 1 SOL, and approve **once**.
+   That one transaction opens their vault, deposits, and approves a play
+   session: the game may stake up to five buy-ins at their stake (at least
+   0.5 SOL) of the vault in matches for 24 hours, with no more prompts.
+   Then it searches.
 3. When a match forms, everyone's stake is locked on chain (about three
    seconds). Nobody gets the server's invite until the stakes are locked.
 4. In the match, each kill pops its bounty ("+0.010") over the body. The HUD
@@ -37,7 +39,7 @@ Production Money System". This page describes what is built.
 | | Bounty Duel | Bounty Rumble | Team Stakes |
 | --- | --- | --- | --- |
 | Players | 2 | 2 to 4, free-for-all | exactly 4, two on two Team Slayer |
-| Buy-in | 0.01, 0.05 or 0.1 SOL | 0.01, 0.05 or 0.1 SOL | 0.01, 0.05 or 0.1 SOL |
+| Buy-in | 0.01 to 1 SOL (six tiers) | 0.01 to 1 SOL (six tiers) | 0.01 to 1 SOL (six tiers) |
 | Pays | a fifth of the stake a kill | a fifth of the stake a kill | the winners get their stake back and split the losers' stakes: a quarter evenly, the rest by kills |
 
 ## Picking the stake
@@ -52,10 +54,69 @@ picked freely would split the players so thin that nobody found a match.
 A handful of tiers keeps each queue full enough; the picker shows who is
 searching at each tier, so players drift to the busy one; and the playlist's
 default tier (0.05) is what anyone gets without picking. Add a tier only
-when the queues are busy enough to take it. Every tier must stay within the
-escrow program's maximum stake (0.1 SOL on devnet) and a play session's
-limit (0.5 SOL, `SESSION_LIMIT_LAMPORTS` in the page; at most 1 SOL in
-`src/vault.ts`).
+when the queues are busy enough to take it.
+
+The tiers are 0.01, 0.05, 0.1, 0.25, 0.5 and 1 SOL, each two to five times
+the last, so a player can move up without a tier for every taste. Above
+0.1 they are open only as far as the escrow program allows:
+
+- **The escrow's maximum stake.** The program refuses to create a match
+  above its config's `maximum_stake`, so such a match could never lock and
+  would be void. The Worker reads `maximum_stake` from the config account
+  (`escrowMaximumStake` in `src/wager.ts`, cached five minutes; until it
+  can be read, 0.1 SOL is assumed). `GET /v1/playlists` marks each tier
+  above it `available: false` with a `reason`, and reports
+  `stakes.maximumStake`; the page shows such a tier as "not open yet" and
+  won't pick it; the queue, a party's stake and a custom game's stake
+  refuse it (`stakeLimitProblem`, 409 `STAKE_NOT_OPEN` for a party). So
+  nothing breaks before the limit is raised, and the tiers open by
+  themselves within five minutes after.
+- **A play session's limit.** The page asks for five buy-ins at the
+  stake picked, at least 0.5 SOL (`sessionLimit` in `port/web/stakes.js`):
+  1.25 SOL at 0.25, 5 SOL at 1. A player whose session has less left
+  than the stake is asked to approve a new one. The Worker caps a session
+  at 5 SOL and one load-up at 2 SOL (`src/vault.ts`), five and two
+  top-tier buy-ins.
+
+### Raising the maximum stake (the operator)
+
+The program's operator (`build/escrow-keys/operator.json`,
+`8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM` on devnet) raises it with
+the program's `update_config` instruction. It takes the whole `Settings`
+struct and replaces every setting at once, so every other setting must be
+passed exactly as it is on chain:
+
+| Account | |
+| --- | --- |
+| `config` (writable) | the PDA of `["config"]`: `J1tWhgtELNvAJAfKmNVTNMnGWfc1BMb6oBGVdsRg36cv` |
+| `operator` (signer) | the config's operator |
+
+| Argument (`Settings`, in order) | Value |
+| --- | --- |
+| `authority: Pubkey` | unchanged: `58PxG6BsZEKtQpQmBLAyXdhGwhdqA4dVYmAMx7KxdFzf` |
+| `fee_vault: Pubkey` | unchanged: `8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM` |
+| `fee_bps: u16` | unchanged: `500` |
+| `maximum_stake: u64` | the new maximum in lamports: `1000000000` for the 1 SOL tier |
+| `reclaim_delay: i64` | unchanged (seconds; `86400` on devnet on 2026-10-11) |
+
+A script reads the config and builds this instruction with only
+`maximum_stake` changed. Without `--send` it only prints:
+
+```sh
+cd services/signaling
+npm run escrow:config -- https://api.devnet.solana.com ../../build/escrow-keys                        # show the config
+npm run escrow:config -- https://api.devnet.solana.com ../../build/escrow-keys --maximum-stake 1      # show the change
+npm run escrow:config -- https://api.devnet.solana.com ../../build/escrow-keys --maximum-stake 1 --send
+```
+
+`--send` signs with `operator.json` (it checks that it is the config's
+operator) and prints the new value. The program's only limit on
+`maximum_stake` is that it is above zero; a lower value closes tiers
+again. Matches already created keep their stake. The Worker picks the new
+value up within five minutes; nothing needs redeploying.
+
+On devnet, `maximum_stake` already read 1 SOL on 2026-10-11, so every tier
+is open there once the Worker has escrow set up.
 
 A party queues at the leader's tier. Before the leader can start a search
 for SOL, every member must accept the stake (the Stake line opens the terms;
@@ -104,11 +165,15 @@ custom game's settings later.
 - A quarter of the prize (the **team share**) is split evenly among the
   winners, so a winner with no kills still gets paid. The rest (the **kill
   pool**) pays each winner's kills at exactly `kill pool / kill target`:
-  the kill target is the variant's score to win (50 for Team Slayer), so
-  the team's kills use the pool up exactly as the team reaches it. Kills are
-  enemy kills; suicides and betrayals earn nothing (and cost Halo's score).
-  Should the winners' kills exceed the target, the pool is shared by kills
-  so it never overpays.
+  the kill target is the game's score to win (the matchmaker sends it with
+  the match's assignment, and the server sets the Slayer variant's score
+  limit from it, for teams and free-for-alls alike), so the team's kills
+  use the pool up exactly as the team reaches it, and the game ends there
+  through its own end of game. Kills are enemy kills; suicides and
+  betrayals earn nothing and cost Halo's score a point, so a team that
+  betrayed has more kills than the target when it reaches it. Should the
+  winners' kills exceed the target, the pool is shared by kills so it
+  never overpays.
 - Kill money nobody earned (the match ended on the time limit, or short of
   the target) is split evenly too. Everything is whole lamports: the
   payouts plus the fee equal the pot exactly, and the odd lamports go one
@@ -134,7 +199,8 @@ custom game's settings later.
 - If a match does not finish (the server is lost, everyone leaves, it never
   starts), it is void and every stake goes back in full.
 - If the game never settles a match, each player can take their stake back
-  themselves after 24 hours (the program's `reclaim`).
+  themselves after the program's `reclaim_delay` (24 hours on devnet; the
+  program's `reclaim`).
 
 The playlists are `bountyduel`, `bounty` and `teamstakes` in
 `services/signaling/src/matchmaker.ts` (`PLAYLISTS`); the rules are
@@ -175,7 +241,9 @@ the deadline, and their result card says the match is under review.
 The dashboard (`/servers.html`, its "Held wagers" section from
 `port/web/servers_wagers.js`) offers the same over these routes: the
 operator pastes the admin token, which the page keeps only in that tab's
-`sessionStorage` until they sign out or the Worker answers 401, and each
+`sessionStorage` until they sign out or the Worker answers 401 (the
+session in `port/web/servers_admin.js`, shared with the dashboard's other
+admin panels, so one sign-in or sign-out covers them all), and each
 held match shows its reason, dropped teams, stakes, deadline, ceiling and
 history with Forfeit, Void and Extend buttons that ask for a note (and
 hours) and a confirmation. The page never contains the token (the repo is
@@ -328,10 +396,13 @@ wallets.
 ## Known gaps
 
 - The Team Stakes playlist is Team Slayer only. A custom game for SOL can be
-  any game type, but its kill target only sets what a kill is worth: the
-  game still plays to its own score limit (50 in the dedicated Team Slayer
-  variant), and a fixed set of kill targets is offered rather than the
-  game's limit being changed to match.
+  any game type; in Slayer and Team Slayer the game plays to its kill
+  target, but in the objective modes (CTF, Oddball, King, Race) the kill
+  target only sets what a kill is worth and the game plays to its own score
+  limit. Every match still ends at ten minutes (the server's time limit,
+  with the gateway's 12-minute backstop), so a high kill target may not be
+  reached: the match then pays by Halo's score at the time, and the kill
+  money nobody earned is split evenly.
   The payout rule already handles any team sizes and free-for-alls; a
   playlist or custom game only has to pass its stakes configuration. The
   dedicated server reports two team scores, so games with more than two

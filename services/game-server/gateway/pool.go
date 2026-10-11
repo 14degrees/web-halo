@@ -4,8 +4,8 @@ package main
 (services/signaling/src/matchmaker.ts) instead of keeping an open lobby.
 
 It registers, then heartbeats every two seconds; the heartbeat's answer
-carries its assignment: a playlist, a map and the machines of the players.
-It hosts that match in a private room, admits only those machines, and
+carries its assignment: a playlist, a map and the machines of the players
+(and a staked match's kill target, which a Slayer game plays to). It hosts that match in a private room, admits only those machines, and
 starts when all of them are in. Past the load deadline it starts with
 whoever came, if that is two or more, and otherwise voids the match. When
 the match ends it reports the end and exits, so the next match gets a fresh
@@ -32,8 +32,8 @@ const (
 	poolEmptyLimit = 20 * time.Second
 	// a match still not live this long after its room opened is called off
 	poolStartLimit = poolLoadDeadline + 30*time.Second
-	// and every match ends by this long after it went live (the playlists
-	// are ten minutes)
+	// and every match ends by this long after it went live (the game ends
+	// one at its score limit, or else at ten minutes)
 	poolMatchLimit = 12 * time.Minute
 )
 
@@ -45,6 +45,9 @@ type assignment struct {
 	Roster    []string `json:"roster"`
 	// a team match's plan: each machine's team (0 red, 1 blue)
 	Teams map[string]int `json:"teams,omitempty"`
+	// a staked match's kill target: a Slayer game ends when a team (or a
+	// player, in a free-for-all) scores it; 0 plays to the variant's limit
+	KillTarget int `json:"killTarget,omitempty"`
 }
 
 type poolMatch struct {
@@ -120,7 +123,7 @@ func (s *server) hostAssignment(ctx context.Context, serverID, identifier string
 	s.peers.setAllowed(func(machine string) bool { return roster[toLower(machine)] })
 	s.peers.setTeams(match.Teams)
 	if err := s.link.hostDedicated(match.MapIndex, match.ModeIndex, len(match.Roster),
-		s.config.MatchCountdownSeconds, s.config.PostgameSeconds); err != nil {
+		s.config.MatchCountdownSeconds, s.config.PostgameSeconds, match.KillTarget); err != nil {
 		return err
 	}
 	lobby := lobbySettings{MapIndex: match.MapIndex, ModeIndex: match.ModeIndex}
@@ -142,6 +145,9 @@ func (s *server) hostAssignment(ctx context.Context, serverID, identifier string
 	match.readyAt = time.Now()
 	log.Printf("match %s: %s on map %d for %d players", shortID(match.MatchID), match.Playlist,
 		match.MapIndex, len(match.Roster))
+	if match.KillTarget > 0 {
+		log.Printf("match %s: plays to %d kills", shortID(match.MatchID), match.KillTarget)
+	}
 	return nil
 }
 
