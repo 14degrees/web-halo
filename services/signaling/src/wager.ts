@@ -71,7 +71,8 @@ export type WagerMode = "bounty" | "team";
 export interface StakesConfig {
   /* lamports per player */
   stake: number;
-  /* the variant's score to win: one group's kill limit, at least 1 */
+  /* the game's score to win (Slayer plays to it): one group's kill limit,
+     at least 1 */
   killTarget: number;
   /* the part of the prize split evenly among the winners, 0..10000 */
   teamShareBps: number;
@@ -230,7 +231,7 @@ export const HOLD_MS = 12 * 60 * 60_000;
 export const HOLD_MARGIN_MS = 60 * 60_000;
 export const DEFAULT_TEAM_SHARE_BPS = 2_500;
 /* the kill target a record from before the stakes configuration played by:
-   the dedicated Team Slayer variant's score to win */
+   the dedicated Team Slayer variant's own score to win */
 const LEGACY_KILL_TARGET = 50;
 
 /* ---------- the rules, kept pure for the tests */
@@ -281,10 +282,18 @@ export function stakesConfigProblem(config: StakesConfig): string | null {
    - L = pot − stake × winners is forfeited; F = L × feeBps / 10000 is the
      fee; D = L − F the prize; T = D × teamShareBps / 10000 the team share
      pool; Kp = D − T the kill pool.
+   - The game plays to the kill target in Halo's score (the server sets
+     the Slayer variant's score to win from it): an enemy kill +1, a
+     betrayal or suicide −1. Halo's score picks the winners; the Worker's
+     kill count (enemy kills only) pays them. So a group that reaches the
+     target has made at least killTarget kills, more when betrayals or
+     suicides cost it points, and a match that ends first (the time limit,
+     everyone leaving) has fewer.
    - A kill is worth Kp / max(killTarget, the winners' kills): exactly
      Kp / killTarget unless the winners made more kills than the target
-     (betrayals cost Halo's score, not the kill count), when the pool is
-     shared pro rata so it never overpays. Winner i's kill share is
+     (the betrayals and suicides above), when the pool is shared pro rata
+     so it never overpays; short of the target, the kill money nobody
+     earned goes to the even share. Winner i's kill share is
      Kp × kills_i / that, floored.
    - E = D − the kill shares (the team share, kill money nobody earned, and
      rounding dust) is split evenly; the odd lamports go one each to the

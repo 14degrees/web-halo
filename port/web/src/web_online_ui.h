@@ -136,6 +136,11 @@ int platform_web_online_host_dedicated(
 	int minimum_players,
 	int countdown_seconds,
 	int postgame_seconds);
+/* The next dedicated host's Slayer score limit (a staked match's kill
+target), 1-999, or 0 for the variant's own. Set it before
+platform_web_online_host_dedicated, which takes it; the objective modes keep
+their own limits. */
+int platform_web_online_set_score_to_win(int score_to_win);
 /* The next game's map and mode: applied when the lobby is next open. */
 int platform_web_online_set_next_game(int map_index, int mode_index);
 /* A player is waiting to join: end the running match so the next one

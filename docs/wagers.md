@@ -165,11 +165,15 @@ custom game's settings later.
 - A quarter of the prize (the **team share**) is split evenly among the
   winners, so a winner with no kills still gets paid. The rest (the **kill
   pool**) pays each winner's kills at exactly `kill pool / kill target`:
-  the kill target is the variant's score to win (50 for Team Slayer), so
-  the team's kills use the pool up exactly as the team reaches it. Kills are
-  enemy kills; suicides and betrayals earn nothing (and cost Halo's score).
-  Should the winners' kills exceed the target, the pool is shared by kills
-  so it never overpays.
+  the kill target is the game's score to win (the matchmaker sends it with
+  the match's assignment, and the server sets the Slayer variant's score
+  limit from it, for teams and free-for-alls alike), so the team's kills
+  use the pool up exactly as the team reaches it, and the game ends there
+  through its own end of game. Kills are enemy kills; suicides and
+  betrayals earn nothing and cost Halo's score a point, so a team that
+  betrayed has more kills than the target when it reaches it. Should the
+  winners' kills exceed the target, the pool is shared by kills so it
+  never overpays.
 - Kill money nobody earned (the match ended on the time limit, or short of
   the target) is split evenly too. Everything is whole lamports: the
   payouts plus the fee equal the pot exactly, and the odd lamports go one
@@ -390,10 +394,13 @@ wallets.
 ## Known gaps
 
 - The Team Stakes playlist is Team Slayer only. A custom game for SOL can be
-  any game type, but its kill target only sets what a kill is worth: the
-  game still plays to its own score limit (50 in the dedicated Team Slayer
-  variant), and a fixed set of kill targets is offered rather than the
-  game's limit being changed to match.
+  any game type; in Slayer and Team Slayer the game plays to its kill
+  target, but in the objective modes (CTF, Oddball, King, Race) the kill
+  target only sets what a kill is worth and the game plays to its own score
+  limit. Every match still ends at ten minutes (the server's time limit,
+  with the gateway's 12-minute backstop), so a high kill target may not be
+  reached: the match then pays by Halo's score at the time, and the kill
+  money nobody earned is split evenly.
   The payout rule already handles any team sizes and free-for-alls; a
   playlist or custom game only has to pass its stakes configuration. The
   dedicated server reports two team scores, so games with more than two
