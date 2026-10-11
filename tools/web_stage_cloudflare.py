@@ -3,6 +3,10 @@
 
 Campaign maps exceed the Static Assets per-file limit. The hosting Worker
 streams those maps from the R2 bucket configured in services/web/wrangler.jsonc.
+
+A deployment ships the real game data and menu art only: staging fails if a
+map lacks the game's cache file header or if port/web/assets/ui holds any
+image from tools/web_placeholder_assets.py, or misses one the page loads.
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ import re
 import shutil
 import sys
 from pathlib import Path
+
+from web_placeholder_assets import placeholder_files, placeholder_images
 
 
 MAX_ASSET_BYTES = 25 * 1024 * 1024
@@ -62,6 +68,34 @@ def checked_copy(source: Path, destination: Path) -> int:
     return size
 
 
+# The game's cache file header signature, the multi-character constant 'head'
+# stored little-endian (source/cache/cache_files.c).
+MAP_SIGNATURE = b"daeh"
+
+
+def check_real_map(source: Path) -> None:
+    with source.open("rb") as file:
+        signature = file.read(len(MAP_SIGNATURE))
+    if signature != MAP_SIGNATURE:
+        raise ValueError(f"{source} is not a Halo map (no cache file header)")
+
+
+def check_real_ui_art(ui_assets: Path) -> None:
+    if not ui_assets.is_dir():
+        raise FileNotFoundError(f"required web asset directory is missing: {ui_assets}")
+    placeholders = placeholder_files(ui_assets)
+    if placeholders:
+        names = ", ".join(str(path.relative_to(ui_assets)) for path in placeholders[:5])
+        more = f" and {len(placeholders) - 5} more" if len(placeholders) > 5 else ""
+        raise ValueError(
+            f"{ui_assets} holds {len(placeholders)} placeholder images ({names}{more}); "
+            "a deployment needs the real menu art"
+        )
+    missing = sorted(name for name in placeholder_images() if not (ui_assets / name).is_file())
+    if missing:
+        raise FileNotFoundError(f"required menu art is missing from {ui_assets}: {', '.join(missing)}")
+
+
 def asset_build_id(web_build: Path) -> str:
     digest = hashlib.sha256()
     for name in ("halo.html", "halo.js", "halo.wasm"):
@@ -84,11 +118,17 @@ def stamp_build_id(path: Path, build_id: str) -> None:
     path.write_bytes(updated)
 
 
-def main() -> int:
-    repository = Path(__file__).resolve().parents[1]
+def main(repository: Path = Path(__file__).resolve().parents[1]) -> int:
     web_build = repository / "build" / "web"
     maps = repository / "assets" / "maps"
     output = repository / "build" / "cloudflare-web"
+
+    # Check the art before touching a previous staging.
+    ui_assets = repository / "port" / "web" / "assets" / "ui"
+    check_real_ui_art(ui_assets)
+    for name in ("ui.map", *MULTIPLAYER_MAPS):
+        if (maps / name).is_file():
+            check_real_map(maps / name)
 
     if output.exists():
         shutil.rmtree(output)
@@ -121,9 +161,6 @@ def main() -> int:
     for name in ("ui.map", *MULTIPLAYER_MAPS):
         total += checked_copy(maps / name, output / "assets" / "maps" / name)
 
-    ui_assets = repository / "port" / "web" / "assets" / "ui"
-    if not ui_assets.is_dir():
-        raise FileNotFoundError(f"required web asset directory is missing: {ui_assets}")
     for source in sorted(path for path in ui_assets.rglob("*") if path.is_file()):
         total += checked_copy(
             source,

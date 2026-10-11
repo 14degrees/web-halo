@@ -12,9 +12,28 @@ The current deployment is
 [halo-web.otherness-bugs.workers.dev](https://halo-web.otherness-bugs.workers.dev/).
 Only deploy game data that you are entitled to host and distribute.
 
-Build and validate from the repository root:
+## Prepare a release build
+
+A deployment needs two sets of files that are not in Git, because the
+repository is public and the game data is proprietary:
+
+| Files | Where they go | Where they come from |
+| --- | --- | --- |
+| `ui.map` and the 13 multiplayer maps (`beavercreek.map`, `bloodgulch.map`, …) | `assets/maps/` | An Xbox disc image of Halo: Combat Evolved: `python3 tools/xiso_extract.py Halo.iso --output assets/maps` |
+| The menu art: `maps/*.png` (13 map cards), `modes/*.png` (6 mode icons), `spartan/*.png` (18 armor colors) and `shell/` (`halo-ce-ring-menu.jpg`, `hud-frame.png`, `xbox-duke-controller.png`, `kofi-support-dark.png`, `mitchell-jester-card.svg`, optionally `lobby-backdrop.png`) | `port/web/assets/ui/` | A copy of the original site's art. `tools/web_capture_art.mjs` can render the map cards and the lobby backdrop from the game itself; the other images have no generator. |
+
+`tools/web_placeholder_assets.py` writes plain images under the same names
+for local builds. Staging refuses them: `tools/web_stage_cloudflare.py` (and
+so `npm run check` and `npm run deploy`) fails if any menu image is a
+placeholder or missing, or if a map file lacks the game's cache file header.
+After real art replaces placeholders, delete the placeholder files first: the
+generator never overwrites, and the art copy must overwrite them.
+
+Then build the release and validate it from the repository root. The Emscripten
+SDK can live in the ignored `build/emsdk`:
 
 ```sh
+python3 configure.py --release --pgo=off --lto=off
 ninja web
 cd services/web
 npm ci
