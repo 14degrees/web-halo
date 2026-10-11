@@ -21,7 +21,7 @@ import {
   parsePlayerProfile,
 } from "./protocol";
 import { parseVote } from "./vote";
-import { stakeProblem } from "./wager";
+import { escrowMaximumStake, stakeLimitProblem, stakeProblem } from "./wager";
 import { walletForToken } from "./wallet";
 
 /* The party routes (src/party.ts):
@@ -123,6 +123,16 @@ function settings(input: Record<string, unknown>): PartySettings {
   return out;
 }
 
+/* A stake the leader picks must be open: within the escrow's maximum. */
+async function openStakes(env: RuntimeEnv, chosen: PartySettings): Promise<PartySettings> {
+  for (const stake of [chosen.stake, chosen.customStakes?.stake]) {
+    if (typeof stake !== "number") continue;
+    const problem = stakeLimitProblem(stake, await escrowMaximumStake(env));
+    if (problem) throw new HttpError(409, "STAKE_NOT_OPEN", problem);
+  }
+  return chosen;
+}
+
 /* Every member can stake: they accepted the party's terms, and their wallet
    holds the stake in a vault with a session that can spend it. */
 async function requireStakes(
@@ -171,7 +181,7 @@ export async function handlePartyRequest(
     const join = await member(env, input);
     const chosen = {
       lobby: "matchmaking" as const, playlist: "ffa", mapIndex: 0, modeIndex: 1, stake: null, customStakes: null,
-      ...settings(input),
+      ...(await openStakes(env, settings(input))),
     };
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const code = newCode();
@@ -200,7 +210,7 @@ export async function handlePartyRequest(
     if (text === null) throw new HttpError(400, "VALIDATION_FAILED", "text is empty, too long, or not text.");
     return answer(await party.say(join, text, now, chatSince(input)));
   }
-  if (action === "settings") return answer(await party.configure(join.key, settings(input), now));
+  if (action === "settings") return answer(await party.configure(join.key, await openStakes(env, settings(input)), now));
   if (action === "accept") {
     if (!Number.isInteger(input.terms)) throw new HttpError(400, "VALIDATION_FAILED", "terms is required.");
     return answer(await party.accept(join, input.terms as number, now));

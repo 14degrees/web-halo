@@ -22,6 +22,7 @@ const DISCRIMINATORS = {
   open_vault: [181, 248, 228, 67, 6, 175, 37, 167],
   settle: [175, 42, 185, 87, 144, 131, 102, 212],
   set_paused: [91, 60, 125, 192, 176, 225, 166, 218],
+  update_config: [29, 158, 252, 191, 10, 83, 219, 99],
   void_match: [108, 111, 216, 72, 110, 46, 217, 140],
   withdraw: [183, 18, 70, 156, 148, 109, 161, 34],
 } as const;
@@ -29,6 +30,7 @@ const DISCRIMINATORS = {
 /* account discriminators, to read accounts */
 const VAULT_DISCRIMINATOR = [211, 8, 232, 43, 2, 152, 117, 119];
 const MATCH_DISCRIMINATOR = [236, 63, 169, 38, 15, 56, 196, 162];
+const CONFIG_DISCRIMINATOR = [155, 12, 170, 224, 30, 250, 204, 130];
 
 export interface AccountMeta {
   pubkey: string;
@@ -154,6 +156,22 @@ export async function initializeInstruction(operator: string, settings: EscrowSe
     programId: ESCROW_PROGRAM_ID,
     keys: [writable(await configAddress()), writable(operator, true), readonly(SYSTEM_PROGRAM_ID)],
     data: instructionData("initialize")
+      .pubkey(settings.authority)
+      .pubkey(settings.feeVault)
+      .u16(settings.feeBps)
+      .u64(settings.maximumStake)
+      .i64(settings.reclaimDelaySeconds)
+      .done(),
+  };
+}
+
+/* The operator replaces every setting at once (each within the program's
+   hard caps): to change one, pass the others as they are on chain. */
+export async function updateConfigInstruction(operator: string, settings: EscrowSettings): Promise<Instruction> {
+  return {
+    programId: ESCROW_PROGRAM_ID,
+    keys: [writable(await configAddress()), readonly(operator, true)],
+    data: instructionData("update_config")
       .pubkey(settings.authority)
       .pubkey(settings.feeVault)
       .u16(settings.feeBps)
@@ -307,6 +325,31 @@ export function decodeVault(data: Uint8Array): VaultState | null {
     sessionSpent: view.getBigUint64(96, true),
     sessionExpiry: Number(view.getBigInt64(104, true)),
     holdUntil: Number(view.getBigInt64(112, true)),
+  };
+}
+
+export interface ConfigState {
+  operator: string;
+  authority: string;
+  feeVault: string;
+  feeBps: number;
+  /* the largest stake a match may be created with, in lamports */
+  maximumStake: bigint;
+  reclaimDelaySeconds: number;
+  paused: boolean;
+}
+
+export function decodeConfig(data: Uint8Array): ConfigState | null {
+  if (data.length < 8 + 32 * 3 + 2 + 8 + 8 + 1 || !startsWith(data, CONFIG_DISCRIMINATOR)) return null;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return {
+    operator: base58Encode(data.slice(8, 40)),
+    authority: base58Encode(data.slice(40, 72)),
+    feeVault: base58Encode(data.slice(72, 104)),
+    feeBps: view.getUint16(104, true),
+    maximumStake: view.getBigUint64(106, true),
+    reclaimDelaySeconds: Number(view.getBigInt64(114, true)),
+    paused: data[122] === 1,
   };
 }
 

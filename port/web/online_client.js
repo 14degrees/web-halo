@@ -2796,7 +2796,15 @@
 
   /* what the stakes can be set to (GET /v1/playlists' stakes) */
   function stakeOptions() {
-    return lobby.stakeOptions || { tiers: [10000000, 50000000, 100000000], killTarget: { minimum: 5, maximum: 100 }, feeBps: 500 };
+    return lobby.stakeOptions || {
+      tiers: [10000000, 50000000, 100000000, 250000000, 500000000, 1000000000], maximumStake: 100000000,
+      killTarget: { minimum: 5, maximum: 100 }, feeBps: 500,
+    };
+  }
+
+  /* a tier above the escrow's maximum stake can't be picked yet */
+  function tierOpen(tier) {
+    return !!tier && tier.available !== false;
   }
 
   function playlistTiers(playlist) {
@@ -2812,20 +2820,23 @@
   }
 
   /* A playlist's terms at the stake it is searched at: in a party, the
-     leader's pick; alone, the player's own; else the playlist's default.
-     Null for a free playlist. */
+     leader's pick; alone, the player's own; else the playlist's default
+     (also when the pick is a tier that isn't open). Null for a free
+     playlist. */
   function selectedWager(playlist) {
     if (!playlist || !playlist.wager) return null;
     var view = partyView();
     var wanted = view ? view.stake : storedStakes()[playlist.id];
     var tiers = playlistTiers(playlist);
-    for (var index = 0; index < tiers.length; index++) if (tiers[index].stake === wanted) return tiers[index];
+    for (var index = 0; index < tiers.length; index++) {
+      if (tiers[index].stake === wanted && tierOpen(tiers[index])) return tiers[index];
+    }
     return playlist.wager;
   }
 
   function chooseStake(playlist, stake) {
     var tiers = playlistTiers(playlist);
-    if (!tiers.some(function(tier) { return tier.stake === stake; })) return;
+    if (!tiers.some(function(tier) { return tier.stake === stake && tierOpen(tier); })) return;
     if (partyView()) {
       if (!partyLeader()) return;
       configureParty({ stake: stake });
@@ -2920,7 +2931,7 @@
     var wager = null;
     if (custom) {
       wager = partyWager();
-      var choices = Stakes.customChoices(stakeOptions().tiers);
+      var choices = Stakes.customChoices(stakeOptions().tiers, stakeOptions().maximumStake);
       var terms = view ? view.customStakes : null;
       setText("stakes-intro", leader ?
         "Set what everyone stakes. Each member accepts before the game starts; nothing is staked until it does." :
@@ -5160,12 +5171,23 @@
 
      Load up is one wallet prompt: open the vault (the first time), deposit,
      and approve a day's play session, which lets the game stake up to
-     SESSION_LIMIT_LAMPORTS of the vault in matches. Withdraw sends the free
+     sessionLimit() of the vault in matches. Withdraw sends the free
      balance back to the wallet. The Worker builds each transaction; the
      wallet signs and sends it. */
 
-  var LOAD_UP_CHOICES = [50000000, 100000000, 250000000];
-  var SESSION_LIMIT_LAMPORTS = 500000000;
+  var LOAD_UP_CHOICES = [50000000, 100000000, 250000000, 1000000000];
+
+  /* the stake the player is set to play at, or null for a free game */
+  function wageredStake() {
+    var wagered = lobbyKind() === "custom" ? partyWager() : selectedWager(selectedPlaylist());
+    return wagered ? wagered.stake : null;
+  }
+
+  /* what a new play session may stake: five buy-ins at the stake picked,
+     at least 0.5 SOL (stakes.js) */
+  function sessionLimit() {
+    return global.HaloStakes ? global.HaloStakes.sessionLimit(wageredStake()) : 500000000;
+  }
 
   function playSessionLeft() {
     var session_ = wallet.playSession;
@@ -5230,7 +5252,7 @@
       var prepared = await fetchJson("/v1/escrow/load", {
         method: "POST",
         headers: walletHeaders(),
-        body: JSON.stringify({ deposit: deposit, limit: SESSION_LIMIT_LAMPORTS }),
+        body: JSON.stringify({ deposit: deposit, limit: sessionLimit() }),
       });
       await signAndSend(prepared.transaction);
       setWalletStatus("Sent. Waiting for Solana to confirm…");
@@ -5298,9 +5320,12 @@
     renew.disabled = wallet.busy;
     var reason = lobbyElement("wallet-gate-reason");
     /* why it opened, kept current: connecting answers "connect a wallet" */
-    var wagered = lobbyKind() === "custom" ? partyWager() : selectedWager(selectedPlaylist());
-    var text = lobby.loadUpReason ? (wagered ? stakeBlocker(wagered.stake) || "" : "") : "";
+    var stake = wageredStake();
+    var text = lobby.loadUpReason ? (stake !== null ? stakeBlocker(stake) || "" : "") : "";
     if (reason.textContent !== text) reason.textContent = text;
+    var limit = lobbyElement("wallet-gate-limit");
+    var limitText = (sessionLimit() / LAMPORTS_PER_SOL) + " SOL";
+    if (limit && limit.textContent !== limitText) limit.textContent = limitText;
     var funds = lobbyElement("wallet-gate-funds");
     var fundsText = wallet.token && wallet.onchainLamports !== null ?
       "Your wallet: " + formatSol(wallet.onchainLamports) + " SOL" +

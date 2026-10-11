@@ -14,7 +14,9 @@
      projection with even teams (services/signaling/src/wager.ts,
      stakesProjection), so it reads "about".
    - A party's custom game for SOL: the leader sets the stake, kill target
-     and team share; every member accepts them before anything is staked. */
+     and team share; every member accepts them before anything is staked.
+   - A tier above the escrow's maximum stake (the Worker reads it from
+     chain) is shown but can't be picked until the operator raises it. */
 
 ;(function installHaloStakes(global) {
   "use strict";
@@ -28,6 +30,11 @@
   /* the custom game's choices: kill targets, and team shares in basis points */
   var KILL_TARGETS = [10, 25, 50, 100];
   var TEAM_SHARES = [0, 2500, 5000, 10000];
+  /* a play session may stake five buy-ins at the stake picked, at least
+     0.5 SOL and at most the Worker's cap (services/signaling/src/vault.ts) */
+  var SESSION_LIMIT_MINIMUM = 500000000;
+  var SESSION_LIMIT_MAXIMUM = 5000000000;
+  var SESSION_BUY_INS = 5;
 
   /* lamports as SOL, as few places as it needs: 0.05, 0.1, 0.0014 */
   function sol(lamports) {
@@ -94,6 +101,17 @@
     };
   }
 
+  /* the play session's limit to ask for, to play at `stake` */
+  function sessionLimit(stake) {
+    var wanted = Math.max(SESSION_LIMIT_MINIMUM, (Number(stake) || 0) * SESSION_BUY_INS);
+    return Math.min(SESSION_LIMIT_MAXIMUM, wanted);
+  }
+
+  /* whether a tier can be picked: one above the escrow's maximum can't */
+  function tierOpen(tier) {
+    return !!tier && tier.available !== false;
+  }
+
   /* the tier among `tiers` at `stake`, else the first */
   function tierAt(tiers, stake) {
     if (!tiers || !tiers.length) return null;
@@ -111,7 +129,8 @@
   }
 
   /* A row of choices: each { value, label, note }, the one at `selected`
-     marked. `onPick(value)`; disabled for a member who may only look. */
+     marked. `onPick(value)`; disabled for a member who may only look, and
+     a choice that is { disabled, title } can't be picked, saying why. */
   function renderChoices(container, choices, selected, onPick, disabled) {
     if (!container) return;
     var documentRef = container.ownerDocument || global.document;
@@ -122,18 +141,25 @@
       var button = element(documentRef, "button", "stake-choice");
       button.type = "button";
       button.setAttribute("aria-pressed", choice.value === selected ? "true" : "false");
-      button.disabled = !!disabled;
+      button.disabled = !!disabled || !!choice.disabled;
+      if (choice.title) button.title = choice.title;
       button.appendChild(element(documentRef, "strong", "", choice.label));
       if (choice.note) button.appendChild(element(documentRef, "small", "", choice.note));
-      button.addEventListener("click", function() { if (!disabled) onPick(choice.value); });
+      button.addEventListener("click", function() { if (!disabled && !choice.disabled) onPick(choice.value); });
       return button;
     });
     container.replaceChildren.apply(container, buttons);
   }
 
+  /* A tier that can't be picked yet, and why. */
+  function closedChoice(value, label, reason) {
+    return { value: value, label: label, note: "not open yet", disabled: true, title: reason || "Not open yet." };
+  }
+
   /* A playlist's tiers: the stake, a kill's worth, and who is searching. */
   function tierChoices(tiers, players, feeBps) {
     return (tiers || []).map(function(tier) {
+      if (!tierOpen(tier)) return closedChoice(tier.stake, "◎ " + sol(tier.stake), tier.reason);
       var described = terms(tier, players, feeBps);
       return {
         value: tier.stake,
@@ -144,10 +170,14 @@
     });
   }
 
-  /* A custom game's stake (Free, or a tier), kill target and team share. */
-  function customChoices(tiers) {
+  /* A custom game's stake (Free, or a tier up to the escrow's
+     `maximumStake`, when known), kill target and team share. */
+  function customChoices(tiers, maximumStake) {
     return {
       stake: [{ value: null, label: "Free", note: "no SOL" }].concat((tiers || []).map(function(stake) {
+        if (typeof maximumStake === "number" && stake > maximumStake) {
+          return closedChoice(stake, "◎ " + sol(stake), "The escrow takes stakes up to " + sol(maximumStake) + " SOL for now.");
+        }
         return { value: stake, label: "◎ " + sol(stake), note: "each" };
       })),
       killTarget: KILL_TARGETS.map(function(target) { return { value: target, label: String(target), note: "kills" }; }),
@@ -161,6 +191,7 @@
     terms: terms,
     customWager: customWager,
     tierAt: tierAt,
+    sessionLimit: sessionLimit,
     tierChoices: tierChoices,
     customChoices: customChoices,
     renderChoices: renderChoices,
