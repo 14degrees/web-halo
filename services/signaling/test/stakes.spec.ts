@@ -172,7 +172,7 @@ describe("a custom game for SOL", () => {
     const buildId = "stakes-test-build-4";
     const matchmaker = env.MATCHMAKER.getByName("main");
     const now = Date.now();
-    await matchmaker.registerServer(buildId, null, null, now);
+    const serverId = await matchmaker.registerServer(buildId, null, null, now);
     const terms = { stake: SOL / 100, killTarget: 10, teamShareBps: 0 };
     const started = await matchmaker.startCustom({
       partyId: "STAKE1", buildId, mapIndex: 4, modeIndex: 0, now, stakes: terms,
@@ -188,5 +188,8 @@ describe("a custom game for SOL", () => {
     expect(view?.match?.wager).toEqual({
       stake: SOL / 100, perKill: 0, mode: "team", escrow: "locking", stakes: { ...terms, groups: 0 },
     });
+    /* the server plays the game to the party's kill target */
+    const beat = await matchmaker.heartbeat({ serverId, now });
+    expect(beat.assignment).toMatchObject({ playlist: "custom", modeIndex: 0, killTarget: 10 });
   });
 });
