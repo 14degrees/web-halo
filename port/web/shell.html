@@ -1207,7 +1207,7 @@
     .pm-actions button:disabled { opacity: .55; cursor: default; }
     .pm-actions button[hidden] { display: none; }
     #post-match-stay:not(:disabled) { background: linear-gradient(90deg, #7a4a34, #8c5a3f 60%, #6d4130); }
-    .wallet-gate-amounts { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
+    .wallet-gate-amounts { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; }
     .wallet-gate-amounts[hidden] { display: none; }
     .wallet-gate-amounts button {
       padding: .8rem .4rem; border: 1px solid #ffd65a; border-radius: .3rem;
@@ -3063,9 +3063,10 @@
         <button type="button" data-lamports="50000000">0.05 SOL</button>
         <button type="button" data-lamports="100000000">0.1 SOL</button>
         <button type="button" data-lamports="250000000">0.25 SOL</button>
+        <button type="button" data-lamports="1000000000">1 SOL</button>
       </div>
       <button id="wallet-gate-renew" class="wallet-gate-skip" type="button" hidden>Just approve a new play session</button>
-      <p class="wallet-gate-fine">One approval: it moves the SOL into your vault and lets the game stake up to 0.5 SOL of it
+      <p class="wallet-gate-fine">One approval: it moves the SOL into your vault and lets the game stake up to <span id="wallet-gate-limit">0.5 SOL</span> of it
         in matches for the next 24 hours, with no more prompts. Solana devnet.</p>
       <p id="wallet-gate-funds" class="wallet-gate-fine"></p>
       <p id="wallet-gate-status" role="status" aria-live="polite"></p>

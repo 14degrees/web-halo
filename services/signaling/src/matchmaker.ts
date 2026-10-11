@@ -30,10 +30,13 @@ export const MATCHMAKER_NAME = "main";
 /* The stakes a wagered playlist or a party's custom game is played for, in
    lamports: a few tiers rather than any amount, because a ticket only
    matches tickets at its own stake, so every tier is a queue of its own
-   and the more tiers, the longer each search. Every tier must stay within
-   the escrow program's maximum stake (0.1 SOL on devnet) and a play
-   session's limit (src/vault.ts). */
-export const STAKE_TIERS = [10_000_000, 50_000_000, 100_000_000] as const;
+   and the more tiers, the longer each search: six, from 0.01 to 1 SOL,
+   each two to five times the last. A tier above the escrow program's maximum stake (read
+   from chain, wager.ts's escrowMaximumStake; 0.1 SOL on devnet until the
+   operator raises it) is listed but not offered, and refused in the
+   queue. Every tier must stay within a play session's limit
+   (src/vault.ts). */
+export const STAKE_TIERS = [10_000_000, 50_000_000, 100_000_000, 250_000_000, 500_000_000, 1_000_000_000] as const;
 /* a party's custom game for SOL: its kill target and team share (src/wager.ts,
    StakesConfig), within these bounds */
 export const CUSTOM_KILL_TARGET = { minimum: 5, maximum: 100 } as const;

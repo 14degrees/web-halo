@@ -1,5 +1,10 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { configAddress, decodeConfig, updateConfigInstruction } from "../src/escrow";
+import type { RuntimeEnv } from "../src/env";
+import { base58Decode } from "../src/solana";
+import { ASSUMED_MAXIMUM_STAKE, escrowMaximumStake, stakeLimitProblem } from "../src/wager";
 
 import {
   STAKE_TIERS,
@@ -56,11 +61,23 @@ describe("stake tiers", () => {
     expect(chosenStake("duel", SOL / 100)).toBeNull();
   });
 
-  it("keep every tier within the escrow's devnet maximum stake and a session's limit", () => {
-    for (const tier of STAKE_TIERS) {
-      expect(tier).toBeGreaterThan(0);
-      expect(tier).toBeLessThanOrEqual(SOL / 10);
-    }
+  it("go up to 1 SOL, within a play session's limit, in increasing order", () => {
+    expect(STAKE_TIERS).toEqual([SOL / 100, SOL / 20, SOL / 10, SOL / 4, SOL / 2, SOL]);
+    /* vault.ts lets a session stake five top-tier buy-ins */
+    expect(Math.max(...STAKE_TIERS) * 5).toBeLessThanOrEqual(5 * SOL);
+  });
+
+  it("offer only the tiers within the escrow's maximum stake", async () => {
+    /* this test Worker has no escrow set up: the devnet maximum is assumed */
+    expect(await escrowMaximumStake(env as unknown as RuntimeEnv)).toBe(ASSUMED_MAXIMUM_STAKE);
+    const result = await call("GET", "/v1/playlists");
+    expect(result.body.stakes.maximumStake).toBe(SOL / 10);
+    const tiers = result.body.playlists.find((entry: { id: string }) => entry.id === "bountyduel").tiers;
+    expect(tiers.map((tier: { available: boolean }) => tier.available)).toEqual([true, true, true, false, false, false]);
+    expect(tiers[3].reason).toBe("The 0.25 SOL stake isn't open yet: the escrow takes stakes up to 0.1 SOL for now.");
+    expect(result.body.playlists.find((entry: { id: string }) => entry.id === "ffa").tiers).toEqual([]);
+    expect(stakeLimitProblem(SOL / 10, SOL / 10)).toBeNull();
+    expect(stakeLimitProblem(SOL, SOL / 2)).toMatch(/^The 1 SOL stake isn't open yet/u);
   });
 
   it("match a ticket only with tickets at its stake", async () => {
@@ -95,6 +112,22 @@ describe("stake tiers", () => {
       protocolVersion: 1, buildId: "stakes-test-build-2", identifier: "0000000d0b01", playlist: "teamstakes", stake: SOL / 3,
     });
     expect(result.status).toBe(400);
+  });
+
+  it("refuse a party stake above the escrow's maximum", async () => {
+    const leader = player("Highroller");
+    const created = await call("POST", "/v1/parties", { buildId: "stakes-test-build-5", ...leader, playlist: "bountyduel" });
+    const code = created.body.party.code as string;
+    const high = await call("POST", `/v1/parties/${code}/settings`, { ...leader, stake: SOL / 2 });
+    expect(high.status).toBe(409);
+    expect(high.body.error.code).toBe("STAKE_NOT_OPEN");
+    const custom = await call("POST", `/v1/parties/${code}/settings`, {
+      ...leader, lobby: "custom", customStakes: { stake: SOL, killTarget: 25, teamShareBps: 2_500 },
+    });
+    expect(custom.body.error.code).toBe("STAKE_NOT_OPEN");
+    expect((await call("POST", `/v1/parties/${code}/settings`, { ...leader, stake: SOL / 10 })).body.party.stake).toBe(SOL / 10);
+    const opening = await call("POST", "/v1/parties", { buildId: "stakes-test-build-5", ...player("Opener"), stake: SOL / 4 });
+    expect(opening.status).toBe(409);
   });
 
   it("list the tiers and what a custom game can be set to", async () => {
@@ -191,5 +224,84 @@ describe("a custom game for SOL", () => {
     /* the server plays the game to the party's kill target */
     const beat = await matchmaker.heartbeat({ serverId, now });
     expect(beat.assignment).toMatchObject({ playlist: "custom", modeIndex: 0, killTarget: 10 });
+  });
+});
+
+describe("the escrow's maximum stake", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /* the program's Config account: discriminator, operator, authority, fee
+     vault, fee_bps u16, maximum_stake u64, reclaim_delay i64, paused, bump */
+  function configAccount(maximumStake: bigint): string {
+    const data = new Uint8Array(8 + 32 * 3 + 2 + 8 + 8 + 2);
+    const view = new DataView(data.buffer);
+    data.set([155, 12, 170, 224, 30, 250, 204, 130]);
+    data.set(base58Decode("8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM")!, 8);
+    data.set(base58Decode("58PxG6BsZEKtQpQmBLAyXdhGwhdqA4dVYmAMx7KxdFzf")!, 40);
+    data.set(base58Decode("8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM")!, 72);
+    view.setUint16(104, 500, true);
+    view.setBigUint64(106, maximumStake, true);
+    view.setBigInt64(114, 72n * 60n * 60n, true);
+    return btoa(String.fromCharCode(...data));
+  }
+
+  it("decodes the program's config", () => {
+    const bytes = Uint8Array.from(atob(configAccount(BigInt(SOL))), (char) => char.charCodeAt(0));
+    expect(decodeConfig(bytes)).toEqual({
+      operator: "8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM",
+      authority: "58PxG6BsZEKtQpQmBLAyXdhGwhdqA4dVYmAMx7KxdFzf",
+      feeVault: "8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM",
+      feeBps: 500, maximumStake: BigInt(SOL), reclaimDelaySeconds: 72 * 60 * 60, paused: false,
+    });
+    expect(decodeConfig(bytes.slice(0, 50))).toBeNull();
+    expect(decodeConfig(new Uint8Array(bytes.length))).toBeNull();
+  });
+
+  it("builds the operator's update_config with every setting", async () => {
+    const operator = "8fLfv5vkEkUDvDuwHx6PpZPiF7A5ALNB7AhFxRtA6aAM";
+    const instruction = await updateConfigInstruction(operator, {
+      authority: "58PxG6BsZEKtQpQmBLAyXdhGwhdqA4dVYmAMx7KxdFzf", feeVault: operator, feeBps: 500,
+      maximumStake: BigInt(SOL), reclaimDelaySeconds: 72 * 60 * 60,
+    });
+    expect(instruction.keys).toEqual([
+      { pubkey: await configAddress(), isSigner: false, isWritable: true },
+      { pubkey: operator, isSigner: true, isWritable: false },
+    ]);
+    /* sha256("global:update_config")[..8], then the Settings struct */
+    expect([...instruction.data.slice(0, 8)]).toEqual([29, 158, 252, 191, 10, 83, 219, 99]);
+    expect(instruction.data.length).toBe(8 + 32 + 32 + 2 + 8 + 8);
+    expect(new DataView(instruction.data.buffer, instruction.data.byteOffset).getBigUint64(74, true)).toBe(BigInt(SOL));
+  });
+
+  it("is read from chain once escrow is set up, and cached", async () => {
+    const rpcUrl = "http://escrow-config.test/rpc";
+    const chainEnv = {
+      ...env, SOLANA_RPC_URL: rpcUrl, SOLANA_RPC_PRIVATE_URL: undefined,
+      ESCROW_AUTHORITY_SECRET_KEY: "set", ESCROW_SESSION_SECRET: "set", ESCROW_FEE_VAULT: "set",
+    } as unknown as RuntimeEnv;
+    let maximum = BigInt(SOL / 2);
+    let failing = false;
+    const rpc = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(rpcUrl);
+      if (failing) return new Response("down", { status: 503 });
+      const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+      expect(request.method).toBe("getAccountInfo");
+      expect(request.params[0]).toBe(await configAddress());
+      return Response.json({ jsonrpc: "2.0", id: 1, result: { value: { data: [configAccount(maximum), "base64"] } } });
+    });
+    vi.stubGlobal("fetch", rpc);
+    const start = Date.now();
+    expect(await escrowMaximumStake(chainEnv, start)).toBe(SOL / 2);
+    maximum = BigInt(SOL);
+    /* cached for a while */
+    expect(await escrowMaximumStake(chainEnv, start + 60_000)).toBe(SOL / 2);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    /* then read again */
+    expect(await escrowMaximumStake(chainEnv, start + 6 * 60_000)).toBe(SOL);
+    /* a failing RPC keeps the last value read */
+    failing = true;
+    expect(await escrowMaximumStake(chainEnv, start + 12 * 60_000)).toBe(SOL);
   });
 });
