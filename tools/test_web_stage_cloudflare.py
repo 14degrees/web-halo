@@ -19,7 +19,7 @@ def make_repository(root: Path) -> Path:
     (web / "halo.wasm").write_bytes(b"\0asm")
     page = root / "port" / "web"
     page.mkdir(parents=True)
-    for name in ("coi-serviceworker.js", "servers.html", "servers_wagers.js"):
+    for name in ("coi-serviceworker.js", "servers.html", "servers_admin.js", "servers_wagers.js", "servers_fomo_handles.js"):
         (page / name).write_text("", encoding="utf-8")
     maps = root / "assets" / "maps"
     maps.mkdir(parents=True)
