@@ -191,6 +191,17 @@ export interface PendingFomoHandle {
   method: FomoMethod | null;
 }
 
+/* a confirmed handle (GET /v1/admin/profiles/fomo-handles) */
+export interface VerifiedFomoHandle {
+  profileId: string;
+  username: string;
+  handle: string;
+  verifiedAt: number;
+  /* the proven fomo wallet the handle was confirmed against */
+  wallet: string;
+  method: FomoMethod | null;
+}
+
 export type XChallengeResult =
   | { profileId: string; code: string; expiresAt: number }
   | { error: "PROFILE_NOT_FOUND" | "X_CHALLENGE_RATE_LIMITED" };
@@ -766,13 +777,16 @@ export class Profiles extends DurableObject<Env> {
       if (row.fomo_handle_key === null) return { error: "FOMO_HANDLE_MISSING" };
       if (row.fomo_handle_key !== handleKey) return { error: "FOMO_HANDLE_CHANGED" };
       if (!verified) {
-        if (row.fomo_handle_verified_at !== null) {
-          this.ctx.storage.sql.exec(
-            "UPDATE profiles SET fomo_handle_verified_at = NULL, fomo_handle_wallet = NULL, updated_at = ? WHERE id = ?",
-            now, profileId,
-          );
-        }
-        this.log(now, "fomo_handle_rejected", profileId, null, { handle: row.fomo_handle, by, note });
+        /* the claim goes with its confirmation, so it leaves the queue; the
+           player can claim a handle again */
+        this.ctx.storage.sql.exec(
+          `UPDATE profiles SET fomo_handle = NULL, fomo_handle_key = NULL, fomo_handle_seen = NULL, fomo_handle_claimed_at = NULL,
+             fomo_handle_verified_at = NULL, fomo_handle_wallet = NULL, updated_at = ? WHERE id = ?`,
+          now, profileId,
+        );
+        this.log(now, "fomo_handle_rejected", profileId, null, {
+          handle: row.fomo_handle, wasVerified: row.fomo_handle_verified_at !== null, by, note,
+        });
         return { profile: this.view(this.profileRow(profileId)!, now) };
       }
       if (row.fomo_verified_at === null || row.fomo_wallet === null) return { error: "FOMO_WALLET_UNPROVEN" };
@@ -817,6 +831,22 @@ export class Profiles extends DurableObject<Env> {
       handleSeen: row.fomo_handle_seen === null ? null : row.fomo_handle_seen === 1,
       claimedAt: row.fomo_handle_claimed_at,
       wallet: row.fomo_wallet!,
+      method: row.fomo_method as FomoMethod | null,
+    }));
+  }
+
+  /* Confirmed handles, the latest confirmation first, so an admin can
+     take one back. */
+  verifiedFomoHandles(limit: number): VerifiedFomoHandle[] {
+    return this.ctx.storage.sql.exec<ProfileRow>(
+      "SELECT * FROM profiles WHERE fomo_handle_verified_at IS NOT NULL ORDER BY fomo_handle_verified_at DESC LIMIT ?",
+      limit,
+    ).toArray().map((row) => ({
+      profileId: row.id,
+      username: row.username,
+      handle: row.fomo_handle!,
+      verifiedAt: row.fomo_handle_verified_at!,
+      wallet: row.fomo_handle_wallet!,
       method: row.fomo_method as FomoMethod | null,
     }));
   }

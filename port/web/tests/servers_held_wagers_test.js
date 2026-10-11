@@ -14,6 +14,7 @@ const { test } = require('node:test');
 const webDirectory = path.join(__dirname, '..');
 const page = fs.readFileSync(path.join(webDirectory, 'servers.html'), 'utf8');
 const source = fs.readFileSync(path.join(webDirectory, 'servers_wagers.js'), 'utf8');
+const session = fs.readFileSync(path.join(webDirectory, 'servers_admin.js'), 'utf8');
 const stage = fs.readFileSync(path.join(webDirectory, '..', '..', 'tools', 'web_stage_cloudflare.py'), 'utf8');
 const worker = fs.readFileSync(
   path.join(webDirectory, '..', '..', 'services', 'signaling', 'src', 'index.ts'), 'utf8');
@@ -22,18 +23,20 @@ const panel = require(path.join(webDirectory, 'servers_wagers.js'));
 /* ---- the page loads the panel, the stage copies it, the Worker answers its preflight */
 test('the page, the staging script and the Worker know the panel', () => {
   assert.match(page, /<section id="held-wagers"><\/section>/);
-  assert.match(page, /<script src="servers_wagers\.js"><\/script>/);
-  assert.match(page, /HaloHeldWagers\.mount\(\{ container: document\.getElementById\("held-wagers"\), signalingUrl: signaling \}\);/);
-  assert.match(stage, /"servers_wagers\.js", output \/ "servers_wagers\.js"/);
+  assert.match(page, /<script src="servers_admin\.js"><\/script>\n\s*<script src="servers_wagers\.js"><\/script>/,
+    'the shared admin session loads first');
+  assert.match(page, /const adminSession = HaloAdmin\.session\(\{ signalingUrl: signaling \}\);/);
+  assert.match(page, /HaloHeldWagers\.mount\(\{ container: document\.getElementById\("held-wagers"\), session: adminSession \}\);/);
+  assert.match(stage, /for name in \("servers_admin\.js", "servers_wagers\.js", "servers_fomo_handles\.js"\):/);
   assert.match(worker, /if \(request\.method === "OPTIONS"\) \{\n\s+return corsPreflight\(\);/,
     'the admin routes answer the preflight before the bearer check');
   assert.match(worker, /withCors\(adminResponse, request\.headers\.get\("Origin"\) === null \? null : allowedOrigin\(request, env\)\)/);
   /* the repo is public: no token in the page or the panel */
-  for (const text of [page, source]) {
+  for (const text of [page, source, session]) {
     assert.doesNotMatch(text, /Bearer [A-Za-z0-9_\-]{8,}/, 'no token literal');
     assert.doesNotMatch(text, /ADMIN_TOKEN\s*[:=]/, 'no token constant');
   }
-  assert.match(source, /sessionStorage/);
+  assert.match(session, /sessionStorage/);
   assert.equal(panel.TOKEN_KEY, 'halo-admin-token');
 });
 
